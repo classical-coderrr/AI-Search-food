@@ -7,6 +7,7 @@ import {
   getWeekStart,
   mealLabel,
   normalizeWeeklyMenu,
+  prioritizeRecipesForMeal,
   toDateString,
   weeklySlotKey
 } from './weeklyMenu.js'
@@ -64,4 +65,18 @@ test('服务端周菜单响应会过滤无效餐次并补齐周范围', () => {
   assert.equal(normalized.nutritionSummary.assignedMealCount, 1)
   assert.equal(mealLabel('DINNER'), '晚餐')
   assert.equal(toDateString(addDays('2026-08-31', 6)), '2026-09-06')
+})
+
+test('菜单下拉会优先展示当前餐次的菜谱', () => {
+  const recipes = [
+    { id: 1, title: '蒜蓉炒茄子', mealType: 'dinner' },
+    { id: 2, title: '鲜肉包子', mealType: 'breakfast' },
+    { id: 3, title: '家常面条', mealType: 'any' }
+  ]
+
+  assert.deepEqual(prioritizeRecipesForMeal(recipes, 'BREAKFAST').map((recipe) => recipe.title), [
+    '鲜肉包子',
+    '家常面条',
+    '蒜蓉炒茄子'
+  ])
 })

@@ -9,7 +9,8 @@
       :class="{
         'is-expanded': isExpanded,
         'is-positioned': Boolean(panelPosition),
-        'is-dragging': isDragging
+        'is-dragging': isDragging,
+        'is-resizing': isResizing
       }"
       :style="panelStyle"
       role="dialog"
@@ -48,6 +49,19 @@
           </button>
         </div>
       </header>
+
+      <div
+        class="agent-resize-handle"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="调整小厨灵窗口高度"
+        title="上下拖动调整窗口高度"
+        tabindex="0"
+        @pointerdown.stop.prevent="startResize"
+        @keydown="handleResizeKeydown"
+      >
+        <span aria-hidden="true" />
+      </div>
 
       <div ref="messageList" class="agent-messages" aria-live="polite" aria-relevant="additions text">
         <div v-if="!messages.length" class="agent-empty-state">
@@ -241,17 +255,25 @@ const desktopViewport = ref(typeof window === 'undefined' || window.innerWidth >
 const panelPosition = ref(null)
 const savedPanelPosition = ref(null)
 const isDragging = ref(false)
+const isResizing = ref(false)
+const panelHeight = ref(null)
 const previewUrls = new Set()
 let messageSeed = 0
 let dragState = null
+let resizeState = null
 let resizeFrame = 0
 
+const PANEL_MIN_HEIGHT = 360
+const PANEL_MAX_HEIGHT = 760
+
 const panelStyle = computed(() => {
-  if (!panelPosition.value) return undefined
-  return {
-    left: `${panelPosition.value.left}px`,
-    top: `${panelPosition.value.top}px`
+  const style = {}
+  if (panelPosition.value) {
+    style.left = `${panelPosition.value.left}px`
+    style.top = `${panelPosition.value.top}px`
   }
+  if (!isExpanded.value && panelHeight.value) style.height = `${panelHeight.value}px`
+  return Object.keys(style).length ? style : undefined
 })
 
 const storageKey = () => `ai-kitchen-agent:${auth.token ? auth.token.slice(-20) : 'guest'}`
@@ -265,6 +287,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopGeneration()
   stopDragging()
+  stopResizing()
   window.removeEventListener('resize', schedulePositionCorrection)
   window.visualViewport?.removeEventListener('resize', schedulePositionCorrection)
   if (resizeFrame) window.cancelAnimationFrame(resizeFrame)
@@ -369,6 +392,69 @@ function stopDragging(event) {
   window.removeEventListener('pointermove', handleDragMove)
   window.removeEventListener('pointerup', stopDragging)
   window.removeEventListener('pointercancel', stopDragging)
+}
+
+function getPanelHeightBounds() {
+  const viewportHeight = typeof window === 'undefined' ? PANEL_MAX_HEIGHT + 24 : window.innerHeight
+  const min = Math.min(PANEL_MIN_HEIGHT, Math.max(280, viewportHeight - 24))
+  const max = Math.max(min, Math.min(PANEL_MAX_HEIGHT, viewportHeight - 24))
+  return { min, max }
+}
+
+function clampPanelHeight(height) {
+  const { min, max } = getPanelHeightBounds()
+  return Math.min(max, Math.max(min, height))
+}
+
+function startResize(event) {
+  if (event.button !== 0 || isExpanded.value) return
+  const rect = panel.value?.getBoundingClientRect()
+  if (!rect) return
+
+  resizeState = {
+    pointerId: event.pointerId,
+    startY: event.clientY,
+    startHeight: rect.height
+  }
+  isResizing.value = false
+  event.currentTarget?.setPointerCapture?.(event.pointerId)
+  window.addEventListener('pointermove', handleResizeMove)
+  window.addEventListener('pointerup', stopResizing)
+  window.addEventListener('pointercancel', stopResizing)
+}
+
+function handleResizeMove(event) {
+  if (!resizeState || event.pointerId !== resizeState.pointerId) return
+  const deltaY = resizeState.startY - event.clientY
+  if (!isResizing.value && Math.abs(deltaY) < 2) return
+  isResizing.value = true
+  event.preventDefault()
+  panelHeight.value = clampPanelHeight(resizeState.startHeight + deltaY)
+}
+
+function stopResizing(event) {
+  if (event?.pointerId != null && resizeState?.pointerId !== event.pointerId) return
+  resizeState = null
+  isResizing.value = false
+  window.removeEventListener('pointermove', handleResizeMove)
+  window.removeEventListener('pointerup', stopResizing)
+  window.removeEventListener('pointercancel', stopResizing)
+}
+
+function handleResizeKeydown(event) {
+  if (isExpanded.value) return
+  const step = event.shiftKey ? 120 : 48
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    event.preventDefault()
+    const currentHeight = panelHeight.value || panel.value?.getBoundingClientRect().height || PANEL_MIN_HEIGHT
+    panelHeight.value = clampPanelHeight(currentHeight + (event.key === 'ArrowUp' ? step : -step))
+  } else if (event.key === 'Home') {
+    event.preventDefault()
+    panelHeight.value = getPanelHeightBounds().min
+  } else if (event.key === 'End') {
+    event.preventDefault()
+    panelHeight.value = getPanelHeightBounds().max
+  }
 }
 
 function clampPanelRect(rect) {
@@ -658,6 +744,12 @@ async function scrollToBottom() {
 .agent-panel.is-expanded.is-positioned { transform: none; }
 .agent-panel.is-dragging { cursor: grabbing; user-select: none; }
 .agent-panel__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 14px; border-bottom: 1px solid #d6b989; background: #f5e6c3; cursor: grab; user-select: none; touch-action: none; }
+.agent-resize-handle { display: grid; flex: 0 0 auto; width: 100%; height: 44px; place-items: center; padding: 0; border: 0; border-bottom: 1px solid #ead9b9; color: #a36e2d; background: #fff8e8; cursor: ns-resize; touch-action: none; }
+.agent-resize-handle span { width: 42px; height: 5px; border: 1px solid currentColor; border-radius: 999px; background: currentColor; opacity: .58; }
+.agent-resize-handle:hover, .agent-resize-handle:focus-visible { color: #4f8ca5; background: #fff4d6; outline: 2px solid #4f8ca5; outline-offset: -3px; }
+.agent-resize-handle:hover span, .agent-resize-handle:focus-visible span { opacity: 1; }
+.agent-panel.is-resizing { user-select: none; }
+.agent-panel.is-expanded .agent-resize-handle { display: none; }
 .agent-panel__identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .agent-mini-sprite { width: 32px; height: 32px; flex: 0 0 32px; }
 .agent-panel__eyebrow { margin: 0 0 2px; color: #a36e2d; font-size: 10px; font-weight: 900; letter-spacing: .1em; }

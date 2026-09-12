@@ -1,5 +1,7 @@
 package com.example.food.ai.qwen;
 
+import com.example.food.ai.config.AiModelConfigService;
+import com.example.food.ai.config.AiModelRuntimeConfig;
 import com.example.food.agent.AgentToolRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -11,9 +13,11 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
@@ -144,6 +148,126 @@ class QwenAgentClientTest {
 
         assertThat(turn.content()).isEqualTo("今天是星期三。");
         assertThat(turn.toolCalls()).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    void parsesTextToolCallMarkupInsteadOfShowingJsonToUser() {
+        RestTemplate restTemplate = new RestTemplateBuilder().build();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        QwenProperties properties = properties("test-api-key");
+        QwenAgentClient client = new QwenAgentClient(restTemplate, new ObjectMapper(), properties);
+
+        server.expect(once(), requestTo(properties.endpoint()))
+                .andRespond(withSuccess("""
+                        {
+                          "choices": [{
+                            "message": {
+                              "content": "我先根据你的库存安排晚餐。\\n<tool_call>\\n{\\\"name\\\":\\\"recipe_generate\\\",\\\"arguments\\\":{\\\"ingredients\\\":[\\\"番茄\\\",\\\"茄子\\\"],\\\"meal_type\\\":\\\"dinner\\\",\\\"servings\\\":3}}\\n</tool_call>"
+                            }
+                          }]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        QwenAgentClient.AgentTurn turn = client.complete(
+                List.of(QwenAgentClient.ConversationMessage.user("根据库存推荐晚餐")),
+                new AgentToolRegistry().functionDefinitions()
+        );
+
+        assertThat(turn.content()).isEqualTo("我先根据你的库存安排晚餐。");
+        assertThat(turn.toolCalls()).containsExactly(
+                new QwenAgentClient.ToolCall(
+                        "text_tool_call_1",
+                        "recipe_generate",
+                        "{\"ingredients\":[\"番茄\",\"茄子\"],\"meal_type\":\"dinner\",\"servings\":3}"
+                )
+        );
+        server.verify();
+    }
+
+    @Test
+    void appendsChatCompletionsToConfiguredOpenAiBaseEndpoint() {
+        RestTemplate restTemplate = new RestTemplateBuilder().build();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        QwenProperties properties = new QwenProperties(
+                "test-api-key",
+                "qwen-plus",
+                "https://dashscope.test/compatible-mode/v1"
+        );
+        QwenAgentClient client = new QwenAgentClient(restTemplate, new ObjectMapper(), properties);
+
+        server.expect(once(), requestTo("https://dashscope.test/compatible-mode/v1/chat/completions"))
+                .andRespond(withSuccess(
+                        "{\"choices\":[{\"message\":{\"content\":\"连接正常\"}}]}",
+                        MediaType.APPLICATION_JSON
+                ));
+
+        QwenAgentClient.AgentTurn turn = client.complete(
+                List.of(QwenAgentClient.ConversationMessage.user("测试连接")),
+                List.of()
+        );
+
+        assertThat(turn.content()).isEqualTo("连接正常");
+        server.verify();
+    }
+
+    @Test
+    void sendsAnthropicCompatibleAgentRequestAndParsesToolUse() {
+        RestTemplate restTemplate = new RestTemplateBuilder().build();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        AiModelConfigService configService = org.mockito.Mockito.mock(AiModelConfigService.class);
+        when(configService.textRecipeRuntimeConfig()).thenReturn(new AiModelRuntimeConfig(
+                "qwen",
+                "anthropic",
+                "qwen-plus",
+                "https://dashscope.test/apps/anthropic",
+                "anthropic-api-key"
+        ));
+        QwenAgentClient client = new QwenAgentClient(
+                restTemplate,
+                new ObjectMapper(),
+                properties("environment-key"),
+                configService
+        );
+        List<Map<String, Object>> tools = List.of(Map.of(
+                "type", "function",
+                "function", Map.of(
+                        "name", "pantry_list",
+                        "description", "查询库存",
+                        "parameters", Map.of(
+                                "type", "object",
+                                "properties", Map.of(),
+                                "additionalProperties", false
+                        )
+                )
+        ));
+
+        server.expect(once(), requestTo("https://dashscope.test/apps/anthropic"))
+                .andExpect(header("x-api-key", "anthropic-api-key"))
+                .andExpect(header("anthropic-version", "2023-06-01"))
+                .andExpect(jsonPath("$.system").value(org.hamcrest.Matchers.containsString("当前服务器时间")))
+                .andExpect(jsonPath("$.messages[0].role").value("user"))
+                .andExpect(jsonPath("$.messages[0].content").value("我的库存有什么？"))
+                .andExpect(jsonPath("$.tools[0].name").value("pantry_list"))
+                .andExpect(jsonPath("$.tools[0].input_schema.type").value("object"))
+                .andRespond(withSuccess("""
+                        {
+                          "content": [
+                            {"type": "text", "text": ""},
+                            {"type": "tool_use", "id": "call_inventory_1", "name": "pantry_list", "input": {}}
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        QwenAgentClient.AgentTurn turn = client.complete(
+                List.of(QwenAgentClient.ConversationMessage.user("我的库存有什么？")),
+                tools
+        );
+
+        assertThat(turn.content()).isEmpty();
+        assertThat(turn.toolCalls()).containsExactly(
+                new QwenAgentClient.ToolCall("call_inventory_1", "pantry_list", "{}")
+        );
         server.verify();
     }
 

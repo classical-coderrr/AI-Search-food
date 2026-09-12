@@ -50,9 +50,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 @Service
 public class WeeklyMenuService {
 
-    private static final int AUTO_RECIPE_LIMIT = 30;
+    private static final int AUTO_RECIPE_LIMIT = 50;
     private static final int MAX_CANDIDATE_TITLE_LENGTH = 80;
     private static final int MAX_CANDIDATE_INGREDIENT_COUNT = 12;
+    private static final Set<String> BREAKFAST_TITLE_MARKERS = Set.of(
+            "包子", "馒头", "花卷", "面条", "炒面", "汤面", "拌面", "粥", "豆浆", "油条",
+            "煎饼", "鸡蛋灌饼", "三明治", "吐司", "面包", "燕麦", "米粉", "河粉", "肠粉",
+            "烧麦", "小笼包", "饭团", "馄饨", "饺子", "锅贴", "汤圆", "红薯", "玉米",
+            "蛋饼", "茶叶蛋", "水煮蛋", "蒸蛋", "蛋羹"
+    );
+    private static final Set<String> MAIN_MEAL_TITLE_MARKERS = Set.of(
+            "蒜蓉", "红烧", "糖醋", "宫保", "鱼香", "回锅", "水煮", "干锅", "爆炒", "清蒸",
+            "炒", "炖", "焖", "卤", "肉丝", "肉片", "排骨", "鸡翅", "鸡腿", "牛肉", "茄子"
+    );
 
     private static final Pattern SIMPLE_AMOUNT = Pattern.compile(
             "^\\s*(\\d+(?:\\.\\d+)?|\\d+/\\d+)\\s*(个|克|千克|毫升|升|汤匙|茶匙|片|块|根|瓣|包|把|只|条|枚|杯|碗|勺)\\s*$"
@@ -280,17 +290,21 @@ public class WeeklyMenuService {
                 ));
 
         return records.stream()
-                .map(record -> new AutoRecipeCandidate(
-                        record.getId(),
-                        limitPromptText(record.getTitle(), MAX_CANDIDATE_TITLE_LENGTH),
-                        ingredientsByRecipe.getOrDefault(record.getId(), List.of()).stream()
-                                .map(RecipeIngredient::getIngredientName)
-                                .map(this::canonicalIngredient)
-                                .filter(name -> !name.isBlank())
-                                .distinct()
-                                .limit(MAX_CANDIDATE_INGREDIENT_COUNT)
-                                .toList()
-                ))
+                .map(record -> {
+                    List<String> ingredientNames = ingredientsByRecipe.getOrDefault(record.getId(), List.of()).stream()
+                            .map(RecipeIngredient::getIngredientName)
+                            .map(this::canonicalIngredient)
+                            .filter(name -> !name.isBlank())
+                            .distinct()
+                            .limit(MAX_CANDIDATE_INGREDIENT_COUNT)
+                            .toList();
+                    return new AutoRecipeCandidate(
+                            record.getId(),
+                            limitPromptText(record.getTitle(), MAX_CANDIDATE_TITLE_LENGTH),
+                            mealTypeHint(record),
+                            ingredientNames
+                    );
+                })
                 .toList();
     }
 
@@ -323,18 +337,20 @@ public class WeeklyMenuService {
                 饮食偏好：%s
                 每日营养目标：%s
                 用户已有食材：%s
-                候选菜谱（只能使用其中的 recipeId）：
+                候选菜谱（只能使用其中的 recipeId；mealTypeHint=BREAKFAST 表示适合早餐，MAIN 表示适合午餐或晚餐，ANY 表示未指定）：
                 %s
 
                 严格要求：
                 1. 为周一至周日每天安排早餐、午餐、晚餐，共 21 条 items。
                 2. recipeId 必须来自候选菜谱，禁止虚构 ID 或菜名。
                 3. 同一天尽量不要重复同一道菜；候选不足时允许跨天重复。
-                4. %s。
-                5. 结合健康档案和饮食偏好安排，避免使用明确忌口或过敏食材。
-                6. 每日营养目标只是软偏好，用于平衡一周菜谱搭配；明确忌口和过敏食材优先级更高。
-                7. 只输出以下结构：{"items":[{"menuDate":"YYYY-MM-DD","mealType":"BREAKFAST|LUNCH|DINNER","recipeId":1}]}。
-                8. 健康档案和营养目标只用于一般饮食推荐，不得输出疾病诊断、治疗方案或疗效保证。
+                4. 早餐优先选择 mealTypeHint=BREAKFAST，其次选择 ANY；应推荐包子、馒头、花卷、面条、粥、豆浆、油条、煎饼、三明治、吐司或燕麦等早餐主食和轻食，不要把蒜蓉炒菜、红烧肉等典型午餐或晚餐菜安排为早餐。
+                5. 午餐和晚餐优先选择 mealTypeHint=MAIN 或 ANY；候选不足时才使用其他候选，不能因此虚构 recipeId。
+                6. %s。
+                7. 结合健康档案和饮食偏好安排，避免使用明确忌口或过敏食材。
+                8. 每日营养目标只是软偏好，用于平衡一周菜谱搭配；明确忌口和过敏食材优先级更高。
+                9. 只输出以下结构：{"items":[{"menuDate":"YYYY-MM-DD","mealType":"BREAKFAST|LUNCH|DINNER","recipeId":1}]}。
+                10. 健康档案和营养目标只用于一般饮食推荐，不得输出疾病诊断、治疗方案或疗效保证。
                 """.formatted(
                 weekStart,
                 arrangementMode,
@@ -342,8 +358,8 @@ public class WeeklyMenuService {
                 dietPreferencePrompt(userId),
                 nutritionTargetPrompt(userId),
                 pantryContext,
-                pantryMode ? "结合用户已有食材安排" : "按随机组合安排",
-                candidateJson
+                candidateJson,
+                pantryMode ? "结合用户已有食材安排" : "按随机组合安排"
         ).strip();
     }
 
@@ -383,7 +399,6 @@ public class WeeklyMenuService {
         }
 
         List<WeeklyMenuItemRequest> completed = new ArrayList<>();
-        List<Long> candidateIdsInOrder = candidates.stream().map(AutoRecipeCandidate::recipeId).toList();
         int fallbackIndex = 0;
         for (int day = 0; day < 7; day++) {
             LocalDate menuDate = weekStart.plusDays(day);
@@ -392,7 +407,7 @@ public class WeeklyMenuService {
                 String slot = menuDate + "|" + mealType.name();
                 Long recipeId = selectedBySlot.get(slot);
                 if (recipeId == null) {
-                    recipeId = fallbackRecipe(candidateIdsInOrder, usedOnDay, fallbackIndex++);
+                    recipeId = fallbackRecipe(candidates, usedOnDay, fallbackIndex++, mealType);
                 }
                 usedOnDay.add(recipeId);
                 completed.add(new WeeklyMenuItemRequest(menuDate, mealType.name(), recipeId));
@@ -401,7 +416,34 @@ public class WeeklyMenuService {
         return completed;
     }
 
-    private Long fallbackRecipe(List<Long> candidateIds, Set<Long> usedOnDay, int startIndex) {
+    private Long fallbackRecipe(
+            List<AutoRecipeCandidate> candidates,
+            Set<Long> usedOnDay,
+            int startIndex,
+            WeeklyMealType mealType
+    ) {
+        List<Long> preferredIds = candidates.stream()
+                .filter(candidate -> isPreferredForMeal(candidate, mealType))
+                .map(AutoRecipeCandidate::recipeId)
+                .toList();
+        Long preferred = firstAvailableRecipe(preferredIds, usedOnDay, startIndex);
+        return preferred != null
+                ? preferred
+                : firstAvailableRecipe(candidates.stream().map(AutoRecipeCandidate::recipeId).toList(), usedOnDay, startIndex);
+    }
+
+    private boolean isPreferredForMeal(AutoRecipeCandidate candidate, WeeklyMealType mealType) {
+        String hint = candidate.mealTypeHint();
+        if (mealType == WeeklyMealType.BREAKFAST) {
+            return "BREAKFAST".equals(hint) || "ANY".equals(hint);
+        }
+        return "MAIN".equals(hint) || "ANY".equals(hint);
+    }
+
+    private Long firstAvailableRecipe(List<Long> candidateIds, Set<Long> usedOnDay, int startIndex) {
+        if (candidateIds.isEmpty()) {
+            return null;
+        }
         for (int offset = 0; offset < candidateIds.size(); offset++) {
             Long candidate = candidateIds.get((startIndex + offset) % candidateIds.size());
             if (candidateIds.size() == 1 || !usedOnDay.contains(candidate)) {
@@ -498,9 +540,34 @@ public class WeeklyMenuService {
         return normalized.length() <= maxLength ? normalized : normalized.substring(0, maxLength);
     }
 
+    private String mealTypeHint(RecipeRecord record) {
+        String title = record.getTitle() == null ? "" : record.getTitle().trim();
+        if (containsAny(title, BREAKFAST_TITLE_MARKERS)) {
+            return "BREAKFAST";
+        }
+        if (containsAny(title, MAIN_MEAL_TITLE_MARKERS)) {
+            return "MAIN";
+        }
+        String recordedMealType = record.getMealType() == null
+                ? ""
+                : record.getMealType().trim().toLowerCase(Locale.ROOT);
+        if ("breakfast".equals(recordedMealType)) {
+            return "BREAKFAST";
+        }
+        if ("lunch".equals(recordedMealType) || "dinner".equals(recordedMealType)) {
+            return "MAIN";
+        }
+        return "ANY";
+    }
+
+    private boolean containsAny(String value, Set<String> markers) {
+        return markers.stream().anyMatch(value::contains);
+    }
+
     private record AutoRecipeCandidate(
             Long recipeId,
             String title,
+            String mealTypeHint,
             List<String> ingredients
     ) {
     }

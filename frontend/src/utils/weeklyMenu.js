@@ -111,6 +111,20 @@ export function mealLabel(mealType) {
   return WEEKLY_MEAL_OPTIONS.find((option) => option.value === mealType)?.label || '餐次'
 }
 
+export function prioritizeRecipesForMeal(recipes = [], mealType) {
+  const desiredMealType = String(mealType || '').trim().toLowerCase()
+  return recipes
+    .map((recipe, index) => {
+      const recipeMealType = String(recipe?.mealType || '').trim().toLowerCase()
+      const priority = recipeMealType === desiredMealType
+        ? 0
+        : (!recipeMealType || recipeMealType === 'any' ? 1 : 2)
+      return { recipe, index, priority }
+    })
+    .sort((left, right) => left.priority - right.priority || left.index - right.index)
+    .map(({ recipe }) => recipe)
+}
+
 function startOfDay(date) {
   date.setHours(0, 0, 0, 0)
   return date

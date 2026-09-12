@@ -48,6 +48,15 @@ test('小厨灵在桌面端支持可访问的放大、拖拽和回到原位', ()
   assert.match(agentSource, /\.agent-panel\.is-expanded\.is-positioned \{ transform: none; \}/)
 })
 
+test('小厨灵支持上下拖动调整面板高度并提供键盘操作', () => {
+  assert.match(agentSource, /class="agent-resize-handle"[\s\S]*role="separator"[\s\S]*aria-label="调整小厨灵窗口高度"/)
+  assert.match(agentSource, /@pointerdown\.stop\.prevent="startResize"/)
+  assert.match(agentSource, /function startResize\(event\)/)
+  assert.match(agentSource, /function handleResizeKeydown\(event\)/)
+  assert.match(agentSource, /event\.key === 'ArrowUp'[\s\S]*event\.key === 'ArrowDown'/)
+  assert.match(agentSource, /function clampPanelHeight\(height\)/)
+})
+
 test('顶部品牌区使用小厨灵像素菜谱书标识和英文副标题', () => {
   assert.ok(fs.existsSync(new URL('../../public/images/brand-cookbook.png', import.meta.url)))
   assert.match(appSource, /<RouterLink class="brand" to="\/" aria-label="小厨灵 AI COOKING ASSISTANT 首页">/)
