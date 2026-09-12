@@ -22,6 +22,10 @@ test('最小化只收起面板并把焦点交还启动入口', () => {
   assert.match(agentSource, /async function clearConversation\(\)[\s\S]*?conversationId\.value = null[\s\S]*?messages\.value = \[\]/)
 })
 
+test('关闭面板后把焦点交还启动入口', () => {
+  assert.match(agentSource, /function closePanel\(\) \{[\s\S]*?isOpen\.value = false\s+void nextTick\(\(\) => launcher\.value\?\.focus\(\)\)/)
+})
+
 test('小厨灵和主场景不保留已删除的主题浮动入口或角色快捷入口', () => {
   assert.doesNotMatch(agentSource, /agent-character|character-shortcut|角色快捷|人物快捷/)
   assert.doesNotMatch(worldSource, /station-guide|getKitchenGuideItems|功能入口速查/)
@@ -30,6 +34,18 @@ test('小厨灵和主场景不保留已删除的主题浮动入口或角色快�
   assert.match(appSource, /applyTheme\(theme\)/)
   assert.match(sceneSource, /canvas\.setAttribute\('aria-label', '点击厨房中的人物打开对应功能'\)/)
   assert.match(sceneSource, /drawCharacter\(characterLayer/)
+})
+
+test('小厨灵在桌面端支持可访问的放大、拖拽和回到原位', () => {
+  assert.match(agentSource, /ref="panel"/)
+  assert.match(agentSource, /:aria-label="isExpanded \? '还原小厨灵窗口' : '放大小厨灵窗口'"/)
+  assert.match(agentSource, /@pointerdown="startDrag"/)
+  assert.match(agentSource, /@pointerdown\.stop/)
+  assert.match(agentSource, /function togglePanelExpanded\(\)/)
+  assert.match(agentSource, /savedPanelPosition\.value = clampPanelRect\(rect\)/)
+  assert.match(agentSource, /clampAgentPanelPosition/)
+  assert.match(agentSource, /\.agent-panel\.is-expanded \{[\s\S]*calc\(100vw - 48px\)[\s\S]*calc\(100dvh - 48px\)/)
+  assert.match(agentSource, /\.agent-panel\.is-expanded\.is-positioned \{ transform: none; \}/)
 })
 
 test('顶部品牌区使用小厨灵像素菜谱书标识和英文副标题', () => {
