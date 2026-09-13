@@ -1,5 +1,7 @@
 import { http } from './http'
 
+const WEEKLY_MENU_AUTO_GENERATE_TIMEOUT = 180000
+
 export function getWeeklyMenu(weekStart) {
   return http.get('/users/me/weekly-menu', {
     params: weekStart ? { weekStart } : {}
@@ -11,7 +13,9 @@ export function saveWeeklyMenu(payload) {
 }
 
 export function autoGenerateWeeklyMenu(payload) {
-  return http.post('/users/me/weekly-menu/auto-generate', payload)
+  return http.post('/users/me/weekly-menu/auto-generate', payload, {
+    timeout: WEEKLY_MENU_AUTO_GENERATE_TIMEOUT
+  })
 }
 
 export function saveWeeklyShoppingStatus(payload) {

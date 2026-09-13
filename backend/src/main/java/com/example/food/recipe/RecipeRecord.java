@@ -16,6 +16,7 @@ public class RecipeRecord {
     private Long userId;
     private Long searchLogId;
     private Long parentRecipeId;
+    private Long weeklyMenuPlanId;
     @TableField(exist = false)
     private String mealType;
     private String title;
@@ -63,6 +64,14 @@ public class RecipeRecord {
 
     public void setParentRecipeId(Long parentRecipeId) {
         this.parentRecipeId = parentRecipeId;
+    }
+
+    public Long getWeeklyMenuPlanId() {
+        return weeklyMenuPlanId;
+    }
+
+    public void setWeeklyMenuPlanId(Long weeklyMenuPlanId) {
+        this.weeklyMenuPlanId = weeklyMenuPlanId;
     }
 
     public String getMealType() {

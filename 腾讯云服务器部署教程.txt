@@ -1,0 +1,214 @@
+腾讯云服务器部署教程
+====================
+
+更新时间：2026-09-12
+适用项目：AI-Search-food
+
+一、固定信息
+------------
+
+TCR 仓库地址：ccr.ccs.tencentyun.com
+TCR 命名空间：aisearchfood2026
+前端仓库：frontend
+后端仓库：backend
+服务器项目目录：/opt/ai-search-food
+
+生产发布流程：
+本地 main → 本地 Docker 构建 → 推送 TCR → 服务器拉取镜像 → Docker Compose 重建前后端。
+
+服务器不需要拉取源码，也不需要在服务器上重新编译。MySQL 使用现有容器和数据卷，更新前后端不会删除数据库数据。
+
+本次 2026-09-12 的版本示例：
+IMAGE_TAG=20260912-main-b8e54e2
+
+以后发布新版本时，将 IMAGE_TAG 替换为新的日期和 main 短提交号，例如：
+20260915-main-1a2b3c4
+
+二、本地获取最新 main
+----------------------
+
+在 Windows PowerShell 中执行：
+
+    Set-Location D:\AI-Search-food
+    git fetch origin main
+    git switch main
+    git pull --ff-only origin main
+    git status --short --branch
+    git log -1 --format="%H %ad %s" --date=iso-strict
+
+确认 main 已与 origin/main 同步后再构建。不要使用 git reset --hard 或 git clean -fd 删除未提交文件。
+
+如果工作区有未提交改动，先确认这些改动是否应该包含在发布版本中；不要在没有确认的情况下覆盖它们。
+
+三、本地构建并推送 TCR
+----------------------
+
+在同一个 PowerShell 窗口中执行：
+
+    $env:TCR_REGISTRY = 'ccr.ccs.tencentyun.com'
+    $env:TCR_NAMESPACE = 'aisearchfood2026'
+    $shortSha = (git rev-parse --short HEAD).Trim()
+    $env:IMAGE_TAG = "$(Get-Date -Format yyyyMMdd)-main-$shortSha"
+    $backendImage = "$env:TCR_REGISTRY/$env:TCR_NAMESPACE/backend:$env:IMAGE_TAG"
+    $frontendImage = "$env:TCR_REGISTRY/$env:TCR_NAMESPACE/frontend:$env:IMAGE_TAG"
+
+    Write-Host "发布版本：$env:IMAGE_TAG"
+    Write-Host "后端镜像：$backendImage"
+    Write-Host "前端镜像：$frontendImage"
+
+首次登录或提示未授权时执行：
+
+    docker login $env:TCR_REGISTRY
+
+密码或验证码只在终端输入，不要写入文件或发送到聊天中。
+
+构建镜像：
+
+    docker build -t $backendImage .\backend
+    docker build -t $frontendImage .\frontend
+
+后端 Dockerfile 会在构建阶段生成 Spring Boot JAR；前端 Dockerfile 会生成 Vue dist，并由 Nginx 镜像托管静态文件。Nginx gzip 配置也会随前端镜像发布。
+
+推送镜像：
+
+    docker push $backendImage
+    docker push $frontendImage
+
+推送完成后记录终端显示的两个镜像地址和 digest。服务器切换时必须使用刚刚生成的 IMAGE_TAG，不要只使用 latest。
+
+四、服务器更新前检查
+--------------------
+
+打开腾讯云服务器终端，执行：
+
+    cd /opt/ai-search-food
+    sudo cp .env.prod ".env.prod.bak.$(date +%Y%m%d%H%M%S)"
+    sudo cp docker-compose.prod.yml "docker-compose.prod.yml.bak.$(date +%Y%m%d%H%M%S)"
+
+保存当前版本，便于回滚：
+
+    OLD_IMAGE_TAG=$(sudo awk -F= '/^IMAGE_TAG=/{print $2}' .env.prod)
+    printf '%s\n' "$OLD_IMAGE_TAG" | sudo tee .previous-image-tag >/dev/null
+    echo "旧版本：$OLD_IMAGE_TAG"
+
+五、设置服务器目标版本
+----------------------
+
+将下面的版本号替换为本次实际推送的标签。本次使用：
+
+    NEW_IMAGE_TAG=20260912-main-b8e54e2
+
+修改生产环境文件：
+
+    sudo sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$NEW_IMAGE_TAG/" .env.prod
+    sudo grep -n '^IMAGE_TAG=' .env.prod
+
+生产 Compose 文件中的 backend 和 frontend 镜像必须使用新标签。先检查：
+
+    sudo grep -nE 'image:|IMAGE_TAG|20260907-001|20260910-main-cbd036a|20260912-main-b8e54e2' docker-compose.prod.yml
+
+如果 image 行仍然写着旧的固定标签，直接替换为本次版本。例如从 20260910-main-cbd036a 切换到本次版本：
+
+    sudo sed -i 's/20260910-main-cbd036a/20260912-main-b8e54e2/g' docker-compose.prod.yml
+
+更推荐将生产 Compose 文件中的两行固定写法改成变量写法（只改 image 行，其他配置保持不变）：
+
+    backend:
+      image: "${TCR_REGISTRY}/${TCR_NAMESPACE}/${BACKEND_IMAGE_NAME}:${IMAGE_TAG}"
+
+    frontend:
+      image: "${TCR_REGISTRY}/${TCR_NAMESPACE}/${FRONTEND_IMAGE_NAME}:${IMAGE_TAG}"
+
+这样以后只需修改 .env.prod 中的 IMAGE_TAG，不会因为 Compose 文件写死旧标签而拉取错误版本。
+
+六、确认 Compose 最终镜像
+------------------------
+
+必须同时带上基础 Compose 文件和生产覆盖文件：
+
+    sudo docker compose --env-file /opt/ai-search-food/.env.prod \
+      -f /opt/ai-search-food/docker-compose.yml \
+      -f /opt/ai-search-food/docker-compose.prod.yml \
+      config --images
+
+预期结果中，前后端应为：
+
+    ccr.ccs.tencentyun.com/aisearchfood2026/backend:20260912-main-b8e54e2
+    ccr.ccs.tencentyun.com/aisearchfood2026/frontend:20260912-main-b8e54e2
+
+mysql:8.4.3 保持不变是正常的。若这里仍显示旧的前后端标签，不要继续 pull，返回第五步检查 .env.prod 和 docker-compose.prod.yml。
+
+七、拉取并启动新版本
+--------------------
+
+拉取 TCR 镜像：
+
+    sudo docker compose --env-file /opt/ai-search-food/.env.prod \
+      -f /opt/ai-search-food/docker-compose.yml \
+      -f /opt/ai-search-food/docker-compose.prod.yml \
+      pull
+
+启动新版本。--no-build 表示服务器不现场构建：
+
+    sudo docker compose --env-file /opt/ai-search-food/.env.prod \
+      -f /opt/ai-search-food/docker-compose.yml \
+      -f /opt/ai-search-food/docker-compose.prod.yml \
+      up -d --no-build --wait
+
+检查容器：
+
+    sudo docker compose --env-file /opt/ai-search-food/.env.prod \
+      -f /opt/ai-search-food/docker-compose.yml \
+      -f /opt/ai-search-food/docker-compose.prod.yml \
+      ps
+
+前端和后端应显示新版本标签，并且状态为 Up (healthy)。
+
+八、健康检查和浏览器验证
+------------------------
+
+服务器终端执行：
+
+    curl -I http://127.0.0.1/healthz
+
+看到 HTTP/1.1 200 OK 后，在浏览器访问服务器地址，并按 Ctrl+F5 强制刷新。
+
+如果页面仍像旧版本，确认：
+
+1. ps 中 backend 和 frontend 的 IMAGE_TAG 是否为本次版本。
+2. 是否使用了基础文件和生产覆盖文件两个 -f 参数。
+3. 是否只运行了 docker compose config，而没有执行 pull 和 up。
+4. 当前是否配置了 CDN；若后续接入 CDN，需要按 CDN 规则刷新首页缓存。当前 Nginx 对 index.html 使用 no-store，带哈希的静态资源使用长期缓存。
+
+九、回滚
+--------
+
+如果新版本异常，恢复更新前保存的版本号：
+
+    OLD_IMAGE_TAG=$(sudo cat .previous-image-tag)
+    sudo sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$OLD_IMAGE_TAG/" .env.prod
+    echo "恢复版本：$OLD_IMAGE_TAG"
+
+如果 docker-compose.prod.yml 使用的是变量 image 行，直接拉取并启动旧版本：
+
+    sudo docker compose --env-file /opt/ai-search-food/.env.prod \
+      -f /opt/ai-search-food/docker-compose.yml \
+      -f /opt/ai-search-food/docker-compose.prod.yml \
+      pull
+
+    sudo docker compose --env-file /opt/ai-search-food/.env.prod \
+      -f /opt/ai-search-food/docker-compose.yml \
+      -f /opt/ai-search-food/docker-compose.prod.yml \
+      up -d --no-build --wait
+
+如果生产 Compose 文件仍使用固定标签，则同时把 backend 和 frontend 的 image 标签恢复为旧版本，再执行上面的 pull 和 up。
+
+十、数据和安全注意事项
+----------------------
+
+- 不要执行 docker compose down -v；这可能删除数据库数据卷。
+- 不要删除或重新创建 mysql_data、review_uploads、user_avatars 等生产数据卷。
+- 更新前后端时不会自动回滚 Flyway 数据库迁移；包含数据库结构变化的版本必须先备份并确认兼容性。
+- TCR 登录凭证只在服务器或本地终端输入，不写入 Git、教程或聊天消息。
+- 生产服务器只拉取镜像，不从 GitHub 拉源码，不在服务器现场构建。
+

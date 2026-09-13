@@ -36,6 +36,7 @@ public interface SavedRecipeCollectionMapper {
               ON rc.id = rci.collection_id
              AND rc.user_id = #{userId}
             WHERE rr.user_id = #{userId}
+              AND rr.weekly_menu_plan_id IS NULL
             <if test="collectionId != null">
               AND (
                   (rci.id IS NULL AND #{collectionId} = #{defaultCollectionId})
@@ -104,6 +105,7 @@ public interface SavedRecipeCollectionMapper {
               ON rci.recipe_id = rr.id
              AND rci.user_id = #{userId}
             WHERE rr.user_id = #{userId}
+              AND rr.weekly_menu_plan_id IS NULL
             <if test="collectionId != null">
               AND (
                   (rci.id IS NULL AND #{collectionId} = #{defaultCollectionId})

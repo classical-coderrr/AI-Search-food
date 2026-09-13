@@ -1,7 +1,9 @@
 package com.example.food.weekly;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.example.food.ai.config.AiModelRuntimeConfig;
 import com.example.food.ai.qwen.QwenRecipeClient;
+import com.example.food.ai.recipe.dto.RecipeGenerateResponse;
 import com.example.food.pantry.UserPantryService;
 import com.example.food.recipe.RecipeIngredient;
 import com.example.food.recipe.RecipeIngredientMapper;
@@ -12,6 +14,7 @@ import com.example.food.stats.IngredientNormalizer;
 import com.example.food.user.health.UserHealthProfileService;
 import com.example.food.user.nutrition.UserNutritionTargetService;
 import com.example.food.user.preference.UserDietPreferenceService;
+import com.example.food.video.VideoSearchService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.food.weekly.dto.WeeklyMenuItemRequest;
 import com.example.food.weekly.dto.WeeklyMenuAutoGenerateRequest;
@@ -34,6 +37,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
@@ -75,6 +79,9 @@ class WeeklyMenuServiceTest {
     @Mock
     private UserDietPreferenceService userDietPreferenceService;
 
+    @Mock
+    private VideoSearchService videoSearchService;
+
     private WeeklyMenuService service;
 
     @BeforeEach
@@ -91,7 +98,8 @@ class WeeklyMenuServiceTest {
                 userHealthProfileService,
                 userNutritionTargetService,
                 userDietPreferenceService,
-                new ObjectMapper()
+                new ObjectMapper(),
+                videoSearchService
         );
     }
 
@@ -206,39 +214,61 @@ class WeeklyMenuServiceTest {
     }
 
     @Test
-    void randomAutoGenerationDoesNotUsePantryAsGenerationContext() {
+    void randomAutoGenerationIgnoresSavedRecordsAndGeneratesIndependentRecipes() {
         LocalDate monday = LocalDate.of(2026, 8, 31);
-        RecipeRecord recipe = recipe(1L, "随机菜谱");
-        List<WeeklyMenuItem> persistedItems = fullWeekItems(monday, 1L, 1L);
         when(planMapper.findByUserIdAndWeekStart(7L, monday)).thenReturn(null, null, plan(99L, 7L, monday));
-        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 50, 0)).thenReturn(List.of(recipe));
-        when(recipeIngredientMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(), List.of());
-        when(userHealthProfileService.getRecommendationContext(7L)).thenReturn(null);
-        when(userDietPreferenceService.get(7L)).thenReturn(
-                com.example.food.user.preference.dto.DietPreferenceResponse.empty()
-        );
-        when(userPantryService.listIngredientNames(7L)).thenReturn(List.of("番茄"));
-        when(qwenRecipeClient.generateWeeklyMenu(anyString())).thenReturn(List.of(
-                new QwenRecipeClient.WeeklyMenuSelection(monday.toString(), "BREAKFAST", 1L)
+        when(qwenRecipeClient.currentRuntimeConfig()).thenReturn(new AiModelRuntimeConfig(
+                "qwen",
+                "openai",
+                "qwen3.8-max",
+                "https://dashscope.test/compatible-mode/v1",
+                "test-api-key"
         ));
-        when(recipeRecordMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(recipe));
+        when(qwenRecipeClient.generateIndependentWeeklyMenu(anyString())).thenReturn(independentSuggestions(monday));
+        when(videoSearchService.searchForRecipeGrounding(anyString(), anyInt())).thenReturn(
+                new com.example.food.video.dto.VideoSearchResponse(List.of(), 1, false, false, false, "", null)
+        );
+        List<RecipeRecord> generatedRecords = new java.util.ArrayList<>();
+        long[] generatedId = {100L};
+        doAnswer(invocation -> {
+            RecipeRecord record = invocation.getArgument(0);
+            record.setId(generatedId[0]++);
+            generatedRecords.add(record);
+            return 1;
+        }).when(recipeRecordMapper).insert(any(RecipeRecord.class));
+        when(recipeRecordMapper.selectList(any(QueryWrapper.class))).thenReturn(generatedRecords);
         doAnswer(invocation -> {
             WeeklyMenuPlan target = invocation.getArgument(0);
             target.setId(99L);
             return 1;
         }).when(planMapper).insert(any(WeeklyMenuPlan.class));
-        when(itemMapper.findByPlanId(99L)).thenReturn(persistedItems);
-        when(shoppingCheckMapper.findByUserIdAndPlanId(7L, 99L)).thenReturn(List.of());
 
         service.autoGenerate(7L, new WeeklyMenuAutoGenerateRequest(monday, false, "random"));
 
         ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
-        verify(qwenRecipeClient).generateWeeklyMenu(promptCaptor.capture());
+        verify(qwenRecipeClient).generateIndependentWeeklyMenu(promptCaptor.capture());
         assertThat(promptCaptor.getValue())
                 .contains("随机安排")
-                .contains("不参考菜谱生成历史记录")
-                .contains("用户已有食材：不参考库存")
-                .doesNotContain("用户已有食材：番茄");
+                .contains("禁止读取、引用或复用任何用户数据")
+                .contains("早餐推荐")
+                .contains("午餐推荐")
+                .contains("包子")
+                .contains("不要输出 steps、tips、videoKeywords、nutritionEstimate 或 recipeId")
+                .doesNotContain("随机菜谱");
+        verify(qwenRecipeClient, never()).generateWeeklyMenu(anyString());
+        verify(recipeRecordMapper, never()).findSavedRecipes(7L, null, null, null, 50, 0);
+        verify(userPantryService, never()).listIngredientNames(7L);
+        verify(userHealthProfileService, never()).getRecommendationContext(7L);
+        verify(userDietPreferenceService, never()).get(7L);
+        verify(userNutritionTargetService, never()).getRecommendationContext(7L);
+        verify(videoSearchService, times(3)).searchForRecipeGrounding(anyString(), anyInt());
+        ArgumentCaptor<RecipeRecord> recipeCaptor = ArgumentCaptor.forClass(RecipeRecord.class);
+        verify(recipeRecordMapper, times(21)).insert(recipeCaptor.capture());
+        assertThat(recipeCaptor.getAllValues())
+                .allSatisfy(record -> {
+                    assertThat(record.getWeeklyMenuPlanId()).isEqualTo(99L);
+                    assertThat(record.getSearchLogId()).isNull();
+                });
     }
 
     @Test
@@ -267,7 +297,7 @@ class WeeklyMenuServiceTest {
         when(itemMapper.findByPlanId(99L)).thenReturn(fullWeekItems(monday, 2L, 1L));
         when(shoppingCheckMapper.findByUserIdAndPlanId(7L, 99L)).thenReturn(List.of());
 
-        service.autoGenerate(7L, new WeeklyMenuAutoGenerateRequest(monday, false, "random"));
+        service.autoGenerate(7L, new WeeklyMenuAutoGenerateRequest(monday, false, "PANTRY"));
 
         ArgumentCaptor<WeeklyMenuItem> itemCaptor = ArgumentCaptor.forClass(WeeklyMenuItem.class);
         verify(itemMapper, times(21)).insert(itemCaptor.capture());
@@ -553,5 +583,37 @@ class WeeklyMenuServiceTest {
             items.add(item(id++, 99L, date, "DINNER", dinnerRecipeId));
         }
         return items;
+    }
+
+    private List<QwenRecipeClient.IndependentWeeklyMenuRecipe> independentSuggestions(LocalDate monday) {
+        java.util.ArrayList<QwenRecipeClient.IndependentWeeklyMenuRecipe> suggestions = new java.util.ArrayList<>();
+        for (int day = 0; day < 7; day++) {
+            LocalDate date = monday.plusDays(day);
+            suggestions.add(independentSuggestion(date, "BREAKFAST", "独立早餐" + (day + 1)));
+            suggestions.add(independentSuggestion(date, "LUNCH", "独立午餐" + (day + 1)));
+            suggestions.add(independentSuggestion(date, "DINNER", "独立晚餐" + (day + 1)));
+        }
+        return suggestions;
+    }
+
+    private QwenRecipeClient.IndependentWeeklyMenuRecipe independentSuggestion(
+            LocalDate date,
+            String mealType,
+            String title
+    ) {
+        return new QwenRecipeClient.IndependentWeeklyMenuRecipe(
+                date.toString(),
+                mealType,
+                title,
+                "独立生成测试菜谱",
+                List.of(
+                        new RecipeGenerateResponse.Ingredient("番茄", "2个"),
+                        new RecipeGenerateResponse.Ingredient("鸡蛋", "2个")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                null
+        );
     }
 }

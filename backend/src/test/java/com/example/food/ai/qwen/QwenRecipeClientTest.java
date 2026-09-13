@@ -309,6 +309,61 @@ class QwenRecipeClientTest {
     }
 
     @Test
+    void independentWeeklyMenuEnablesThinkingAndParsesRecipeDetails() throws Exception {
+        RestTemplate restTemplate = new RestTemplateBuilder().build();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        AiModelConfigService configService = mock(AiModelConfigService.class);
+        when(configService.textRecipeRuntimeConfig()).thenReturn(new AiModelRuntimeConfig(
+                "qwen",
+                "openai",
+                "qwen3.8-max",
+                "https://dashscope.test/compatible-mode/v1",
+                "admin-api-key"
+        ));
+        QwenRecipeClient client = new QwenRecipeClient(
+                restTemplate,
+                new ObjectMapper(),
+                new QwenProperties("env-api-key", "qwen-plus", "https://dashscope.env/v1"),
+                configService
+        );
+        String menuJson = new ObjectMapper().writeValueAsString(Map.of(
+                "items", List.of(Map.of(
+                        "menuDate", "2026-08-31",
+                        "mealType", "BREAKFAST",
+                        "title", "鲜肉包子",
+                        "summary", "家常早餐",
+                        "ingredients", List.of(Map.of("name", "面粉", "amount", "300克"), Map.of("name", "猪肉", "amount", "200克"))
+                ))
+        ));
+        String qwenResponse = new ObjectMapper().writeValueAsString(Map.of(
+                "choices", List.of(Map.of(
+                        "message", Map.of(
+                                "reasoning_content", "先核对早餐场景和真实菜名",
+                                "content", menuJson
+                        )
+                ))
+        ));
+
+        server.expect(once(), requestTo("https://dashscope.test/compatible-mode/v1/chat/completions"))
+                .andExpect(jsonPath("$.model").value("qwen3.8-max"))
+                .andExpect(jsonPath("$.enable_thinking").value(true))
+                .andExpect(jsonPath("$.thinking_budget").value(768))
+                .andExpect(jsonPath("$.max_tokens").value(7000))
+                .andRespond(withSuccess(qwenResponse, MediaType.APPLICATION_JSON));
+
+        List<QwenRecipeClient.IndependentWeeklyMenuRecipe> recipes = client
+                .generateIndependentWeeklyMenu("请独立生成早餐推荐");
+
+        assertThat(recipes).singleElement().satisfies(recipe -> {
+            assertThat(recipe.title()).isEqualTo("鲜肉包子");
+            assertThat(recipe.mealType()).isEqualTo("BREAKFAST");
+            assertThat(recipe.ingredients()).extracting(RecipeGenerateResponse.Ingredient::name)
+                    .containsExactly("面粉", "猪肉");
+        });
+        server.verify();
+    }
+
+    @Test
     void generateRecipeUsesAnthropicCompatibleRequestAndResponse() throws Exception {
         RestTemplate restTemplate = new RestTemplateBuilder().build();
         MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();

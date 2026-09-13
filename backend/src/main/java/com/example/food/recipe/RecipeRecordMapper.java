@@ -17,6 +17,7 @@ public interface RecipeRecordMapper extends BaseMapper<RecipeRecord> {
             FROM recipe_records rr
             LEFT JOIN search_logs sl ON sl.id = rr.search_log_id
             WHERE rr.user_id = #{userId}
+              AND rr.weekly_menu_plan_id IS NULL
             <if test="keyword != null">
               AND rr.title LIKE CONCAT('%', #{keyword}, '%')
             </if>
@@ -45,6 +46,9 @@ public interface RecipeRecordMapper extends BaseMapper<RecipeRecord> {
             @Param("limit") int limit,
             @Param("offset") int offset
     );
+
+    @Delete("DELETE FROM recipe_records WHERE user_id = #{userId} AND weekly_menu_plan_id = #{planId}")
+    int deleteWeeklyGeneratedByPlanId(@Param("userId") Long userId, @Param("planId") Long planId);
 
     @Delete("DELETE FROM recipe_records WHERE id = #{recipeId} AND user_id = #{userId}")
     int deleteOwnedRecipe(@Param("recipeId") Long recipeId, @Param("userId") Long userId);

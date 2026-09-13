@@ -23,7 +23,8 @@ test('管理员侧边栏按固定顺序显示全部面板', () => {
     'hot-ingredients',
     'operation-logs',
     'error-logs',
-    'user-management'
+    'user-management',
+    'feature-suggestions'
   ])
 })
 

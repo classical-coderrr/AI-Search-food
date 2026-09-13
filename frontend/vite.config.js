@@ -18,7 +18,11 @@ export default defineConfig({
         timeout: 120000,
         proxyTimeout: 120000
       },
-      '/api': 'http://localhost:7068'
+      '/api': {
+        target: 'http://localhost:7068',
+        timeout: 180000,
+        proxyTimeout: 180000
+      }
     }
   },
   build: {

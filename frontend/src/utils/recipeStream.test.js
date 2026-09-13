@@ -108,7 +108,7 @@ test('keeps streaming feedback local instead of masking the result container', (
   assert.match(homeViewSource, /@media \(prefers-reduced-motion: reduce\)/)
 })
 
-test('replaces the waiting recipe brief with a static cooking character on the loading surface', async () => {
+test('shows a cooking character and sequential loading bubbles on the loading surface', async () => {
   const cookingCharacter = await stat(new URL('../../public/images/chef-cooking.png', import.meta.url))
 
   assert.ok(cookingCharacter.size > 0)
@@ -116,9 +116,15 @@ test('replaces the waiting recipe brief with a static cooking character on the l
   assert.match(homeViewSource, /src="\/images\/chef-cooking\.png"/)
   assert.match(homeViewSource, /v-else-if="!detailViewOpen" class="result-header"/)
   assert.match(homeViewSource, /\.recipe-generation-loading-art img \{[\s\S]*mix-blend-mode: multiply;/)
+  assert.match(homeViewSource, /class="recipe-generation-loading-dots" aria-hidden="true"/)
+  assert.equal((homeViewSource.match(/class="recipe-generation-loading-bubble/g) || []).length, 4)
+  assert.equal((homeViewSource.match(/--bubble-size: 14px/g) || []).length, 4)
+  assert.match(homeViewSource, /@keyframes recipe-generation-bubble-shrink/)
+  assert.match(homeViewSource, /--bubble-delay: 160ms/)
+  assert.match(homeViewSource, /background: #f4bd3f/)
+  assert.match(homeViewSource, /\.recipe-generation-loading-bubble \{[\s\S]*animation: none;/)
   assert.doesNotMatch(homeViewSource, /@keyframes chef-cooking-bob/)
   assert.doesNotMatch(homeViewSource, /@keyframes cooking-fire-pulse/)
-  assert.doesNotMatch(homeViewSource, /@keyframes cooking-loading-dots/)
   assert.doesNotMatch(homeViewSource, /\.recipe-generation-loading-art::after/)
 })
 

@@ -33,6 +33,8 @@ import java.util.function.Consumer;
 @Component
 public class QwenRecipeClient {
 
+    private static final Duration AI_READ_TIMEOUT = Duration.ofSeconds(180);
+
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
     private final QwenProperties properties;
@@ -48,7 +50,7 @@ public class QwenRecipeClient {
         this(
                 restTemplateBuilder
                         .setConnectTimeout(Duration.ofSeconds(5))
-                        .setReadTimeout(Duration.ofSeconds(120))
+                        .setReadTimeout(AI_READ_TIMEOUT)
                         .build(),
                 objectMapper,
                 properties,
@@ -168,6 +170,25 @@ public class QwenRecipeClient {
             return parseWeeklyMenu(response.getBody(), runtimeConfig);
         } catch (RestClientException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI 服务调用失败，请稍后重试", exception);
+        }
+    }
+
+    public List<IndependentWeeklyMenuRecipe> generateIndependentWeeklyMenu(String prompt) {
+        AiModelRuntimeConfig runtimeConfig = runtimeConfig();
+        if (runtimeConfig.apiKey() == null || runtimeConfig.apiKey().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "AI API Key 未配置，请先在管理后台设置");
+        }
+
+        try {
+            ResponseEntity<String> response = restTemplate.exchange(
+                    requestUrl(runtimeConfig),
+                    HttpMethod.POST,
+                    new HttpEntity<>(independentWeeklyMenuRequestBody(prompt, runtimeConfig), headers(runtimeConfig)),
+                    String.class
+            );
+            return parseIndependentWeeklyMenu(response.getBody(), runtimeConfig);
+        } catch (RestClientException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI 独立菜单生成失败，请稍后重试", exception);
         }
     }
 
@@ -297,6 +318,19 @@ public class QwenRecipeClient {
     private Map<String, Object> planningRequestBody(String prompt, AiModelRuntimeConfig runtimeConfig) {
         Map<String, Object> body = requestBody(prompt, runtimeConfig, false);
         body.put("max_tokens", 1800);
+        if (!isAnthropic(runtimeConfig) && isFastQwen3Model(runtimeConfig.modelName())) {
+            body.put("enable_thinking", true);
+            body.put("thinking_budget", 768);
+        }
+        return body;
+    }
+
+    private Map<String, Object> independentWeeklyMenuRequestBody(
+            String prompt,
+            AiModelRuntimeConfig runtimeConfig
+    ) {
+        Map<String, Object> body = requestBody(prompt, runtimeConfig, false);
+        body.put("max_tokens", 7000);
         if (!isAnthropic(runtimeConfig) && isFastQwen3Model(runtimeConfig.modelName())) {
             body.put("enable_thinking", true);
             body.put("thinking_budget", 768);
@@ -542,6 +576,33 @@ public class QwenRecipeClient {
         }
     }
 
+    private List<IndependentWeeklyMenuRecipe> parseIndependentWeeklyMenu(
+            String responseBody,
+            AiModelRuntimeConfig runtimeConfig
+    ) {
+        String content = firstContent(responseBody, runtimeConfig);
+        try {
+            com.fasterxml.jackson.databind.JsonNode node = objectMapper.readTree(stripJsonFence(content));
+            if (node == null || node.isNull() || (!node.isArray() && !node.isObject())) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI 返回的独立菜单不是有效 JSON");
+            }
+            if (node.isArray()) {
+                return objectMapper.convertValue(node, objectMapper.getTypeFactory()
+                        .constructCollectionType(List.class, IndependentWeeklyMenuRecipe.class));
+            }
+            com.fasterxml.jackson.databind.JsonNode items = node.path("items");
+            if (!items.isArray()) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI 返回的独立菜单缺少 items");
+            }
+            return objectMapper.convertValue(items, objectMapper.getTypeFactory()
+                    .constructCollectionType(List.class, IndependentWeeklyMenuRecipe.class));
+        } catch (ResponseStatusException exception) {
+            throw exception;
+        } catch (IOException | IllegalArgumentException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI 返回的独立菜单不是有效 JSON", exception);
+        }
+    }
+
     private String responseContent(com.fasterxml.jackson.databind.JsonNode root,
                                    AiModelRuntimeConfig runtimeConfig) {
         if (root == null || root.isNull()) {
@@ -619,6 +680,26 @@ public class QwenRecipeClient {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     private record WeeklyMenuPayload(List<WeeklyMenuSelection> items) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record IndependentWeeklyMenuRecipe(
+            String menuDate,
+            String mealType,
+            String title,
+            String summary,
+            List<RecipeGenerateResponse.Ingredient> ingredients,
+            List<RecipeGenerateResponse.Step> steps,
+            List<String> tips,
+            List<String> videoKeywords,
+            RecipeGenerateResponse.NutritionEstimate nutritionEstimate
+    ) {
+        public IndependentWeeklyMenuRecipe {
+            ingredients = ingredients == null ? List.of() : List.copyOf(ingredients);
+            steps = steps == null ? List.of() : List.copyOf(steps);
+            tips = tips == null ? List.of() : List.copyOf(tips);
+            videoKeywords = videoKeywords == null ? List.of() : List.copyOf(videoKeywords);
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

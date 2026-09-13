@@ -267,6 +267,12 @@
               <div class="recipe-generation-loading-copy">
                 <strong>正在生成菜谱</strong>
                 <span>{{ generationStageLabel }}，稍候即可查看结果</span>
+                <div class="recipe-generation-loading-dots" aria-hidden="true">
+                  <span class="recipe-generation-loading-bubble bubble--one" />
+                  <span class="recipe-generation-loading-bubble bubble--two" />
+                  <span class="recipe-generation-loading-bubble bubble--three" />
+                  <span class="recipe-generation-loading-bubble bubble--four" />
+                </div>
               </div>
             </div>
           </div>
@@ -4622,6 +4628,64 @@ h3 {
   font-size: 12px;
 }
 
+.recipe-generation-loading-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 22px;
+  margin-top: 3px;
+}
+
+.recipe-generation-loading-bubble {
+  display: block;
+  width: var(--bubble-size);
+  height: var(--bubble-size);
+  border-radius: 50%;
+  background: #f4bd3f;
+  box-shadow: 0 2px 0 color-mix(in srgb, #b77b16 62%, transparent);
+  animation: recipe-generation-bubble-shrink 1.28s ease-in-out infinite;
+  animation-delay: var(--bubble-delay);
+  animation-fill-mode: both;
+  transform-origin: center;
+}
+
+.recipe-generation-loading-bubble.bubble--one {
+  --bubble-size: 14px;
+  --bubble-delay: 0ms;
+}
+
+.recipe-generation-loading-bubble.bubble--two {
+  --bubble-size: 14px;
+  --bubble-delay: 160ms;
+}
+
+.recipe-generation-loading-bubble.bubble--three {
+  --bubble-size: 14px;
+  --bubble-delay: 320ms;
+}
+
+.recipe-generation-loading-bubble.bubble--four {
+  --bubble-size: 14px;
+  --bubble-delay: 480ms;
+}
+
+@keyframes recipe-generation-bubble-shrink {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  42% {
+    opacity: 0.6;
+    transform: scale(0.62);
+  }
+
+  100% {
+    opacity: 0.6;
+    transform: scale(0.62);
+  }
+}
+
 .result-summary-line {
   max-width: 720px;
   margin: 7px 0 0;
@@ -4987,6 +5051,12 @@ h3 {
 @media (prefers-reduced-motion: reduce) {
   .recipe-skeleton-line {
     animation: none;
+  }
+
+  .recipe-generation-loading-bubble {
+    animation: none;
+    opacity: 0.82;
+    transform: scale(0.86);
   }
 }
 
