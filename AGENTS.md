@@ -63,9 +63,10 @@ mvn "-Dmaven.repo.local=D:\AI-Search-food\.m2" test
 ## Automated Test Process Cleanup
 
 - Track every temporary process started by the agent for automated verification, including frontend development servers, backend services, databases, mock services, browser helpers, and their child processes.
-- After verification finishes, stop all temporary processes started by the agent and verify that their ports have been released, so the user can start the project manually.
+- After each Codex verification, keep the Docker Compose test environment and the application services needed for local testing running; do not remove containers, volumes, or the built test environment. Report the retained services and their access information so the user can continue testing locally.
+- Stop only one-off helper processes that are not part of the retained local test environment, and verify that their ports have been released.
 - Never stop a process started by the user unless the user explicitly requests it.
-- Do not leave a verification server running after reporting completion unless the user explicitly asks for it to remain available.
+- If retaining the environment would be unsafe, impossible, or conflict with an explicit user instruction, explain the exact reason before stopping or removing anything.
 
 ## Review Requirement
 
