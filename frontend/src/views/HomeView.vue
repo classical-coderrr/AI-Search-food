@@ -4,7 +4,8 @@
     :class="{
       'is-result-expanded': hasSearch,
       'is-result-priority': resultPriorityMode,
-      'is-detail-view': detailViewOpen
+      'is-detail-view': detailViewOpen,
+      'is-embedded': embedded
     }"
   >
     <section class="command-shell" aria-labelledby="home-title">
@@ -1232,6 +1233,7 @@ const streamAbortController = ref(null)
 const generationRequestId = ref(0)
 const recipeScrollContainer = ref(null)
 const isFollowingLatest = ref(true)
+let recipeScrollParent = null
 const usePantry = ref(false)
 const useHealthNutrition = ref(false)
 const recognizing = ref(false)
@@ -1589,11 +1591,13 @@ onBeforeUnmount(() => {
   cookingModeVisible.value = false
   finishedDishReviewVisible.value = false
   window.removeEventListener('popstate', handlePopState)
+  removeRecipeScrollParent()
   revokeImagePreview()
 })
 
 onMounted(() => {
   window.addEventListener('popstate', handlePopState)
+  syncRecipeScrollParent(recipeScrollContainer.value)
   restoreReferenceChoices()
   if (!applyInitialSearch() && !applyRouteIngredient()) {
     restorePendingRecipe()
@@ -1604,6 +1608,8 @@ onMounted(() => {
     if (usePantry.value) loadPantryItems()
   }
 })
+
+watch(recipeScrollContainer, syncRecipeScrollParent, { flush: 'post' })
 
 watch(() => [auth.token, auth.role], () => {
   cancelRecipeStream()
@@ -2285,10 +2291,37 @@ function handleRecipeScroll(event) {
   isFollowingLatest.value = nearLatest
 }
 
+function getRecipeScrollTarget() {
+  const content = recipeScrollContainer.value
+  if (!content) return null
+  const contentStyle = window.getComputedStyle(content)
+  const contentCanScroll = ['auto', 'scroll'].includes(contentStyle.overflowY)
+    && content.scrollHeight > content.clientHeight
+  if (contentCanScroll) return content
+  return content.closest('.scene-feature-host--chef') || content
+}
+
+function handleEmbeddedRecipeScroll() {
+  const target = getRecipeScrollTarget()
+  if (target) handleRecipeScroll({ currentTarget: target })
+}
+
+function syncRecipeScrollParent(content) {
+  removeRecipeScrollParent()
+  if (!props.embedded || !content) return
+  recipeScrollParent = content.closest('.scene-feature-host--chef')
+  recipeScrollParent?.addEventListener('scroll', handleEmbeddedRecipeScroll, { passive: true })
+}
+
+function removeRecipeScrollParent() {
+  recipeScrollParent?.removeEventListener('scroll', handleEmbeddedRecipeScroll)
+  recipeScrollParent = null
+}
+
 function queueRecipeScrollToLatest() {
   if (!isFollowingLatest.value || detailViewOpen.value) return
   window.requestAnimationFrame(() => {
-    const target = recipeScrollContainer.value
+    const target = getRecipeScrollTarget()
     if (target && isFollowingLatest.value) {
       target.scrollTop = target.scrollHeight
     }
@@ -2297,7 +2330,7 @@ function queueRecipeScrollToLatest() {
 
 function scrollRecipeToLatest() {
   isFollowingLatest.value = true
-  const target = recipeScrollContainer.value
+  const target = getRecipeScrollTarget()
   if (target) {
     target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' })
   }
@@ -5676,5 +5709,57 @@ h3 {
   .page-tab {
     transition: none;
   }
+}
+
+/* The kitchen scene owns the scroll viewport when this page is embedded. */
+.home-page.is-embedded,
+.home-page.is-embedded.is-result-expanded,
+.home-page.is-embedded.is-result-expanded:not(.is-detail-view),
+.home-page.is-embedded.is-detail-view {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+}
+
+.home-page.is-embedded .command-shell,
+.home-page.is-embedded.is-result-expanded .command-shell,
+.home-page.is-embedded.is-result-expanded:not(.is-detail-view) .command-shell {
+  height: auto;
+  min-height: 0;
+}
+
+.home-page.is-embedded .command-grid,
+.home-page.is-embedded.is-result-expanded:not(.is-detail-view) .command-grid {
+  display: block;
+  min-height: 0;
+}
+
+.home-page.is-embedded .result-panel,
+.home-page.is-embedded.is-result-expanded .result-panel,
+.home-page.is-embedded.is-result-expanded:not(.is-detail-view) .result-panel {
+  display: block;
+  min-height: 0;
+  overflow: visible;
+}
+
+.home-page.is-embedded .result-content,
+.home-page.is-embedded.is-result-expanded:not(.is-detail-view) .result-content {
+  display: block;
+  max-height: none;
+  min-height: 0;
+  overflow: visible;
+  overscroll-behavior: auto;
+}
+
+.home-page.is-embedded .recipe-detail,
+.home-page.is-embedded.is-detail-view .recipe-detail,
+.home-page.is-embedded .recipe-sections,
+.home-page.is-embedded.is-detail-view .recipe-sections,
+.home-page.is-embedded .recipe-section,
+.home-page.is-embedded.is-detail-view .recipe-section {
+  display: block;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
 }
 </style>

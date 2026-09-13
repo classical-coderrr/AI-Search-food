@@ -391,6 +391,9 @@ function getErrorMessage(error, fallback) {
   height: 100%;
   min-height: 0;
   overflow: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scroll-padding-block: 12px;
   scrollbar-color: #9e7b50 #eadfc9;
   scrollbar-width: thin;
 }
@@ -481,10 +484,11 @@ function getErrorMessage(error, fallback) {
 }
 
 .scene-feature-host :deep(.home-page) {
-  height: 100%;
+  height: auto;
   min-height: 0;
   padding: 12px;
-  overflow: auto;
+  overflow: visible;
+  overscroll-behavior: auto;
 }
 
 .scene-feature-host :deep(.command-shell) {
@@ -504,10 +508,11 @@ function getErrorMessage(error, fallback) {
 }
 
 .scene-feature-host :deep(.hot-page) {
-  height: 100%;
-  min-height: 0;
+  height: auto;
+  min-height: 100%;
   padding: 12px 14px;
-  overflow: auto;
+  overflow: visible;
+  overscroll-behavior: auto;
 }
 
 .scene-feature-host :deep(.hot-shell) {

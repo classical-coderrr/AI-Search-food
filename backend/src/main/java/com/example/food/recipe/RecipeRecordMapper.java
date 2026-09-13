@@ -13,8 +13,9 @@ public interface RecipeRecordMapper extends BaseMapper<RecipeRecord> {
 
     @Select("""
             <script>
-            SELECT rr.*
+            SELECT rr.*, sl.meal_type AS meal_type
             FROM recipe_records rr
+            LEFT JOIN search_logs sl ON sl.id = rr.search_log_id
             WHERE rr.user_id = #{userId}
             <if test="keyword != null">
               AND rr.title LIKE CONCAT('%', #{keyword}, '%')

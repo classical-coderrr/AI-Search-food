@@ -4,12 +4,20 @@
 
     <section
       v-if="isOpen"
+      ref="panel"
       class="agent-panel"
+      :class="{
+        'is-expanded': isExpanded,
+        'is-positioned': Boolean(panelPosition),
+        'is-dragging': isDragging,
+        'is-resizing': isResizing
+      }"
+      :style="panelStyle"
       role="dialog"
       aria-modal="false"
       aria-labelledby="kitchen-agent-title"
     >
-      <header class="agent-panel__header">
+      <header class="agent-panel__header" @pointerdown="startDrag">
         <div class="agent-panel__identity">
           <span class="agent-mini-sprite" aria-hidden="true">
             <img src="/sprites/1-D-1.png" alt="" />
@@ -20,14 +28,40 @@
           </div>
         </div>
         <div class="agent-panel__actions">
-          <button type="button" class="agent-icon-button" aria-label="最小化小厨灵" title="最小化小厨灵" @click="minimizePanel">
+          <button type="button" class="agent-icon-button" aria-label="最小化小厨灵" title="最小化小厨灵" @click="minimizePanel" @pointerdown.stop>
             <span class="agent-pixel-minus" aria-hidden="true" />
           </button>
-          <button type="button" class="agent-icon-button" aria-label="关闭小厨灵" title="关闭" @click="closePanel">
+          <button
+            v-if="desktopViewport"
+            type="button"
+            class="agent-icon-button"
+            :aria-label="isExpanded ? '还原小厨灵窗口' : '放大小厨灵窗口'"
+            :title="isExpanded ? '还原小厨灵窗口' : '放大小厨灵窗口'"
+            :aria-pressed="isExpanded"
+            @pointerdown.stop
+            @click="togglePanelExpanded"
+          >
+            <Minimize2 v-if="isExpanded" :size="17" aria-hidden="true" />
+            <Maximize2 v-else :size="17" aria-hidden="true" />
+          </button>
+          <button type="button" class="agent-icon-button" aria-label="关闭小厨灵" title="关闭" @click="closePanel" @pointerdown.stop>
             <X :size="17" aria-hidden="true" />
           </button>
         </div>
       </header>
+
+      <div
+        class="agent-resize-handle"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="调整小厨灵窗口高度"
+        title="上下拖动调整窗口高度"
+        tabindex="0"
+        @pointerdown.stop.prevent="startResize"
+        @keydown="handleResizeKeydown"
+      >
+        <span aria-hidden="true" />
+      </div>
 
       <div ref="messageList" class="agent-messages" aria-live="polite" aria-relevant="additions text">
         <div v-if="!messages.length" class="agent-empty-state">
@@ -193,10 +227,11 @@
 </template>
 
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Bell, BookOpen, CalendarDays, Check, ClipboardCheck, Clock3, Database, HeartPulse, LockKeyhole, Paperclip, Save, Send, ShieldCheck, Square, X } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Bell, BookOpen, CalendarDays, Check, ClipboardCheck, Clock3, Database, HeartPulse, LockKeyhole, Maximize2, Minimize2, Paperclip, Save, Send, ShieldCheck, Square, X } from 'lucide-vue-next'
 import { deleteAgentConversation, streamAgentChat } from '../api/agent.js'
 import { useAuthStore } from '../stores/auth.js'
+import { clampAgentPanelPosition } from '../utils/agentPanelPosition.js'
 
 const auth = useAuthStore()
 const isOpen = ref(false)
@@ -204,6 +239,7 @@ const loading = ref(false)
 const draft = ref('')
 const messages = ref([])
 const conversationId = ref(null)
+const panel = ref(null)
 const messageList = ref(null)
 const input = ref(null)
 const launcher = ref(null)
@@ -214,14 +250,47 @@ const abortController = ref(null)
 const lastPrompt = ref('')
 const lastAttachment = ref(null)
 const quickPrompts = ['我今天有什么食材', '哪些食材快过期', '今晚能做什么', '本周菜单是什么', '我有哪些提醒']
+const isExpanded = ref(false)
+const desktopViewport = ref(typeof window === 'undefined' || window.innerWidth > 720)
+const panelPosition = ref(null)
+const savedPanelPosition = ref(null)
+const isDragging = ref(false)
+const isResizing = ref(false)
+const panelHeight = ref(null)
 const previewUrls = new Set()
 let messageSeed = 0
+let dragState = null
+let resizeState = null
+let resizeFrame = 0
+
+const PANEL_MIN_HEIGHT = 360
+const PANEL_MAX_HEIGHT = 760
+
+const panelStyle = computed(() => {
+  const style = {}
+  if (panelPosition.value) {
+    style.left = `${panelPosition.value.left}px`
+    style.top = `${panelPosition.value.top}px`
+  }
+  if (!isExpanded.value && panelHeight.value) style.height = `${panelHeight.value}px`
+  return Object.keys(style).length ? style : undefined
+})
 
 const storageKey = () => `ai-kitchen-agent:${auth.token ? auth.token.slice(-20) : 'guest'}`
 
-onMounted(() => restoreConversation())
+onMounted(() => {
+  restoreConversation()
+  updateViewportMode()
+  window.addEventListener('resize', schedulePositionCorrection)
+  window.visualViewport?.addEventListener('resize', schedulePositionCorrection)
+})
 onBeforeUnmount(() => {
   stopGeneration()
+  stopDragging()
+  stopResizing()
+  window.removeEventListener('resize', schedulePositionCorrection)
+  window.visualViewport?.removeEventListener('resize', schedulePositionCorrection)
+  if (resizeFrame) window.cancelAnimationFrame(resizeFrame)
   revokeAllPreviews()
 })
 
@@ -235,16 +304,195 @@ watch(messages, () => {
 
 function togglePanel() {
   isOpen.value = !isOpen.value
-  if (isOpen.value) void nextTick(() => input.value?.focus())
+  if (isOpen.value) {
+    void nextTick(() => {
+      correctPanelPosition()
+      input.value?.focus()
+    })
+  }
 }
 
 function closePanel() {
+  restorePanelPosition()
   isOpen.value = false
+  void nextTick(() => launcher.value?.focus())
 }
 
 function minimizePanel() {
   isOpen.value = false
   void nextTick(() => launcher.value?.focus())
+  restorePanelPosition()
+}
+
+function togglePanelExpanded() {
+  if (!desktopViewport.value || !panel.value) return
+  if (isExpanded.value) {
+    restorePanelPosition()
+    void nextTick(correctPanelPosition)
+    return
+  }
+
+  const rect = panel.value.getBoundingClientRect()
+  savedPanelPosition.value = clampPanelRect(rect)
+  panelPosition.value = null
+  isExpanded.value = true
+}
+
+function restorePanelPosition() {
+  if (!isExpanded.value) return
+  isExpanded.value = false
+  panelPosition.value = savedPanelPosition.value ? { ...savedPanelPosition.value } : null
+  savedPanelPosition.value = null
+}
+
+function startDrag(event) {
+  if (!desktopViewport.value || event.button !== 0) return
+  const target = event.target instanceof Element ? event.target : null
+  if (target?.closest('button, a, input, textarea, select, [role="button"], .agent-panel__actions')) return
+  const rect = panel.value?.getBoundingClientRect()
+  if (!rect) return
+
+  dragState = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    originLeft: rect.left,
+    originTop: rect.top,
+    width: rect.width,
+    height: rect.height
+  }
+  isDragging.value = false
+  window.addEventListener('pointermove', handleDragMove)
+  window.addEventListener('pointerup', stopDragging)
+  window.addEventListener('pointercancel', stopDragging)
+}
+
+function handleDragMove(event) {
+  if (!dragState || event.pointerId !== dragState.pointerId) return
+  const deltaX = event.clientX - dragState.startX
+  const deltaY = event.clientY - dragState.startY
+  if (!isDragging.value && Math.hypot(deltaX, deltaY) < 4) return
+  isDragging.value = true
+  event.preventDefault()
+  panelPosition.value = clampAgentPanelPosition(
+    { left: dragState.originLeft + deltaX, top: dragState.originTop + deltaY },
+    {
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      panelWidth: dragState.width,
+      panelHeight: dragState.height
+    }
+  )
+}
+
+function stopDragging(event) {
+  if (event?.pointerId != null && dragState?.pointerId !== event.pointerId) return
+  dragState = null
+  isDragging.value = false
+  window.removeEventListener('pointermove', handleDragMove)
+  window.removeEventListener('pointerup', stopDragging)
+  window.removeEventListener('pointercancel', stopDragging)
+}
+
+function getPanelHeightBounds() {
+  const viewportHeight = typeof window === 'undefined' ? PANEL_MAX_HEIGHT + 24 : window.innerHeight
+  const min = Math.min(PANEL_MIN_HEIGHT, Math.max(280, viewportHeight - 24))
+  const max = Math.max(min, Math.min(PANEL_MAX_HEIGHT, viewportHeight - 24))
+  return { min, max }
+}
+
+function clampPanelHeight(height) {
+  const { min, max } = getPanelHeightBounds()
+  return Math.min(max, Math.max(min, height))
+}
+
+function startResize(event) {
+  if (event.button !== 0 || isExpanded.value) return
+  const rect = panel.value?.getBoundingClientRect()
+  if (!rect) return
+
+  resizeState = {
+    pointerId: event.pointerId,
+    startY: event.clientY,
+    startHeight: rect.height
+  }
+  isResizing.value = false
+  event.currentTarget?.setPointerCapture?.(event.pointerId)
+  window.addEventListener('pointermove', handleResizeMove)
+  window.addEventListener('pointerup', stopResizing)
+  window.addEventListener('pointercancel', stopResizing)
+}
+
+function handleResizeMove(event) {
+  if (!resizeState || event.pointerId !== resizeState.pointerId) return
+  const deltaY = resizeState.startY - event.clientY
+  if (!isResizing.value && Math.abs(deltaY) < 2) return
+  isResizing.value = true
+  event.preventDefault()
+  panelHeight.value = clampPanelHeight(resizeState.startHeight + deltaY)
+}
+
+function stopResizing(event) {
+  if (event?.pointerId != null && resizeState?.pointerId !== event.pointerId) return
+  resizeState = null
+  isResizing.value = false
+  window.removeEventListener('pointermove', handleResizeMove)
+  window.removeEventListener('pointerup', stopResizing)
+  window.removeEventListener('pointercancel', stopResizing)
+}
+
+function handleResizeKeydown(event) {
+  if (isExpanded.value) return
+  const step = event.shiftKey ? 120 : 48
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    event.preventDefault()
+    const currentHeight = panelHeight.value || panel.value?.getBoundingClientRect().height || PANEL_MIN_HEIGHT
+    panelHeight.value = clampPanelHeight(currentHeight + (event.key === 'ArrowUp' ? step : -step))
+  } else if (event.key === 'Home') {
+    event.preventDefault()
+    panelHeight.value = getPanelHeightBounds().min
+  } else if (event.key === 'End') {
+    event.preventDefault()
+    panelHeight.value = getPanelHeightBounds().max
+  }
+}
+
+function clampPanelRect(rect) {
+  return clampAgentPanelPosition(
+    { left: rect.left, top: rect.top },
+    {
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      panelWidth: rect.width,
+      panelHeight: rect.height
+    }
+  )
+}
+
+function correctPanelPosition() {
+  updateViewportMode()
+  const rect = panel.value?.getBoundingClientRect()
+  if (!rect || !panelPosition.value || !desktopViewport.value) return
+  panelPosition.value = clampPanelRect(rect)
+}
+
+function updateViewportMode() {
+  const nextDesktop = window.innerWidth > 720
+  desktopViewport.value = nextDesktop
+  if (!nextDesktop) {
+    isExpanded.value = false
+    panelPosition.value = null
+    savedPanelPosition.value = null
+  }
+}
+
+function schedulePositionCorrection() {
+  updateViewportMode()
+  if (resizeFrame) return
+  resizeFrame = window.requestAnimationFrame(() => {
+    resizeFrame = 0
+    correctPanelPosition()
+  })
 }
 
 function handleInputKeydown(event) {
@@ -491,13 +739,22 @@ async function scrollToBottom() {
 .agent-launcher__signal { width: 7px; height: 7px; margin-left: auto; border-radius: 50%; background: #5d9a6e; box-shadow: 0 0 0 3px rgba(93,154,110,.16); }
 .agent-launcher.is-thinking .agent-launcher__signal { background: #e5a83f; animation: agent-pulse 900ms ease-in-out infinite alternate; }
 .agent-backdrop { display: none; }
-.agent-panel { position: absolute; left: 0; bottom: 70px; display: flex; flex-direction: column; width: min(410px, calc(100vw - 32px)); height: min(720px, calc(100dvh - 104px)); overflow: hidden; border: 2px solid #3b2b21; border-radius: 5px; background: #fff8e8; box-shadow: 8px 10px 0 rgba(59,43,33,.18), 0 20px 50px rgba(59,43,33,.18); }
-.agent-panel__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 14px; border-bottom: 1px solid #d6b989; background: #f5e6c3; }
+.agent-panel { position: fixed; left: 14px; bottom: 88px; display: flex; flex-direction: column; width: min(410px, calc(100vw - 32px)); height: min(720px, calc(100dvh - 104px)); overflow: hidden; border: 2px solid #3b2b21; border-radius: 5px; background: #fff8e8; box-shadow: 8px 10px 0 rgba(59,43,33,.18), 0 20px 50px rgba(59,43,33,.18); }
+.agent-panel.is-expanded { left: 50%; top: 50%; bottom: auto; width: min(900px, calc(100vw - 48px)); height: min(760px, calc(100dvh - 48px)); transform: translate(-50%, -50%); }
+.agent-panel.is-expanded.is-positioned { transform: none; }
+.agent-panel.is-dragging { cursor: grabbing; user-select: none; }
+.agent-panel__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 14px; border-bottom: 1px solid #d6b989; background: #f5e6c3; cursor: grab; user-select: none; touch-action: none; }
+.agent-resize-handle { display: grid; flex: 0 0 auto; width: 100%; height: 44px; place-items: center; padding: 0; border: 0; border-bottom: 1px solid #ead9b9; color: #a36e2d; background: #fff8e8; cursor: ns-resize; touch-action: none; }
+.agent-resize-handle span { width: 42px; height: 5px; border: 1px solid currentColor; border-radius: 999px; background: currentColor; opacity: .58; }
+.agent-resize-handle:hover, .agent-resize-handle:focus-visible { color: #4f8ca5; background: #fff4d6; outline: 2px solid #4f8ca5; outline-offset: -3px; }
+.agent-resize-handle:hover span, .agent-resize-handle:focus-visible span { opacity: 1; }
+.agent-panel.is-resizing { user-select: none; }
+.agent-panel.is-expanded .agent-resize-handle { display: none; }
 .agent-panel__identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .agent-mini-sprite { width: 32px; height: 32px; flex: 0 0 32px; }
 .agent-panel__eyebrow { margin: 0 0 2px; color: #a36e2d; font-size: 10px; font-weight: 900; letter-spacing: .1em; }
 .agent-panel h2 { margin: 0; overflow-wrap: anywhere; font-size: 16px; line-height: 1.25; }
-.agent-panel__actions { display: flex; gap: 4px; }
+.agent-panel__actions { display: flex; flex: 0 0 auto; gap: 4px; touch-action: auto; }
 .agent-icon-button { display: inline-grid; width: 44px; height: 44px; place-items: center; border: 1px solid transparent; color: #654b37; background: transparent; cursor: pointer; }
 .agent-icon-button:hover, .agent-icon-button:focus-visible { border-color: #9b754b; background: #fff4d6; outline: 2px solid #4f8ca5; outline-offset: 2px; }
 .agent-pixel-minus { display: block; width: 14px; height: 3px; background: currentColor; }
@@ -544,6 +801,6 @@ async function scrollToBottom() {
 .agent-attachment-preview { display: grid; grid-template-columns: 48px minmax(0, 1fr) 44px; align-items: center; gap: 8px; padding: 7px; border: 1px solid #b99562; background: #fffaf0; }.agent-attachment-preview img { width: 48px; height: 48px; object-fit: cover; border: 1px solid #d6b989; }.agent-attachment-preview div { display: grid; gap: 3px; min-width: 0; }.agent-attachment-preview strong, .agent-attachment-preview small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.agent-attachment-preview strong { font-size: 12px; }.agent-attachment-preview small { color: #8b765c; font-size: 10px; }
 .agent-panel__footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 14px 9px; color: #9a8060; background: #fff8e8; font-size: 10px; }.agent-panel__footer button { border: 0; color: #9b4037; background: transparent; font: inherit; font-weight: 800; cursor: pointer; }.agent-panel__footer button:hover, .agent-panel__footer button:focus-visible { text-decoration: underline; outline: 2px solid #4f8ca5; outline-offset: 2px; }
 @keyframes agent-pulse { from { opacity: .45; transform: scale(.8); } to { opacity: 1; transform: scale(1.1); } }
-@media (max-width: 720px) { .agent-widget { left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); } .agent-launcher { width: 100%; justify-content: flex-start; } .agent-panel { position: fixed; left: 0; right: 0; bottom: 0; width: 100%; height: min(78dvh, 760px); max-height: calc(100dvh - 18px); border-width: 2px 2px 0; border-radius: 16px 16px 0 0; z-index: 2; } .agent-backdrop { display: block; position: fixed; inset: 0; z-index: 1; background: rgba(43,33,29,.28); } .agent-messages { padding-bottom: 10px; } }
+@media (max-width: 720px) { .agent-widget { left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); } .agent-launcher { width: 100%; justify-content: flex-start; } .agent-panel { position: fixed; left: 0; right: 0; bottom: 0; width: 100%; height: min(78dvh, 760px); max-height: calc(100dvh - 18px); border-width: 2px 2px 0; border-radius: 16px 16px 0 0; z-index: 2; } .agent-panel__header { cursor: default; user-select: auto; touch-action: auto; } .agent-backdrop { display: block; position: fixed; inset: 0; z-index: 1; background: rgba(43,33,29,.28); } .agent-messages { padding-bottom: 10px; } }
 @media (prefers-reduced-motion: reduce) { .agent-launcher, .agent-launcher:hover, .agent-launcher:active { transition: none; transform: none; } .agent-launcher.is-thinking .agent-launcher__signal, .agent-status-dot.spinning { animation: none; } .agent-messages { scroll-behavior: auto; } }
 </style>

@@ -590,9 +590,10 @@ public class AgentService {
         boolean useExpiring = arguments.path("prioritize_expiring").asBoolean(false)
                 || arguments.path("prefer_expiring").asBoolean(false)
                 || containsAny(requested.toLowerCase(Locale.ROOT), "快过期", "临期", "用它们", "用这些");
-        String requestedIngredients = useExpiring && !expiringNames.isEmpty()
+        String requestedIngredients = recipeIngredientArgument(arguments, requested);
+        requestedIngredients = useExpiring && !expiringNames.isEmpty()
                 ? String.join("、", expiringNames)
-                : requested;
+                : requestedIngredients;
         if (!StringUtils.hasText(requestedIngredients) && pantryNames.isEmpty()) {
             return new ToolExecution(
                     Map.of("status", "missing_ingredients", "message", "库存为空且用户没有提供食材"),
@@ -829,6 +830,22 @@ public class AgentService {
         return limit(value.textValue().trim(), 240);
     }
 
+    static String recipeIngredientArgument(JsonNode arguments, String fallback) {
+        JsonNode ingredients = arguments == null ? null : arguments.path("ingredients");
+        if (ingredients != null && ingredients.isArray()) {
+            List<String> names = new ArrayList<>();
+            for (JsonNode ingredient : ingredients) {
+                if (ingredient != null && ingredient.isTextual() && StringUtils.hasText(ingredient.textValue())) {
+                    names.add(ingredient.textValue().trim());
+                }
+            }
+            if (!names.isEmpty()) {
+                return limit(String.join("、", names), 240);
+            }
+        }
+        return fallback == null ? "" : limit(fallback.trim(), 240);
+    }
+
     private String mealTypeArgument(JsonNode arguments, String fallbackText) {
         String value = arguments.path("meal_type").asText("").trim().toLowerCase(Locale.ROOT);
         if ("breakfast".equals(value) || "lunch".equals(value) || "dinner".equals(value)) {
@@ -864,7 +881,7 @@ public class AgentService {
         return "小厨灵暂时没有完成这次操作，请点击重试；如果是菜谱生成，请检查 AI 服务配置。";
     }
 
-    private String limit(String value, int maxLength) {
+    private static String limit(String value, int maxLength) {
         if (value == null) {
             return "";
         }

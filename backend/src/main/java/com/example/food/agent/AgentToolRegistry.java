@@ -157,12 +157,17 @@ public class AgentToolRegistry {
         private Map<String, Object> functionDefinition() {
             Map<String, Object> parameters;
             if (this == RECIPE_GENERATE) {
-                parameters = objectSchema(Map.of(
-                        "request", Map.of("type", "string", "description", "用户对食材、餐次、口味和菜谱的要求"),
-                        "meal_type", Map.of("type", "string", "enum", List.of("breakfast", "lunch", "dinner")),
-                        "goal", Map.of("type", "string", "enum", List.of("balanced", "fat_loss", "muscle_gain", "low_sugar")),
-                        "prioritize_expiring", Map.of("type", "boolean", "description", "是否优先使用临期食材")
-                ), List.of("request"));
+                Map<String, Object> properties = new LinkedHashMap<>();
+                properties.put("request", Map.of("type", "string", "description", "用户对餐次、口味和菜谱的要求；如直接提供 ingredients，可省略"));
+                properties.put("ingredients", Map.of(
+                        "type", "array",
+                        "items", Map.of("type", "string"),
+                        "description", "本次要使用的主要食材名称数组，不包含葱姜蒜、油盐等常见辅料"
+                ));
+                properties.put("meal_type", Map.of("type", "string", "enum", List.of("breakfast", "lunch", "dinner")));
+                properties.put("goal", Map.of("type", "string", "enum", List.of("balanced", "fat_loss", "muscle_gain", "low_sugar")));
+                properties.put("prioritize_expiring", Map.of("type", "boolean", "description", "是否优先使用临期食材"));
+                parameters = objectSchema(properties, List.of());
             } else if (this == PANTRY_MANAGE || this == NOTIFICATION_MANAGE || this == MEAL_PLAN_MANAGE
                     || this == RECIPE_LIBRARY_MANAGE || this == PROFILE_MANAGE || this == FINISHED_DISH_MANAGE) {
                 Map<String, Object> properties = new LinkedHashMap<>();

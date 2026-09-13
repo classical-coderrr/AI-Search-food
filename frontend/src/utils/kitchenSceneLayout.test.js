@@ -139,10 +139,20 @@ test('主厨料理大厅内容区域允许滚动查看完整工作台', () => {
   assert.match(stationPanelSource, /\.scene-feature-host--hot[\s\S]*?overflow: auto;/)
 })
 
+test('嵌入主厨结果只由场景容器提供原生滚动', () => {
+  const stationPanelSource = fs.readFileSync(new URL('../components/kitchen/KitchenStationPanel.vue', import.meta.url), 'utf8')
+  assert.match(stationPanelSource, /\.scene-feature-host--chef,[\s\S]*?overscroll-behavior: contain;/)
+  assert.match(stationPanelSource, /\.scene-feature-host :deep\(\.home-page\) \{[\s\S]*?overflow: visible;/)
+  assert.match(homeSource, /'is-embedded': embedded/)
+  assert.match(homeSource, /\.home-page\.is-embedded\.is-result-expanded:not\(\.is-detail-view\) \.result-content \{[\s\S]*?max-height: none;[\s\S]*?overflow: visible;/)
+  assert.match(homeSource, /\.home-page\.is-embedded\.is-detail-view \.recipe-sections[\s\S]*?overflow: visible;/)
+  assert.match(homeSource, /function getRecipeScrollTarget\(\)/)
+})
+
 test('食材识别结果流转到阿灶时保留图片识别来源', () => {
   const stationPanelSource = fs.readFileSync(new URL('../components/kitchen/KitchenStationPanel.vue', import.meta.url), 'utf8')
   assert.match(stationPanelSource, /recognition: openChefWithRecognizedIngredients/)
   assert.match(stationPanelSource, /searchMode: 'image'/)
   assert.match(homeSource, /searchMode\.value = \['image', 'camera'\]\.includes\(props\.initialSearch\?\.searchMode\)/)
-  assert.match(homeSource, /if \(!generationCompleted\.value\) \{[\s\S]*?recipe\.value = createRecipeDraft\(\)/)
+  assert.match(homeSource, /if \(!generationCompleted\.value\) \{[\s\S]*?resetRecommendationBatch\(\)/)
 })

@@ -2,6 +2,7 @@ package com.example.food.recipe;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 
 import java.time.LocalDateTime;
@@ -15,6 +16,8 @@ public class RecipeRecord {
     private Long userId;
     private Long searchLogId;
     private Long parentRecipeId;
+    @TableField(exist = false)
+    private String mealType;
     private String title;
     private Integer servings;
     private BigDecimal caloriesKcal;
@@ -60,6 +63,14 @@ public class RecipeRecord {
 
     public void setParentRecipeId(Long parentRecipeId) {
         this.parentRecipeId = parentRecipeId;
+    }
+
+    public String getMealType() {
+        return mealType;
+    }
+
+    public void setMealType(String mealType) {
+        this.mealType = mealType;
     }
 
     public String getTitle() {

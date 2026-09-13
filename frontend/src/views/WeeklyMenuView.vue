@@ -135,7 +135,7 @@
                   @update:model-value="setSlotSelection(day.date, meal.value, $event)"
                 >
                   <el-option
-                    v-for="recipe in recipes"
+                    v-for="recipe in prioritizeRecipesForMeal(recipes, meal.value)"
                     :key="recipe.id"
                     :label="recipe.title"
                     :value="String(recipe.id)"
@@ -285,7 +285,7 @@
         <span class="auto-generate-option-mark" aria-hidden="true">随机</span>
         <span>
           <strong>随机安排</strong>
-          <small>不参考菜谱生成历史记录和历史偏好，按当前可用菜谱随机组合一周餐次。</small>
+          <small>不参考菜谱生成历史记录和历史偏好，按当前可用菜谱随机组合一周餐次；早餐优先选择包子、面条等早餐主食。</small>
         </span>
       </button>
     </div>
@@ -355,6 +355,7 @@ import {
   buildWeeklyMenuPayload,
   getWeekStart,
   normalizeWeeklyMenu,
+  prioritizeRecipesForMeal,
   toDateString,
   weeklySlotKey,
   WEEKLY_MEAL_OPTIONS

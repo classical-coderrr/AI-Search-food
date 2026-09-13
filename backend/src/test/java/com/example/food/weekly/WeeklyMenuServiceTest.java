@@ -37,6 +37,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -153,7 +154,7 @@ class WeeklyMenuServiceTest {
         );
         List<WeeklyMenuItem> persistedItems = fullWeekItems(monday, 1L, 2L);
         when(planMapper.findByUserIdAndWeekStart(7L, monday)).thenReturn(null, null, plan);
-        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 30, 0)).thenReturn(candidates);
+        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 50, 0)).thenReturn(candidates);
         when(recipeIngredientMapper.selectList(any(QueryWrapper.class)))
                 .thenReturn(candidateIngredients, candidateIngredients);
         when(userHealthProfileService.getRecommendationContext(7L)).thenReturn(
@@ -197,6 +198,7 @@ class WeeklyMenuServiceTest {
         assertThat(promptCaptor.getValue())
                 .contains("2026-08-31")
                 .contains("番茄炒蛋")
+                .contains("候选菜谱（只能使用其中的 recipeId；mealTypeHint=BREAKFAST 表示适合早餐，MAIN 表示适合午餐或晚餐，ANY 表示未指定）：\n[{\"recipeId\"")
                 .contains("年龄段=30-44岁")
                 .contains("目标=fat_loss")
                 .contains("每日营养目标：未设置")
@@ -209,7 +211,7 @@ class WeeklyMenuServiceTest {
         RecipeRecord recipe = recipe(1L, "随机菜谱");
         List<WeeklyMenuItem> persistedItems = fullWeekItems(monday, 1L, 1L);
         when(planMapper.findByUserIdAndWeekStart(7L, monday)).thenReturn(null, null, plan(99L, 7L, monday));
-        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 30, 0)).thenReturn(List.of(recipe));
+        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 50, 0)).thenReturn(List.of(recipe));
         when(recipeIngredientMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(), List.of());
         when(userHealthProfileService.getRecommendationContext(7L)).thenReturn(null);
         when(userDietPreferenceService.get(7L)).thenReturn(
@@ -240,10 +242,49 @@ class WeeklyMenuServiceTest {
     }
 
     @Test
+    void autoGenerationUsesBreakfastCandidateWhenBreakfastSelectionIsMissing() {
+        LocalDate monday = LocalDate.of(2026, 8, 31);
+        RecipeRecord dinnerRecipe = recipe(1L, "蒜蓉炒茄子");
+        RecipeRecord breakfastRecipe = recipe(2L, "鲜肉包子");
+        List<RecipeRecord> candidates = List.of(dinnerRecipe, breakfastRecipe);
+        when(planMapper.findByUserIdAndWeekStart(7L, monday)).thenReturn(null, null, plan(99L, 7L, monday));
+        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 50, 0)).thenReturn(candidates);
+        when(recipeIngredientMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(), List.of());
+        when(userHealthProfileService.getRecommendationContext(7L)).thenReturn(null);
+        when(userDietPreferenceService.get(7L)).thenReturn(
+                com.example.food.user.preference.dto.DietPreferenceResponse.empty()
+        );
+        when(userPantryService.listIngredientNames(7L)).thenReturn(List.of(), List.of());
+        when(qwenRecipeClient.generateWeeklyMenu(anyString())).thenReturn(List.of(
+                new QwenRecipeClient.WeeklyMenuSelection(monday.toString(), "LUNCH", 1L)
+        ));
+        when(recipeRecordMapper.selectList(any(QueryWrapper.class))).thenReturn(candidates);
+        doAnswer(invocation -> {
+            WeeklyMenuPlan target = invocation.getArgument(0);
+            target.setId(99L);
+            return 1;
+        }).when(planMapper).insert(any(WeeklyMenuPlan.class));
+        when(itemMapper.findByPlanId(99L)).thenReturn(fullWeekItems(monday, 2L, 1L));
+        when(shoppingCheckMapper.findByUserIdAndPlanId(7L, 99L)).thenReturn(List.of());
+
+        service.autoGenerate(7L, new WeeklyMenuAutoGenerateRequest(monday, false, "random"));
+
+        ArgumentCaptor<WeeklyMenuItem> itemCaptor = ArgumentCaptor.forClass(WeeklyMenuItem.class);
+        verify(itemMapper, times(21)).insert(itemCaptor.capture());
+        assertThat(itemCaptor.getAllValues()).filteredOn(item ->
+                        monday.equals(item.getMenuDate()) && "BREAKFAST".equals(item.getMealType()))
+                .extracting(WeeklyMenuItem::getRecipeId)
+                .containsExactly(2L);
+        ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+        verify(qwenRecipeClient).generateWeeklyMenu(promptCaptor.capture());
+        assertThat(promptCaptor.getValue()).contains("鲜肉包子").contains("\"mealTypeHint\":\"BREAKFAST\"");
+    }
+
+    @Test
     void autoGenerationPromptIncludesEnabledNutritionTarget() {
         LocalDate monday = LocalDate.of(2026, 8, 31);
         when(planMapper.findByUserIdAndWeekStart(7L, monday)).thenReturn(null);
-        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 30, 0))
+        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 50, 0))
                 .thenReturn(List.of(recipe(1L, "番茄炒蛋")));
         when(recipeIngredientMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of());
         when(userHealthProfileService.getRecommendationContext(7L)).thenReturn(null);
@@ -291,7 +332,7 @@ class WeeklyMenuServiceTest {
     void refusesAutoGenerationWithoutSavedRecipes() {
         LocalDate monday = LocalDate.of(2026, 8, 31);
         when(planMapper.findByUserIdAndWeekStart(7L, monday)).thenReturn(null);
-        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 30, 0)).thenReturn(List.of());
+        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 50, 0)).thenReturn(List.of());
 
         assertThatThrownBy(() -> service.autoGenerate(
                 7L,
@@ -308,7 +349,7 @@ class WeeklyMenuServiceTest {
         LocalDate monday = LocalDate.of(2026, 8, 31);
         RecipeRecord recipe = recipe(1L, "测试菜");
         when(planMapper.findByUserIdAndWeekStart(7L, monday)).thenReturn(null);
-        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 30, 0)).thenReturn(List.of(recipe));
+        when(recipeRecordMapper.findSavedRecipes(7L, null, null, null, 50, 0)).thenReturn(List.of(recipe));
         when(recipeIngredientMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of());
         when(userHealthProfileService.getRecommendationContext(7L)).thenReturn(null);
         when(userDietPreferenceService.get(7L)).thenReturn(
