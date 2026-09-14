@@ -9,8 +9,21 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
   flyway:
     enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: ${REDIS_TIMEOUT:2s}
 
 app:
+  agent:
+    state-store: ${AGENT_STATE_STORE:redis}
+    recovery:
+      enabled: ${AGENT_RECOVERY_ENABLED:true}
+      scan-delay: ${AGENT_RECOVERY_SCAN_DELAY:PT30S}
+      stale-after: ${AGENT_RECOVERY_STALE_AFTER:PT5M}
+      lease-duration: ${AGENT_RECOVERY_LEASE_DURATION:PT10M}
   jwt:
     secret: ${JWT_SECRET:}
   sms:

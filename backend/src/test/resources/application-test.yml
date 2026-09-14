@@ -9,6 +9,10 @@ spring:
     locations: classpath:db/migration
 
 app:
+  agent:
+    state-store: memory
+    recovery:
+      enabled: false
   ai:
     env-file: target/test-ai-config.env
   ingredient-images:

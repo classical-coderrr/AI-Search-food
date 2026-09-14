@@ -34,4 +34,20 @@ public interface AgentMessageMapper extends BaseMapper<AgentMessage> {
             @Param("conversationId") Long conversationId,
             @Param("limit") int limit
     );
+
+    @Select("""
+            SELECT * FROM (
+                SELECT * FROM agent_messages
+                WHERE conversation_id = #{conversationId}
+                  AND user_id = #{userId}
+                ORDER BY id DESC
+                LIMIT #{limit}
+            ) recent_messages
+            ORDER BY id ASC
+            """)
+    List<AgentMessage> findRecentMessages(
+            @Param("userId") Long userId,
+            @Param("conversationId") Long conversationId,
+            @Param("limit") int limit
+    );
 }

@@ -1,0 +1,321 @@
+# 小厨灵企业级 Agent 实现方案
+
+## 0. 文档目的与维护规则
+
+这份文档是小厨灵 Agent 从“可工作的 Demo”走向“可恢复、可审计、可重试的生产级 Agent”的实施清单。方案完成前不得删除或覆盖本文件。
+
+每完成一个功能，交付时必须明确说明：
+
+1. 本次完成了什么；
+2. 通过了哪些测试或演练；
+3. 当前还剩哪些未完成项；
+4. 下一步推荐做什么，以及为什么。
+
+只有所有验收标准全部通过，并得到用户确认后，才可以从 `agent.md` 删除本方案，或将其改为已完成归档记录。
+
+## 1. 目标
+
+用户发起一次 Agent 请求后，即使发生网络断开、服务进程重启或容器重建，也能：
+
+- 找回原来的会话消息；
+- 找到这次 Agent 运行的状态、执行步骤和最后 checkpoint；
+- 从最后一个可靠节点继续，而不是从头重复整段对话；
+- 对写操作保持用户确认和幂等，避免重复扣库存、重复保存或重复撤销；
+- 在 SSE 断线后补发遗漏事件，并继续接收实时事件；
+- 对每次运行提供可查询、可审计、可测试的证据。
+
+企业级目标采用“至少一次执行 + 幂等保证”，不假设工具绝对只执行一次。
+
+## 2. 三个逻辑实体
+
+下面是逻辑表结构。当前小厨灵将运行态写入 Redis，消息正文仍写入 MySQL；Redis key 与逻辑表一一对应，后续如需迁移到关系型数据库，保持字段语义不变。
+
+### 2.1 `agent_runs`：一次完整 Agent 任务
+
+记录运行的身份、状态和恢复入口：
+
+```text
+run_id
+conversation_id
+user_id
+status
+current_node
+next_node
+round
+tool_call_count
+last_heartbeat_at
+pending_confirmation_id
+created_at
+updated_at
+```
+
+状态约定：
+
+```text
+RUNNING
+TOOL_EXECUTING
+WAITING_CONFIRMATION
+RECOVERING
+COMPLETED
+FAILED
+CANCELLED
+```
+
+当前代码使用 `current_node=TOOL_EXECUTE` 表示工具执行阶段，状态仍可为 `RUNNING`；如果需要按状态统计，后续增加 `TOOL_EXECUTING` 的显式映射。
+
+### 2.2 `agent_steps`：每一步执行过程
+
+记录模型决策、工具开始、工具结果和错误，便于审计、排障和恢复判断：
+
+```text
+run_id
+step_no
+node_type
+tool_name
+status
+request_json
+response_json
+idempotency_key
+started_at
+finished_at
+error_message
+```
+
+典型步骤：
+
+```text
+第 1 步：模型决定调用 pantry_expiry
+第 2 步：pantry_expiry 执行成功
+第 3 步：模型决定调用 recipe_generate
+```
+
+### 2.3 `agent_checkpoints`：最新可恢复状态
+
+保存恢复所需的完整状态快照：
+
+```text
+run_id
+state_json
+last_completed_step
+next_node
+state_version
+created_at
+```
+
+`state_json` 至少应能还原：
+
+```json
+{
+  "userGoal": "用快过期食材做晚餐",
+  "nextNode": "DECIDE",
+  "round": 2,
+  "toolCallCount": 1,
+  "observations": [
+    {
+      "tool": "pantry_expiry",
+      "result": ["鸡蛋", "西红柿"]
+    }
+  ]
+}
+```
+
+当前 Redis 映射：
+
+```text
+agent:run:<runId>
+agent:steps:<runId>
+agent:checkpoint:<runId>
+agent:runs:active
+```
+
+## 3. 正常执行时的持久化顺序
+
+以“快过期的食材可以做什么晚餐？”为例：
+
+1. 创建 `agent_run`，状态为 `RUNNING`；
+2. 模型决定调用 `pantry_expiry`；
+3. 保存模型决策 `agent_step`；
+4. 保存 checkpoint，`next_node=TOOL_EXECUTE`；
+5. 执行 `pantry_expiry`；
+6. 保存工具成功 `agent_step`；
+7. 保存 checkpoint，`next_node=DECIDE`，并写入工具结果；
+8. 再次调用模型；
+9. 模型决定调用 `recipe_generate`；
+10. 重复模型决策、工具开始、工具结果和 checkpoint 保存；
+11. 模型不再请求工具时，保存最终消息并将运行标记为 `COMPLETED`。
+
+必须在以下边界保存 checkpoint：
+
+```text
+模型调用前
+模型调用后
+工具调用前
+工具调用后
+等待用户确认时
+任务完成时
+任务失败时
+```
+
+心跳应在长模型调用和长工具调用期间持续更新，避免恢复扫描器误判仍在执行的任务。
+
+## 4. 服务重启恢复流程
+
+Spring Boot 启动后，恢复扫描器按固定间隔查询：
+
+```text
+status = RUNNING 或 TOOL_EXECUTING
+且 last_heartbeat_at < 当前时间 - stale_after
+```
+
+恢复流程：
+
+1. 通过租约抢占任务，防止多个实例同时恢复同一个 `run_id`；
+2. 将任务标记为 `RECOVERING`；
+3. 读取最新 checkpoint；
+4. 根据 `next_node` 选择恢复入口；
+5. 从该节点继续执行；
+6. 每个节点完成后更新 checkpoint、step、心跳和运行状态；
+7. 成功进入 `COMPLETED`，不可恢复或异常进入 `FAILED`。
+
+恢复分发逻辑：
+
+```java
+AgentState state = checkpointStore.load(runId);
+
+switch (state.nextNode()) {
+    case "DECIDE" -> decide(state);
+    case "TOOL_EXECUTE" -> executeTool(state);
+    case "OBSERVE" -> observe(state);
+    case "WAITING_CONFIRMATION" -> waitForUser(state);
+    case "FINALIZE" -> finalizeRun(state);
+}
+```
+
+包含图片附件的运行默认不自动恢复，应明确标记为不可恢复并提示用户重新提交；等待确认的运行只能恢复为等待状态，不能自动执行写操作。
+
+## 5. 崩溃场景处理
+
+### 5.1 模型决定调用工具后崩溃
+
+checkpoint 已记录 `next_node=TOOL_EXECUTE` 和待执行工具。重启后直接执行该工具，不重新询问模型。
+
+### 5.2 工具完成后崩溃
+
+若已保存工具成功 step 和结果，checkpoint 为 `next_node=DECIDE`，重启后跳过该工具，把已有结果交给模型继续决策。
+
+### 5.3 等待确认时崩溃
+
+状态保持 `WAITING_CONFIRMATION`，恢复后只显示确认卡片，必须由用户再次确认，不能自动执行写操作。
+
+### 5.4 写操作执行到一半崩溃
+
+写工具必须遵循：
+
+1. 生成稳定的 `idempotency_key`；
+2. 先保存工具执行记录；
+3. 执行写操作；
+4. 保存成功或失败结果；
+5. 重启后根据幂等键查询执行结果；
+6. 无法确认时进入人工复核或明确失败，不盲目重试。
+
+典型状态：`PENDING`、`PROCESSING`、`SUCCESS`、`FAILED`、`UNKNOWN_REQUIRES_REVIEW`。
+
+## 6. SSE 断线与续传
+
+SSE 连接本身不能跨服务重启保留，因此必须持久化事件序号和事件内容：
+
+```text
+run_id
+event_seq
+event_type
+payload_json
+created_at
+```
+
+前端断线后携带：
+
+```text
+runId=abc123
+lastEventId=3
+```
+
+后端执行顺序：
+
+1. 查询 `event_seq > 3` 的历史事件；
+2. 按序补发历史事件；
+3. 再切换到实时事件推送；
+4. 前端按 `event_seq` 去重，避免重复渲染。
+
+恢复对象是“任务状态 + 执行结果 + 事件流”，不是原来的 TCP/SSE 连接。
+
+当前客户端已经具备 `runId` 状态轮询和完成后历史回读，这是 SSE 事件补发前的过渡方案；事件序号、事件存储和 `Last-Event-ID` 续传仍需单独实现。
+
+## 7. 分阶段实施清单
+
+### 阶段一：状态与基础恢复（已完成）
+
+- [x] `AgentState`、`AgentRun`、`AgentStep`、`AgentCheckpoint` 数据结构；
+- [x] Redis 运行态、步骤和 checkpoint 存储；
+- [x] 恢复扫描器、过期判断和租约；
+- [x] `runId` 与运行状态查询接口；
+- [x] 服务端会话历史回读接口；
+- [x] 客户端恢复历史、轮询状态、显示恢复提示并自动刷新结果。
+
+### 阶段二：写操作可靠性（下一步推荐）
+
+- [ ] 为每个写工具统一生成和传递幂等键；
+- [ ] 为库存增删改、撤销、保存菜谱、周菜单写入建立状态查询；
+- [ ] 对 `PROCESSING` 和未知结果增加安全恢复/人工复核；
+- [ ] 增加重复提交、并发确认和崩溃窗口测试；
+- [ ] 验收：同一幂等键重复请求不会产生重复数据或重复扣减。
+
+### 阶段三：步骤级恢复演练
+
+- [ ] 为模型调用前后、工具调用前后、等待确认和完成节点补齐故障注入测试；
+- [ ] 验证从 `DECIDE`、`TOOL_EXECUTE`、`OBSERVE`、`WAITING_CONFIRMATION`、`FINALIZE` 恢复；
+- [ ] 验证恢复任务不会重复执行已确认成功的只读或写操作；
+- [ ] 验收：每个崩溃点都能得到确定结果或进入人工复核。
+
+### 阶段四：SSE 事件续传
+
+- [ ] 为 Agent 事件增加单调递增 `event_seq`；
+- [ ] 持久化事件并提供 `runId + lastEventId` 查询/补发接口；
+- [ ] 前端断线自动重连、补发、去重；
+- [ ] 验收：断线后遗漏事件完整补发，事件顺序不乱、不重复渲染。
+
+### 阶段五：企业级观测与验收
+
+- [ ] 记录每个 run、step、tool 的耗时、错误码和恢复次数；
+- [ ] 增加运行成功率、恢复成功率、重复执行拦截率等指标；
+- [ ] 为敏感字段、用户数据和工具参数做脱敏；
+- [ ] 建立可重复的 Docker 重启、Redis 持久化和数据库持久化演练；
+- [ ] 形成面试可展示的运行时间线、故障注入报告和验收报告。
+
+## 8. 总验收标准
+
+以下条件全部满足后，才算完成本方案：
+
+```text
+模型调用后重启，可以继续执行
+只读工具完成后重启，不重复执行已完成步骤
+等待确认时重启，不自动执行写操作
+写操作重复提交不会产生重复数据
+写操作处于未知结果时能查询或进入人工复核
+SSE 断开后能补发遗漏事件并继续接收实时事件
+客户端刷新或服务重启后能恢复历史消息和运行状态
+Redis、数据库、恢复扫描和租约均有自动化测试
+敏感日志不包含 API Key、密码或验证码
+```
+
+## 9. 每次功能交付的固定提醒格式
+
+每实现一个功能，回复结尾固定给出：
+
+```text
+本次完成：...
+验证结果：...
+剩余功能：...
+下一步推荐：...
+```
+
+下一步默认推荐阶段二“写操作可靠性”，但实际开始前仍由用户确认。所有阶段完成并通过总验收后，再删除本方案内容。

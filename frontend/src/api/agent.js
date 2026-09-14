@@ -95,3 +95,15 @@ export async function streamAgentChat(payload, { image, onEvent, signal } = {}) 
 export function deleteAgentConversation(conversationId) {
   return http.delete(`/agent/conversations/${conversationId}`)
 }
+
+export function getLatestAgentConversation() {
+  return http.get('/agent/conversations/latest')
+}
+
+export function getAgentConversationMessages(conversationId) {
+  return http.get(`/agent/conversations/${conversationId}/messages`)
+}
+
+export function getAgentRunStatus(runId) {
+  return http.get(`/agent/runs/${runId}`)
+}
