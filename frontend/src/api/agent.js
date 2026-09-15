@@ -107,3 +107,7 @@ export function getAgentConversationMessages(conversationId) {
 export function getAgentRunStatus(runId) {
   return http.get(`/agent/runs/${runId}`)
 }
+
+export function getAgentConfirmationStatus(confirmationId) {
+  return http.get(`/agent/confirmations/${confirmationId}`)
+}

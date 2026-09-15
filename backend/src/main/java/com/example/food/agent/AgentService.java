@@ -9,6 +9,7 @@ import com.example.food.ai.qwen.QwenAgentClient;
 import com.example.food.agent.dto.AgentChatRequest;
 import com.example.food.agent.dto.AgentRunStatusResponse;
 import com.example.food.agent.dto.AgentConversationHistoryResponse;
+import com.example.food.agent.dto.AgentConfirmationStatusResponse;
 import com.example.food.agent.dto.AgentMessageResponse;
 import com.example.food.agent.state.AgentCheckpoint;
 import com.example.food.agent.state.AgentNode;
@@ -93,6 +94,7 @@ public class AgentService {
     private final UserDietPreferenceService dietPreferenceService;
     private final RecipeRecommendationService recipeRecommendationService;
     private final QwenAgentClient qwenAgentClient;
+    private final AgentIntentRecognizer intentRecognizer;
     private final ObjectMapper objectMapper;
     private final AgentRunStore runStore;
     private final ExecutorService workerExecutor = Executors.newCachedThreadPool(
@@ -121,6 +123,7 @@ public class AgentService {
             UserDietPreferenceService dietPreferenceService,
             RecipeRecommendationService recipeRecommendationService,
             QwenAgentClient qwenAgentClient,
+            AgentIntentRecognizer intentRecognizer,
             ObjectMapper objectMapper,
             AgentRunStore runStore
     ) {
@@ -141,6 +144,7 @@ public class AgentService {
         this.dietPreferenceService = dietPreferenceService;
         this.recipeRecommendationService = recipeRecommendationService;
         this.qwenAgentClient = qwenAgentClient;
+        this.intentRecognizer = intentRecognizer;
         this.objectMapper = objectMapper;
         this.runStore = runStore;
     }
@@ -417,6 +421,11 @@ public class AgentService {
         );
     }
 
+    public AgentConfirmationStatusResponse confirmationStatus(AuthPrincipal principal, Long confirmationId) {
+        requireUser(principal);
+        return writeService.status(principal, confirmationId);
+    }
+
     private void driveAgent(
             SseEmitter emitter,
             AtomicBoolean cancelled,
@@ -440,7 +449,7 @@ public class AgentService {
                 persistCheckpoint(execution, AgentStatus.RUNNING, AgentNode.MODEL_DECISION, AgentNode.MODEL_DECISION, null);
                 QwenAgentClient.AgentTurn turn = qwenAgentClient.complete(
                         execution.messages,
-                        toolRegistry.functionDefinitions(execution.userMessage, execution.hasAttachment)
+                        toolDefinitions(execution)
                 );
                 execution.round++;
                 execution.messages.add(QwenAgentClient.ConversationMessage.assistant(turn));
@@ -504,6 +513,45 @@ public class AgentService {
                 return;
             }
         }
+    }
+
+    private List<Map<String, Object>> toolDefinitions(AgentExecution execution) {
+        List<Map<String, Object>> definitions = toolRegistry.functionDefinitions(
+                execution.userMessage,
+                execution.hasAttachment
+        );
+        boolean saveToolAlreadyExposed = containsFunction(definitions, AgentToolRegistry.Tool.RECIPE_SAVE.functionName());
+        if (saveToolAlreadyExposed) {
+            execution.intentResolutionAttempted = true;
+            execution.recipeSaveIntent = true;
+            return definitions;
+        }
+        if (execution.intentResolutionAttempted) {
+            return definitions;
+        }
+        AgentIntentRecognizer.RecognitionResult result = intentRecognizer.recognize(
+                execution.userMessage,
+                execution.messages
+        );
+        execution.intentResolutionAttempted = true;
+        execution.recipeSaveIntent = result.isSaveRecipe();
+        if (!result.isSaveRecipe()) {
+            return definitions;
+        }
+        List<Map<String, Object>> enriched = new ArrayList<>(definitions);
+        enriched.add(toolRegistry.functionDefinition(AgentToolRegistry.Tool.RECIPE_SAVE));
+        return List.copyOf(enriched);
+    }
+
+    private boolean containsFunction(List<Map<String, Object>> definitions, String functionName) {
+        for (Map<String, Object> definition : definitions) {
+            Object function = definition == null ? null : definition.get("function");
+            if (function instanceof Map<?, ?> functionMap
+                    && functionName.equals(String.valueOf(functionMap.get("name")))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private ToolExecution executeTool(
@@ -1295,6 +1343,8 @@ public class AgentService {
         private int pendingToolIndex;
         private AgentNode currentNode;
         private AgentNode nextNode;
+        private boolean intentResolutionAttempted;
+        private boolean recipeSaveIntent;
 
         private AgentExecution(
                 String runId,

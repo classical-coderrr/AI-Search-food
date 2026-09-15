@@ -446,3 +446,38 @@ Redis 状态持久化后小厨灵聊天窗口历史未恢复
 - 原因：PowerShell 外层参数没有将包含逗号的 Maven 参数整体引用。
 - 解决方案：将测试选择参数改为带引号的 `"-Dtest=AgentControllerTest,InMemoryAgentRunStoreTest"`。
 - 验证结果：定向测试正常执行并通过 6/6。
+
+小厨灵 Agent 确认状态字段变更后的测试编译错误
+- 日期：2026-09-14
+- 问题现象：调整 `AgentConfirmationMapper.markConfirmed` 以持久化执行结果后，`AgentWriteServiceTest` 仍调用旧的两个参数方法，测试编译失败并提示参数数量不匹配。
+- 原因：确认记录新增结果消息字段，Mapper 方法签名同步扩展，但测试桩和验证未同步更新。
+- 解决方案：为测试桩、验证补充结果消息参数，并覆盖保存菜谱和通用厨房写操作两条路径。
+- 验证结果：Agent 定向测试通过 12/12。
+
+Agent 确认执行状态迁移首次不兼容 H2
+- 日期：2026-09-14
+- 问题现象：首次执行全量后端回归时，Flyway 迁移 V32 失败，导致 129 个 Spring 测试上下文错误；H2 拒绝在一个 `ALTER TABLE` 中连续添加多个字段。
+- 原因：迁移脚本采用了 MySQL 可接受但 H2 不支持的多列 `ADD COLUMN` 语法。
+- 解决方案：将 `processing_at`、`result_message`、`error_code`、`error_message` 拆成四条独立的 `ALTER TABLE` 语句。
+- 验证结果：修复后全量后端测试通过 483/483，Flyway 成功应用 V32。
+
+Docker Desktop 关机后 Linux 引擎未恢复
+- 日期：2026-09-14
+- 问题现象：关机重启后执行 Docker Compose 状态检查时，Docker CLI 无法连接 `dockerDesktopLinuxEngine`，提示 Linux 引擎管道不存在；手动启动 Docker Desktop 进程后等待 45 秒仍未就绪。
+- 原因：Docker Desktop 的 Linux 引擎尚未完成启动，当前不是项目代码或测试失败。
+- 解决方案：已启动 Docker Desktop 并保留进程；待引擎就绪后重新执行 Docker Compose 和 Redis/MySQL 运行验证，必要时手动重启 Docker Desktop 或 WSL。
+- 验证结果：本次暂未完成容器运行态验证；不影响已通过的后端 484/484 和前端 158/158 测试。
+
+* “保存这道菜”未触发保存菜谱工具
+- 日期：2026-09-15
+- 问题现象：用户在生成牛肉粿条汤后请求保存，Agent 回复“当前会话里没有可用的保存菜谱功能”，没有返回 `confirmation.required` 确认事件。
+- 原因：后端虽然已注册 `recipe.save`/`recipe_save` 工具，但 `AgentToolRegistry.functionDefinitions` 只在原始消息包含“菜谱”“食谱”“收藏”等关键词时暴露该工具；“保存这道菜”只命中兜底分支，未加入 `RECIPE_SAVE`，模型因此无法调用保存工具。
+- 解决方案：在工具筛选器中增加保存动词与菜谱指代组合判断，覆盖“保存这道菜”“把它收藏起来”等表达，并明确排除“保存本周菜单”等菜单操作误匹配。
+- 验证结果：新增路由回归测试；定向 Agent 测试 18/18、后端全量测试 485/485 通过。
+
+Apifox 调用 Agent 接口返回 401 未授权
+- 日期：2026-09-15
+- 问题现象：调用 Agent 接口时返回 `{"code":401,"message":"Unauthorized","data":null}`，请求未进入 Agent 业务逻辑。
+- 原因：当前请求未通过 JWT 认证，常见原因是缺少 `Authorization: Bearer <JWT>`、令牌已过期，或使用了非普通用户会话令牌；仅携带 `X-Anonymous-Id` 不能访问 Agent 受保护接口。
+- 解决方案：待使用当前登录普通用户重新获取完整 JWT，并确认 Apifox 实际请求头已发送 `Authorization` 后重试。
+- 验证结果：根据后端 JWT 过滤器和认证入口判断为认证层问题，业务原因尚未进入验证。

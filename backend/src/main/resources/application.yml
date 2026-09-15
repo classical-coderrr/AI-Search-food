@@ -33,6 +33,9 @@ mybatis-plus:
 app:
   agent:
     state-store: ${AGENT_STATE_STORE:redis}
+    intent-recognition:
+      enabled: ${AGENT_INTENT_RECOGNITION_ENABLED:true}
+      confidence-threshold: ${AGENT_INTENT_RECOGNITION_CONFIDENCE_THRESHOLD:0.85}
     recovery:
       enabled: ${AGENT_RECOVERY_ENABLED:false}
       scan-delay: ${AGENT_RECOVERY_SCAN_DELAY:PT30S}

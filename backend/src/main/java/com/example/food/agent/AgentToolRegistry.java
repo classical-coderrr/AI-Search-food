@@ -43,9 +43,20 @@ public class AgentToolRegistry {
         return allowedTools.stream().map(Tool::functionDefinition).toList();
     }
 
+    public Map<String, Object> functionDefinition(Tool tool) {
+        if (tool == null || !allowedTools.contains(tool)) {
+            throw new IllegalArgumentException("工具不能为空或未注册");
+        }
+        return tool.functionDefinition();
+    }
+
     public List<Map<String, Object>> functionDefinitions(String message, boolean hasImage) {
         String text = message == null ? "" : message.toLowerCase(Locale.ROOT);
         Set<Tool> selected = EnumSet.noneOf(Tool.class);
+
+        if (isRecipeSaveIntent(text)) {
+            selected.add(Tool.RECIPE_SAVE);
+        }
 
         if (containsAny(text, "今天", "日期", "几号", "星期", "时间", "几点", "当前")) {
             selected.add(Tool.CURRENT_DATETIME);
@@ -66,7 +77,6 @@ public class AgentToolRegistry {
         if (containsAny(text, "菜谱", "食谱", "收藏", "收藏夹", "标签", "分享", "视频", "做过", "喜欢", "不喜欢", "推荐", "热门")) {
             selected.add(Tool.SAVED_RECIPES);
             selected.add(Tool.RECIPE_GENERATE);
-            selected.add(Tool.RECIPE_SAVE);
             selected.add(Tool.RECIPE_LIBRARY_MANAGE);
         }
         if (containsAny(text, "营养", "健康", "忌口", "过敏", "口味", "热量", "蛋白", "脂肪", "碳水", "身高", "体重", "目标", "角色名", "小仓", "阿灶")) {
@@ -92,6 +102,24 @@ public class AgentToolRegistry {
             return List.of();
         }
         return selected.stream().map(Tool::functionDefinition).toList();
+    }
+
+    private boolean isRecipeSaveIntent(String text) {
+        boolean saveVerb = containsAny(text, "保存", "收藏", "存起来", "存下", "加入收藏");
+        boolean recipeReference = containsAny(
+                text,
+                "菜谱",
+                "食谱",
+                "这道菜",
+                "这道菜谱",
+                "这份菜",
+                "这份菜谱",
+                "当前菜",
+                "刚刚生成的菜",
+                "刚才的菜",
+                "它"
+        );
+        return saveVerb && recipeReference;
     }
 
     private boolean containsAny(String text, String... keywords) {

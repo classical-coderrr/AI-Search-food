@@ -1,6 +1,7 @@
 package com.example.food.agent;
 
 import com.example.food.agent.dto.AgentChatRequest;
+import com.example.food.agent.dto.AgentConfirmationStatusResponse;
 import com.example.food.agent.dto.AgentRunStatusResponse;
 import com.example.food.agent.dto.AgentConversationHistoryResponse;
 import com.example.food.agent.dto.AgentMessageResponse;
@@ -115,6 +116,23 @@ class AgentControllerTest {
                 .andExpect(jsonPath("$.data.status").value("RECOVERING"));
 
         verify(agentService).runStatus(7L, "run-1");
+    }
+
+    @Test
+    void readsConfirmationStatusForAuthenticatedOwner() throws Exception {
+        when(agentService.confirmationStatus(eq(PRINCIPAL), eq(9L))).thenReturn(new AgentConfirmationStatusResponse(
+                9L, 42L, "PANTRY_DELETE", "UNKNOWN_REVIEW", LocalDateTime.now().minusMinutes(20),
+                LocalDateTime.now().minusMinutes(19), null, null,
+                "PROCESSING_TIMEOUT", "操作长时间处于处理中，无法确认是否已完成，请人工复核"
+        ));
+
+        mockMvc.perform(get("/api/agent/confirmations/9"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.confirmationId").value(9))
+                .andExpect(jsonPath("$.data.status").value("UNKNOWN_REVIEW"));
+
+        verify(agentService).confirmationStatus(PRINCIPAL, 9L);
     }
 
     @Test

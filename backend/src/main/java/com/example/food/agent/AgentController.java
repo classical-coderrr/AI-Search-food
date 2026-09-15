@@ -1,6 +1,7 @@
 package com.example.food.agent;
 
 import com.example.food.agent.dto.AgentChatRequest;
+import com.example.food.agent.dto.AgentConfirmationStatusResponse;
 import com.example.food.agent.dto.AgentConversationHistoryResponse;
 import com.example.food.agent.dto.AgentRunStatusResponse;
 import com.example.food.common.ApiResponse;
@@ -58,6 +59,14 @@ public class AgentController {
             @PathVariable String runId
     ) {
         return ApiResponse.ok(agentService.runStatus(principal.id(), runId));
+    }
+
+    @GetMapping("/confirmations/{confirmationId}")
+    public ApiResponse<AgentConfirmationStatusResponse> confirmationStatus(
+            @AuthenticationPrincipal AuthPrincipal principal,
+            @PathVariable Long confirmationId
+    ) {
+        return ApiResponse.ok(agentService.confirmationStatus(principal, confirmationId));
     }
 
     @GetMapping("/conversations/latest")
