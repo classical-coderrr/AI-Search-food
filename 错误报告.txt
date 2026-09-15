@@ -565,3 +565,10 @@ Agent 步骤审计测试首次编译参数数量不匹配
 - 原因：项目测试脚本已经是 `node --test`，不需要再传 `--run` 参数。
 - 解决方案：改用项目原有的 `npm test` 脚本重新执行。
 - 验证结果：前端测试 159/159 通过，生产构建通过。
+
+崩溃恢复演练测试首次调用 Maven 参数被 PowerShell 误解析
+- 日期：2026-09-15
+- 问题现象：首次执行恢复定向测试时，PowerShell 将 `-Dtest=AgentRecoveryServiceTest,InMemoryAgentRunStoreTest` 中的逗号按表达式解析，命令在进入 Maven 前报参数解析错误。
+- 原因：PowerShell 下未将包含逗号的 Maven 系统属性整体作为字符串传递。
+- 解决方案：将 `-Dmaven.repo.local` 和 `-Dtest` 参数都用单独的字符串参数传递后重试。
+- 验证结果：恢复扫描器和内存状态仓库定向测试 6/6 通过。

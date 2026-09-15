@@ -306,10 +306,31 @@ Agent 写工具确认后会先在 `agent_write_operations` 中以 `(user_id, ide
 
 ### 阶段三：步骤级恢复演练
 
+- [x] 增加恢复扫描器的自动化测试：抢租约、跳过已占用租约、单个任务失败后继续扫描、Redis 暂时不可用时等待下一轮重试；
 - [ ] 为模型调用前后、工具调用前后、等待确认和完成节点补齐故障注入测试；
 - [ ] 验证从 `DECIDE`、`TOOL_EXECUTE`、`OBSERVE`、`WAITING_CONFIRMATION`、`FINALIZE` 恢复；
 - [ ] 验证恢复任务不会重复执行已确认成功的只读或写操作；
 - [ ] 验收：每个崩溃点都能得到确定结果或进入人工复核。
+
+### 崩溃窗口演练工具（本分支）
+
+仓库新增 `scripts/agent-recovery-drill.ps1`，用于在真实 Docker、Redis 和 MySQL 环境中演练一次后端进程崩溃。脚本不会删除容器、数据卷或 Redis 数据，只会对 `backend` 执行一次 `SIGKILL`，随后以较短的恢复参数启动后端：
+
+```powershell
+.\scripts\agent-recovery-drill.ps1 `
+  -RunId "正在生成的运行 ID" `
+  -Token "当前登录用户的 JWT"
+```
+
+脚本会依次完成：
+
+1. 用 JWT 查询 `GET /api/agent/runs/{runId}`，确认任务仍处于 `RUNNING` 或 `RECOVERING`；
+2. 强制终止 backend，模拟进程在模型调用或工具调用窗口崩溃；
+3. 临时使用 `stale-after=5s`、`scan-delay=2s` 启动后端，不修改项目 `.env`；
+4. 等待后端健康，轮询 Redis 中同一个 `runId` 的状态；
+5. 检查恢复日志，最终状态为 `COMPLETED` 或 `WAITING_CONFIRMATION` 才算通过。
+
+演练前需要先在客户端发起一个尚未完成的请求，并立即复制该请求的 `runId`。如果任务在执行脚本前已经完成，脚本会主动拒绝，避免把一次普通完成误判成恢复成功。当前分支已通过恢复扫描器单元测试、模型决策 checkpoint 恢复测试和待执行只读工具 checkpoint 恢复测试；真实 Docker 演练需要在有进行中任务时执行上述脚本。
 
 ### 阶段四：SSE 事件续传
 
