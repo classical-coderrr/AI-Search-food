@@ -47,6 +47,33 @@ class AgentToolRegistryTest {
     }
 
     @Test
+    void exposesRecipeSaveForNaturalSaveIntents() {
+        java.util.List<String> buttonIntentTools = registry.functionDefinitions("保存这道菜", false).stream()
+                .map(definition -> ((java.util.Map<?, ?>) definition.get("function")).get("name").toString())
+                .toList();
+        java.util.List<String> pronounIntentTools = registry.functionDefinitions("把它收藏起来", false).stream()
+                .map(definition -> ((java.util.Map<?, ?>) definition.get("function")).get("name").toString())
+                .toList();
+        java.util.List<String> menuIntentTools = registry.functionDefinitions("保存本周菜单", false).stream()
+                .map(definition -> ((java.util.Map<?, ?>) definition.get("function")).get("name").toString())
+                .toList();
+
+        assertThat(buttonIntentTools).containsExactly("recipe_save");
+        assertThat(pronounIntentTools).contains("recipe_save");
+        assertThat(menuIntentTools).doesNotContain("recipe_save");
+    }
+
+    @Test
+    void doesNotExposeRecipeSaveForRecipeQueriesAlone() {
+        java.util.List<String> queryTools = registry.functionDefinitions("查看我的菜谱", false).stream()
+                .map(definition -> ((java.util.Map<?, ?>) definition.get("function")).get("name").toString())
+                .toList();
+
+        assertThat(queryTools).contains("saved_recipes", "recipe_generate", "recipe_library_manage")
+                .doesNotContain("recipe_save");
+    }
+
+    @Test
     void rejectsUnregisteredOrBlankTools() {
         assertThatThrownBy(() -> registry.require("admin.users"))
                 .isInstanceOf(IllegalArgumentException.class);

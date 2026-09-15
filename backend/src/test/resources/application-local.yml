@@ -6,6 +6,10 @@ spring:
     driver-class-name: org.h2.Driver
 
 app:
+  agent:
+    state-store: memory
+    recovery:
+      enabled: false
   ai:
     qwen:
       api-key: local-profile-test-key

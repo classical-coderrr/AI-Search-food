@@ -60,6 +60,7 @@ class AgentWriteServiceTest {
         );
         when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);
         when(confirmationMapper.claim(7L, 9L)).thenReturn(1);
+        when(confirmationMapper.markConfirmed(7L, 9L, "菜谱已保存到我的菜谱")).thenReturn(1);
         when(savedRecipeService.save(any(SaveRecipeRequest.class), eq(principal), isNull())).thenReturn(detail);
 
         AgentWriteService.ConfirmationResult result = service.saveRecipe(principal, 9L, "key-9");
@@ -70,7 +71,7 @@ class AgentWriteServiceTest {
         verify(savedRecipeService).save(request.capture(), eq(principal), isNull());
         assertThat(request.getValue().searchLogId()).isEqualTo(42L);
         assertThat(request.getValue().title()).isEqualTo("番茄炒蛋");
-        verify(confirmationMapper).markConfirmed(7L, 9L);
+        verify(confirmationMapper).markConfirmed(7L, 9L, "菜谱已保存到我的菜谱");
         verify(securityLogService).record(7L, "AGENT_SAVE_RECIPE", "/api/agent/chat/stream", "confirmationId=9");
     }
 
@@ -92,6 +93,7 @@ class AgentWriteServiceTest {
         confirmation.setActionType("PANTRY_DELETE");
         when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);
         when(confirmationMapper.claim(7L, 9L)).thenReturn(1);
+        when(confirmationMapper.markConfirmed(7L, 9L, "食材已删除")).thenReturn(1);
         when(actionService.execute(eq("PANTRY_DELETE"), any(), eq(principal), anyString()))
                 .thenReturn(new AgentKitchenActionService.ActionResult("食材已删除", null));
 
@@ -99,8 +101,67 @@ class AgentWriteServiceTest {
 
         assertThat(result.status()).isEqualTo("completed");
         assertThat(result.message()).isEqualTo("食材已删除");
-        verify(confirmationMapper).markConfirmed(7L, 9L);
+        verify(confirmationMapper).markConfirmed(7L, 9L, "食材已删除");
         verify(securityLogService).record(7L, "AGENT_PANTRY_DELETE", "/api/agent/chat/stream", "confirmationId=9");
+    }
+
+    @Test
+    void doesNotExecuteAgainWhileAnotherRequestIsProcessing() {
+        AgentConfirmation confirmation = confirmation("PROCESSING", "{\"id\":12}");
+        confirmation.setActionType("PANTRY_DELETE");
+        confirmation.setProcessingAt(LocalDateTime.now());
+        when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);
+
+        AgentWriteService.ConfirmationResult result = service.execute(principal, 9L, "key-9");
+
+        assertThat(result.status()).isEqualTo("processing");
+        verify(confirmationMapper, never()).claim(7L, 9L);
+        verify(actionService, never()).execute(any(), any(), any(), anyString());
+    }
+
+    @Test
+    void returnsProcessingWhenAtomicClaimLosesRace() {
+        AgentConfirmation pending = confirmation("PENDING", "{\"id\":12}");
+        pending.setActionType("PANTRY_DELETE");
+        AgentConfirmation current = confirmation("PROCESSING", "{\"id\":12}");
+        current.setActionType("PANTRY_DELETE");
+        current.setProcessingAt(LocalDateTime.now());
+        when(confirmationMapper.findOwned(7L, 9L)).thenReturn(pending, current);
+        when(confirmationMapper.claim(7L, 9L)).thenReturn(0);
+
+        AgentWriteService.ConfirmationResult result = service.execute(principal, 9L, " key-9 ");
+
+        assertThat(result.status()).isEqualTo("processing");
+        verify(actionService, never()).execute(any(), any(), any(), anyString());
+    }
+
+    @Test
+    void movesStaleProcessingToManualReviewWithoutRetryingWrite() {
+        AgentConfirmation confirmation = confirmation("PROCESSING", "{\"id\":12}");
+        confirmation.setActionType("PANTRY_DELETE");
+        confirmation.setProcessingAt(LocalDateTime.now().minusHours(1));
+        when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);
+        when(confirmationMapper.markUnknownIfStale(eq(7L), eq(9L), any(LocalDateTime.class))).thenReturn(1);
+
+        AgentWriteService.ConfirmationResult result = service.execute(principal, 9L, "key-9");
+
+        assertThat(result.status()).isEqualTo("unknown-review");
+        verify(actionService, never()).execute(any(), any(), any(), anyString());
+    }
+
+    @Test
+    void exposesConfirmationStatusForClientAndOperations() {
+        AgentConfirmation confirmation = confirmation("PROCESSING", "{\"id\":12}");
+        confirmation.setActionType("PANTRY_DELETE");
+        confirmation.setProcessingAt(LocalDateTime.now());
+        when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);
+
+        var result = service.status(principal, 9L);
+
+        assertThat(result.confirmationId()).isEqualTo(9L);
+        assertThat(result.actionType()).isEqualTo("PANTRY_DELETE");
+        assertThat(result.status()).isEqualTo("PROCESSING");
+        verify(actionService, never()).execute(any(), any(), any(), anyString());
     }
 
     private AgentConfirmation confirmation(String status, String payload) {

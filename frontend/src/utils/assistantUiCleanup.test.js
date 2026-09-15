@@ -66,3 +66,11 @@ test('顶部品牌区使用小厨灵像素菜谱书标识和英文副标题', ()
   assert.match(appSource, /\.brand-copy strong[\s\S]*font-size: 22px;/)
   assert.match(appSource, /\.brand-copy small[\s\S]*font-size: 10px;/)
 })
+
+test('小厨灵从服务端恢复会话并轮询 Redis 运行状态', () => {
+  assert.match(agentSource, /getLatestAgentConversation/)
+  assert.match(agentSource, /getAgentRunStatus/)
+  assert.match(agentSource, /history\.activeRun\?\.runId/)
+  assert.match(agentSource, /正在读取 Redis 中的运行状态/)
+  assert.match(agentSource, /恢复完成，正在加载最新结果/)
+})

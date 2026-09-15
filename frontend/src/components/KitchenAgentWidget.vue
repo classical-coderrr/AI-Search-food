@@ -63,6 +63,11 @@
         <span aria-hidden="true" />
       </div>
 
+      <div v-if="recoveryStatus" class="agent-recovery-banner" role="status" aria-live="polite">
+        <span class="agent-recovery-banner__dot" aria-hidden="true" />
+        <span>{{ recoveryStatus }}</span>
+      </div>
+
       <div ref="messageList" class="agent-messages" aria-live="polite" aria-relevant="additions text">
         <div v-if="!messages.length" class="agent-empty-state">
           <span class="agent-empty-state__stamp">待命</span>
@@ -229,7 +234,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Bell, BookOpen, CalendarDays, Check, ClipboardCheck, Clock3, Database, HeartPulse, LockKeyhole, Maximize2, Minimize2, Paperclip, Save, Send, ShieldCheck, Square, X } from 'lucide-vue-next'
-import { deleteAgentConversation, streamAgentChat } from '../api/agent.js'
+import { deleteAgentConversation, getAgentConversationMessages, getAgentRunStatus, getLatestAgentConversation, streamAgentChat } from '../api/agent.js'
 import { useAuthStore } from '../stores/auth.js'
 import { clampAgentPanelPosition } from '../utils/agentPanelPosition.js'
 
@@ -239,6 +244,9 @@ const loading = ref(false)
 const draft = ref('')
 const messages = ref([])
 const conversationId = ref(null)
+const runId = ref(null)
+const recoveryStatus = ref('')
+const trackedRunId = ref(null)
 const panel = ref(null)
 const messageList = ref(null)
 const input = ref(null)
@@ -262,6 +270,8 @@ let messageSeed = 0
 let dragState = null
 let resizeState = null
 let resizeFrame = 0
+let recoveryTimer = null
+let recoveryAttempts = 0
 
 const PANEL_MIN_HEIGHT = 360
 const PANEL_MAX_HEIGHT = 760
@@ -279,13 +289,14 @@ const panelStyle = computed(() => {
 const storageKey = () => `ai-kitchen-agent:${auth.token ? auth.token.slice(-20) : 'guest'}`
 
 onMounted(() => {
-  restoreConversation()
+  void restoreConversation()
   updateViewportMode()
   window.addEventListener('resize', schedulePositionCorrection)
   window.visualViewport?.addEventListener('resize', schedulePositionCorrection)
 })
 onBeforeUnmount(() => {
   stopGeneration()
+  stopRunTracking()
   stopDragging()
   stopResizing()
   window.removeEventListener('resize', schedulePositionCorrection)
@@ -294,10 +305,14 @@ onBeforeUnmount(() => {
   revokeAllPreviews()
 })
 
-watch(messages, () => {
+watch([messages, conversationId, runId], () => {
   if (auth.isUser) {
     const storedMessages = messages.value.slice(-80).map(({ imagePreview, ...message }) => message)
-    localStorage.setItem(storageKey(), JSON.stringify({ conversationId: conversationId.value, messages: storedMessages }))
+    localStorage.setItem(storageKey(), JSON.stringify({
+      conversationId: conversationId.value,
+      runId: runId.value,
+      messages: storedMessages
+    }))
   }
   void scrollToBottom()
 }, { deep: true })
@@ -530,24 +545,36 @@ async function startStream(payload, image = null) {
   loading.value = true
   const assistant = addMessage({ role: 'assistant', content: '', statusText: '小厨灵正在整理请求', trace: [] })
   abortController.value = new AbortController()
+  let trackingRecovery = false
   try {
     await streamAgentChat(payload, { image, signal: abortController.value.signal, onEvent: (event) => applyEvent(event, assistant) })
   } catch (error) {
     if (error?.name !== 'AbortError') {
-      assistant.error = true
-      assistant.content = error?.message || '小厨灵暂时没有完成这次操作，请点击重试。'
+      if (runId.value) {
+        trackingRecovery = true
+        assistant.statusText = '连接已断开，后台仍在继续生成'
+        recoveryStatus.value = '连接已断开，正在读取 Redis 中的运行状态…'
+        void trackRun(runId.value, assistant)
+      } else {
+        assistant.error = true
+        assistant.content = error?.message || '小厨灵暂时没有完成这次操作，请点击重试。'
+      }
     }
   } finally {
-    loading.value = false
+    if (!trackingRecovery) loading.value = false
     abortController.value = null
-    assistant.statusText = ''
+    if (!trackingRecovery) assistant.statusText = ''
     void scrollToBottom()
   }
 }
 
 function applyEvent(event, assistant) {
   const data = event.data || {}
-  if (event.type === 'conversation.ready') conversationId.value = data.conversationId
+  if (event.type === 'conversation.ready') {
+    conversationId.value = data.conversationId
+    runId.value = data.runId || runId.value
+    recoveryStatus.value = ''
+  }
   if (event.type === 'message.delta') assistant.content += data.content || ''
   if (event.type === 'tool.started') {
     assistant.statusText = data.label || '小厨灵正在处理'
@@ -593,6 +620,7 @@ function stopGeneration() {
 
 async function clearConversation() {
   stopGeneration()
+  stopRunTracking()
   clearAttachment()
   revokeAllPreviews()
   if (conversationId.value) {
@@ -600,6 +628,8 @@ async function clearConversation() {
   }
   localStorage.removeItem(storageKey())
   conversationId.value = null
+  runId.value = null
+  recoveryStatus.value = ''
   messages.value = []
 }
 
@@ -609,15 +639,164 @@ function addMessage(message) {
   return target
 }
 
-function restoreConversation() {
+async function restoreConversation() {
   if (!auth.isUser) return
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey()) || 'null')
     conversationId.value = saved?.conversationId || null
+    runId.value = saved?.runId || null
     messages.value = Array.isArray(saved?.messages) ? saved.messages : []
   } catch {
     messages.value = []
   }
+
+  try {
+    const response = await getLatestAgentConversation()
+    const history = response?.data?.data
+    if (history) {
+      conversationId.value = history.conversationId || null
+      messages.value = (history.messages || []).map(toUiMessage)
+      runId.value = history.activeRun?.runId || null
+    }
+  } catch {
+    // The local cache remains usable when the history endpoint is unavailable.
+  }
+
+  if (runId.value) {
+    const recoveryMessage = messages.value.some((message) => message.recoveryMessage)
+      ? messages.value.find((message) => message.recoveryMessage)
+      : null
+    const statusMessage = recoveryMessage || addMessage({
+      role: 'assistant',
+      content: '',
+      statusText: '正在检查上次运行状态',
+      trace: [],
+      recoveryMessage: true
+    })
+    void trackRun(runId.value, statusMessage)
+  }
+}
+
+function toUiMessage(message) {
+  const role = String(message?.role || '').toUpperCase() === 'USER' ? 'user' : 'assistant'
+  const blockType = message?.blockType || 'text'
+  const target = {
+    id: `agent-history-${message?.id || ++messageSeed}`,
+    role,
+    content: role === 'user' || blockType === 'text' ? (message?.content || '') : '',
+    trace: [],
+    restored: true
+  }
+  if (role === 'assistant' && blockType !== 'text') {
+    try {
+      const parsed = JSON.parse(message?.content || '{}')
+      if (blockType === 'confirmation-card') {
+        target.card = { cardType: blockType, ...parsed, source: '来自已保存会话' }
+      } else if (blockType === 'recipe-card') {
+        target.card = {
+          cardType: blockType,
+          payload: { recipe: parsed },
+          source: '来自已保存会话'
+        }
+      } else {
+        target.card = { cardType: blockType, payload: parsed, source: '来自已保存会话' }
+      }
+    } catch {
+      target.content = message?.content || ''
+    }
+  }
+  return target
+}
+
+async function trackRun(targetRunId, assistant) {
+  if (!targetRunId || trackedRunId.value === targetRunId) return
+  stopRunTracking()
+  trackedRunId.value = targetRunId
+  recoveryAttempts = 0
+  loading.value = true
+  recoveryStatus.value = '正在读取 Redis 中的运行状态…'
+
+  const poll = async () => {
+    if (trackedRunId.value !== targetRunId) return
+    try {
+      const response = await getAgentRunStatus(targetRunId)
+      const status = response?.data?.data
+      if (!status) throw new Error('运行状态为空')
+      recoveryAttempts = 0
+
+      if (status.status === 'RUNNING') {
+        recoveryStatus.value = '小厨灵仍在后台生成，页面会自动更新'
+        if (assistant) assistant.statusText = '小厨灵仍在后台生成'
+      } else if (status.status === 'RECOVERING') {
+        recoveryStatus.value = '服务已恢复，小厨灵正在从 checkpoint 继续'
+        if (assistant) assistant.statusText = '正在从 checkpoint 继续'
+      } else if (status.status === 'WAITING_CONFIRMATION') {
+        recoveryStatus.value = '上次操作等待你的确认'
+        if (assistant) assistant.statusText = '等待你的确认'
+      } else if (status.status === 'COMPLETED') {
+        recoveryStatus.value = '恢复完成，正在加载最新结果'
+        await loadConversationHistory(status.conversationId || conversationId.value)
+        finishRunTracking()
+        return
+      } else {
+        if (assistant) {
+          assistant.error = true
+          assistant.content = status.errorMessage || '上次运行未能完成，请重试。'
+          assistant.statusText = ''
+        }
+        recoveryStatus.value = ''
+        finishRunTracking()
+        return
+      }
+
+      recoveryTimer = window.setTimeout(poll, 2000)
+    } catch {
+      recoveryAttempts += 1
+      if (recoveryAttempts >= 5) {
+        if (assistant) {
+          assistant.error = true
+          assistant.content = '暂时无法读取上次运行状态，请稍后刷新重试。'
+          assistant.statusText = ''
+        }
+        recoveryStatus.value = ''
+        finishRunTracking()
+        return
+      }
+      recoveryTimer = window.setTimeout(poll, 2000)
+    }
+  }
+
+  await poll()
+}
+
+async function loadConversationHistory(targetConversationId) {
+  if (!targetConversationId) return
+  try {
+    const response = await getAgentConversationMessages(targetConversationId)
+    const history = response?.data?.data
+    if (history) {
+      conversationId.value = history.conversationId
+      messages.value = (history.messages || []).map(toUiMessage)
+    }
+  } catch {
+    // The next refresh can retry the server-side history load.
+  }
+}
+
+function stopRunTracking() {
+  if (recoveryTimer != null) {
+    window.clearTimeout(recoveryTimer)
+    recoveryTimer = null
+  }
+  trackedRunId.value = null
+  recoveryAttempts = 0
+}
+
+function finishRunTracking() {
+  stopRunTracking()
+  loading.value = false
+  recoveryStatus.value = ''
+  void scrollToBottom()
 }
 
 function visibleItems(items = [], message) {
@@ -758,6 +937,8 @@ async function scrollToBottom() {
 .agent-icon-button { display: inline-grid; width: 44px; height: 44px; place-items: center; border: 1px solid transparent; color: #654b37; background: transparent; cursor: pointer; }
 .agent-icon-button:hover, .agent-icon-button:focus-visible { border-color: #9b754b; background: #fff4d6; outline: 2px solid #4f8ca5; outline-offset: 2px; }
 .agent-pixel-minus { display: block; width: 14px; height: 3px; background: currentColor; }
+.agent-recovery-banner { display: flex; align-items: center; gap: 7px; padding: 7px 14px; border-bottom: 1px solid #e8c66d; color: #855c14; background: #fff4c8; font-size: 11px; font-weight: 900; }
+.agent-recovery-banner__dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #e0a239; animation: agent-pulse 800ms ease-in-out infinite alternate; }
 .agent-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; scroll-behavior: smooth; }
 .agent-empty-state { display: grid; gap: 8px; margin: 12px 0 14px; padding: 17px; border: 1px dashed #c8aa7b; background: #fffdf4; }
 .agent-empty-state__stamp, .agent-card__stamp { width: max-content; padding: 3px 6px; border: 1px solid #a36e2d; color: #a36e2d; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; font-weight: 900; letter-spacing: .08em; }
@@ -802,5 +983,5 @@ async function scrollToBottom() {
 .agent-panel__footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 14px 9px; color: #9a8060; background: #fff8e8; font-size: 10px; }.agent-panel__footer button { border: 0; color: #9b4037; background: transparent; font: inherit; font-weight: 800; cursor: pointer; }.agent-panel__footer button:hover, .agent-panel__footer button:focus-visible { text-decoration: underline; outline: 2px solid #4f8ca5; outline-offset: 2px; }
 @keyframes agent-pulse { from { opacity: .45; transform: scale(.8); } to { opacity: 1; transform: scale(1.1); } }
 @media (max-width: 720px) { .agent-widget { left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); } .agent-launcher { width: 100%; justify-content: flex-start; } .agent-panel { position: fixed; left: 0; right: 0; bottom: 0; width: 100%; height: min(78dvh, 760px); max-height: calc(100dvh - 18px); border-width: 2px 2px 0; border-radius: 16px 16px 0 0; z-index: 2; } .agent-panel__header { cursor: default; user-select: auto; touch-action: auto; } .agent-backdrop { display: block; position: fixed; inset: 0; z-index: 1; background: rgba(43,33,29,.28); } .agent-messages { padding-bottom: 10px; } }
-@media (prefers-reduced-motion: reduce) { .agent-launcher, .agent-launcher:hover, .agent-launcher:active { transition: none; transform: none; } .agent-launcher.is-thinking .agent-launcher__signal, .agent-status-dot.spinning { animation: none; } .agent-messages { scroll-behavior: auto; } }
+@media (prefers-reduced-motion: reduce) { .agent-launcher, .agent-launcher:hover, .agent-launcher:active { transition: none; transform: none; } .agent-launcher.is-thinking .agent-launcher__signal, .agent-status-dot.spinning, .agent-recovery-banner__dot { animation: none; } .agent-messages { scroll-behavior: auto; } }
 </style>

@@ -1,12 +1,16 @@
 package com.example.food.agent;
 
 import com.example.food.agent.dto.AgentChatRequest;
+import com.example.food.agent.dto.AgentConfirmationStatusResponse;
+import com.example.food.agent.dto.AgentConversationHistoryResponse;
+import com.example.food.agent.dto.AgentRunStatusResponse;
 import com.example.food.common.ApiResponse;
 import com.example.food.security.AuthPrincipal;
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -47,6 +51,37 @@ public class AgentController {
             @AuthenticationPrincipal AuthPrincipal principal
     ) {
         return agentService.stream(request, principal, image);
+    }
+
+    @GetMapping("/runs/{runId}")
+    public ApiResponse<AgentRunStatusResponse> runStatus(
+            @AuthenticationPrincipal AuthPrincipal principal,
+            @PathVariable String runId
+    ) {
+        return ApiResponse.ok(agentService.runStatus(principal.id(), runId));
+    }
+
+    @GetMapping("/confirmations/{confirmationId}")
+    public ApiResponse<AgentConfirmationStatusResponse> confirmationStatus(
+            @AuthenticationPrincipal AuthPrincipal principal,
+            @PathVariable Long confirmationId
+    ) {
+        return ApiResponse.ok(agentService.confirmationStatus(principal, confirmationId));
+    }
+
+    @GetMapping("/conversations/latest")
+    public ApiResponse<AgentConversationHistoryResponse> latestConversation(
+            @AuthenticationPrincipal AuthPrincipal principal
+    ) {
+        return ApiResponse.ok(agentService.latestConversationHistory(principal.id()));
+    }
+
+    @GetMapping("/conversations/{conversationId}/messages")
+    public ApiResponse<AgentConversationHistoryResponse> conversationMessages(
+            @AuthenticationPrincipal AuthPrincipal principal,
+            @PathVariable Long conversationId
+    ) {
+        return ApiResponse.ok(agentService.conversationHistoryDetails(principal.id(), conversationId));
     }
 
     @DeleteMapping("/conversations/{conversationId}")

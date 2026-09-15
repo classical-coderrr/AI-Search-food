@@ -16,6 +16,12 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: ${REDIS_TIMEOUT:2s}
 
 mybatis-plus:
   configuration:
@@ -25,6 +31,16 @@ mybatis-plus:
       id-type: auto
 
 app:
+  agent:
+    state-store: ${AGENT_STATE_STORE:redis}
+    intent-recognition:
+      enabled: ${AGENT_INTENT_RECOGNITION_ENABLED:true}
+      confidence-threshold: ${AGENT_INTENT_RECOGNITION_CONFIDENCE_THRESHOLD:0.85}
+    recovery:
+      enabled: ${AGENT_RECOVERY_ENABLED:false}
+      scan-delay: ${AGENT_RECOVERY_SCAN_DELAY:PT30S}
+      stale-after: ${AGENT_RECOVERY_STALE_AFTER:PT5M}
+      lease-duration: ${AGENT_RECOVERY_LEASE_DURATION:PT10M}
   ingredient-images:
     enabled: ${INGREDIENT_IMAGES_ENABLED:true}
   finished-dish-reviews:

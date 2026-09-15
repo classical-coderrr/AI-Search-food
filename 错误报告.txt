@@ -390,3 +390,94 @@ Agent 控制器测试首次鉴权上下文与异步断言不匹配
 - 原因：命令字符串中的双引号被 shell 先行解析，导致传给 `rg` 的表达式被截断。
 - 解决方案：改用不含嵌套引号的正则，并拆分检索条件。
 - 验证结果：已确认动画模板、关键帧和自动发现测试脚本的实际行号。
+
+文档审阅命令中的 PowerShell 变量被外层提前展开
+- 日期：2026-09-14
+- 问题现象：分段读取文档审阅规则时，内层 `$p` 和 `$lines` 变量被外层 PowerShell 提前展开，命令因缺少变量值而解析失败。
+- 原因：嵌套 PowerShell 命令中的美元符号未转义。
+- 解决方案：使用反引号转义内层变量后重新执行分段读取。
+- 验证结果：文档审阅规则已完整读取，后续 DOCX 内容提取未受影响。
+
+DOCX 渲染缺少捆绑的 LibreOffice
+- 日期：2026-09-14
+- 问题现象：使用文档审阅工具渲染开题报告时提示找不到 `soffice.exe`，无法生成页面图片。
+- 原因：当前工作区依赖包包含文档处理 Python 环境和 Poppler，但未提供 LibreOffice 可执行文件，渲染器在 PATH 中也无法定位它。
+- 解决方案：遵循文档审阅规则，不调用用户安装的 LibreOffice；改为完整提取 DOCX 表格内的正文与参考文献，按章节和原句定位引用问题，并明确说明页码未通过渲染确认。
+- 验证结果：已成功提取正文 58 个段落，完成正文引用编号与 16 条参考文献的对应检查；原 DOCX 未被修改。
+
+小厨灵 Redis 状态实现首次编译缺少 AgentStep 导入
+- 日期：2026-09-14
+- 问题现象：首次执行后端编译时，`AgentService` 在落盘工具步骤处提示找不到 `AgentStep` 类型，编译失败。
+- 原因：新增步骤持久化逻辑后忘记在 `AgentService` 导入 `AgentStep`。
+- 解决方案：补充 `com.example.food.agent.state.AgentStep` 导入。
+- 验证结果：重新编译成功；新增定向测试 5/5 通过，完整后端测试 478/478 通过，Docker backend 镜像构建并启动成功。
+
+测试上下文默认恢复扫描连接不到 Redis
+- 日期：2026-09-14
+- 问题现象：完整后端测试中，未使用测试 profile 的 Spring 上下文按默认配置启动 Agent 恢复扫描，日志出现连接 `localhost:6379` 被拒绝；测试结果仍为通过。
+- 原因：普通开发配置将 `AGENT_RECOVERY_ENABLED` 默认设为开启，但这些测试没有启动 Redis。
+- 解决方案：将非 Docker 的 `application.yml` 默认值改为关闭；Docker Compose 继续通过环境变量显式开启，测试 profile 也保持关闭。
+- 验证结果：Redis 容器健康运行，Docker backend 健康检查通过；后续编译和测试验证无功能失败。
+
+Docker Compose 未透传 Agent 恢复参数
+- 日期：2026-09-14
+- 问题现象：准备通过临时缩短 `AGENT_RECOVERY_STALE_AFTER` 做服务重启恢复演练时，发现 Compose 只传递了恢复开关，扫描间隔、过期阈值和租约时长不会进入 backend 容器。
+- 原因：Docker Compose 的 `.env` 变量只有被显式写入 service environment 才会传递给容器；`application-docker.yml` 中的占位符无法直接读取宿主机 Compose 变量。
+- 解决方案：在 backend 环境中补齐 Redis 超时、恢复扫描间隔、过期阈值和租约时长，并同步更新 `.env.example` 与 `.env.prod.example`。
+- 验证结果：重新校验 Compose 配置并重建 backend 后，恢复参数可通过 Compose 环境覆盖；Redis 与 backend 健康检查继续通过。
+
+Redis 状态持久化后小厨灵聊天窗口历史未恢复
+- 日期：2026-09-14
+- 问题现象：用户重启运行环境后重新打开小厨灵，之前的聊天气泡历史为空。
+- 原因：Redis 当前只保存 AgentRun、checkpoint 和执行步骤；前端 `KitchenAgentWidget` 启动时只从浏览器 `localStorage` 恢复消息，后端虽然将消息写入 MySQL，但尚未提供历史消息查询接口。并且前端本地 key 依赖 JWT 后缀，重新登录或浏览器存储被重置后也会读到另一份空记录。
+- 解决方案：保留 Redis 作为运行态与恢复态存储，新增基于用户权限的会话/消息查询接口；前端启动时优先从服务端恢复最近会话，localStorage 只作为离线缓存，并将历史归属改为稳定的用户标识而不是 token 片段。
+- 验证结果：已通过代码审查确认该缺口；当前 Redis 中的 AgentRun 和 checkpoint 仍可读取，问题集中在聊天历史的服务端回读与前端初始化。
+
+客户端历史恢复功能首次编译方法命名冲突
+- 日期：2026-09-14
+- 问题现象：新增会话历史查询方法后，后端编译提示 `AgentService` 中存在同签名的 `conversationHistory(Long, Long)` 方法，返回类型无法区分重载。
+- 原因：原有方法用于构造模型上下文消息列表，新方法也使用了相同方法名返回历史响应对象；Java 不能仅按返回类型重载方法。
+- 解决方案：将面向客户端的查询方法重命名为 `conversationHistoryDetails`，保留原有模型上下文方法不变。
+- 验证结果：后端定向测试 6/6 通过，完整后端测试 479/479 通过。
+
+客户端历史恢复定向测试命令的 PowerShell 逗号解析错误
+- 日期：2026-09-14
+- 问题现象：首次运行 Maven 定向测试时，PowerShell 将 `-Dtest=AgentControllerTest,InMemoryAgentRunStoreTest` 中的逗号表达式错误解析，命令未进入 Maven。
+- 原因：PowerShell 外层参数没有将包含逗号的 Maven 参数整体引用。
+- 解决方案：将测试选择参数改为带引号的 `"-Dtest=AgentControllerTest,InMemoryAgentRunStoreTest"`。
+- 验证结果：定向测试正常执行并通过 6/6。
+
+小厨灵 Agent 确认状态字段变更后的测试编译错误
+- 日期：2026-09-14
+- 问题现象：调整 `AgentConfirmationMapper.markConfirmed` 以持久化执行结果后，`AgentWriteServiceTest` 仍调用旧的两个参数方法，测试编译失败并提示参数数量不匹配。
+- 原因：确认记录新增结果消息字段，Mapper 方法签名同步扩展，但测试桩和验证未同步更新。
+- 解决方案：为测试桩、验证补充结果消息参数，并覆盖保存菜谱和通用厨房写操作两条路径。
+- 验证结果：Agent 定向测试通过 12/12。
+
+Agent 确认执行状态迁移首次不兼容 H2
+- 日期：2026-09-14
+- 问题现象：首次执行全量后端回归时，Flyway 迁移 V32 失败，导致 129 个 Spring 测试上下文错误；H2 拒绝在一个 `ALTER TABLE` 中连续添加多个字段。
+- 原因：迁移脚本采用了 MySQL 可接受但 H2 不支持的多列 `ADD COLUMN` 语法。
+- 解决方案：将 `processing_at`、`result_message`、`error_code`、`error_message` 拆成四条独立的 `ALTER TABLE` 语句。
+- 验证结果：修复后全量后端测试通过 483/483，Flyway 成功应用 V32。
+
+Docker Desktop 关机后 Linux 引擎未恢复
+- 日期：2026-09-14
+- 问题现象：关机重启后执行 Docker Compose 状态检查时，Docker CLI 无法连接 `dockerDesktopLinuxEngine`，提示 Linux 引擎管道不存在；手动启动 Docker Desktop 进程后等待 45 秒仍未就绪。
+- 原因：Docker Desktop 的 Linux 引擎尚未完成启动，当前不是项目代码或测试失败。
+- 解决方案：已启动 Docker Desktop 并保留进程；待引擎就绪后重新执行 Docker Compose 和 Redis/MySQL 运行验证，必要时手动重启 Docker Desktop 或 WSL。
+- 验证结果：本次暂未完成容器运行态验证；不影响已通过的后端 484/484 和前端 158/158 测试。
+
+* “保存这道菜”未触发保存菜谱工具
+- 日期：2026-09-15
+- 问题现象：用户在生成牛肉粿条汤后请求保存，Agent 回复“当前会话里没有可用的保存菜谱功能”，没有返回 `confirmation.required` 确认事件。
+- 原因：后端虽然已注册 `recipe.save`/`recipe_save` 工具，但 `AgentToolRegistry.functionDefinitions` 只在原始消息包含“菜谱”“食谱”“收藏”等关键词时暴露该工具；“保存这道菜”只命中兜底分支，未加入 `RECIPE_SAVE`，模型因此无法调用保存工具。
+- 解决方案：在工具筛选器中增加保存动词与菜谱指代组合判断，覆盖“保存这道菜”“把它收藏起来”等表达，并明确排除“保存本周菜单”等菜单操作误匹配。
+- 验证结果：新增路由回归测试；定向 Agent 测试 18/18、后端全量测试 485/485 通过。
+
+Apifox 调用 Agent 接口返回 401 未授权
+- 日期：2026-09-15
+- 问题现象：调用 Agent 接口时返回 `{"code":401,"message":"Unauthorized","data":null}`，请求未进入 Agent 业务逻辑。
+- 原因：当前请求未通过 JWT 认证，常见原因是缺少 `Authorization: Bearer <JWT>`、令牌已过期，或使用了非普通用户会话令牌；仅携带 `X-Anonymous-Id` 不能访问 Agent 受保护接口。
+- 解决方案：待使用当前登录普通用户重新获取完整 JWT，并确认 Apifox 实际请求头已发送 `Authorization` 后重试。
+- 验证结果：根据后端 JWT 过滤器和认证入口判断为认证层问题，业务原因尚未进入验证。

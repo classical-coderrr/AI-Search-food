@@ -7,6 +7,17 @@ import com.example.food.ai.ingredient.IngredientRecognitionService;
 import com.example.food.ai.ingredient.dto.IngredientRecognitionResponse;
 import com.example.food.ai.qwen.QwenAgentClient;
 import com.example.food.agent.dto.AgentChatRequest;
+import com.example.food.agent.dto.AgentRunStatusResponse;
+import com.example.food.agent.dto.AgentConversationHistoryResponse;
+import com.example.food.agent.dto.AgentConfirmationStatusResponse;
+import com.example.food.agent.dto.AgentMessageResponse;
+import com.example.food.agent.state.AgentCheckpoint;
+import com.example.food.agent.state.AgentNode;
+import com.example.food.agent.state.AgentRun;
+import com.example.food.agent.state.AgentRunStore;
+import com.example.food.agent.state.AgentStep;
+import com.example.food.agent.state.AgentState;
+import com.example.food.agent.state.AgentStatus;
 import com.example.food.notification.NotificationService;
 import com.example.food.notification.dto.NotificationPageResponse;
 import com.example.food.notification.dto.NotificationResponse;
@@ -39,11 +50,14 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -59,6 +73,7 @@ public class AgentService {
     private static final int MAX_AGENT_ROUNDS = 5;
     private static final int MAX_TOOL_CALLS = 8;
     private static final int HISTORY_MESSAGE_LIMIT = 12;
+    private static final Duration RUN_LEASE_DURATION = Duration.ofMinutes(10);
     private static final String ROLE_USER = "USER";
     private static final String ROLE_ASSISTANT = "ASSISTANT";
 
@@ -79,7 +94,9 @@ public class AgentService {
     private final UserDietPreferenceService dietPreferenceService;
     private final RecipeRecommendationService recipeRecommendationService;
     private final QwenAgentClient qwenAgentClient;
+    private final AgentIntentRecognizer intentRecognizer;
     private final ObjectMapper objectMapper;
+    private final AgentRunStore runStore;
     private final ExecutorService workerExecutor = Executors.newCachedThreadPool(
             runnable -> {
                 Thread thread = new Thread(runnable, "kitchen-agent-" + System.nanoTime());
@@ -106,7 +123,9 @@ public class AgentService {
             UserDietPreferenceService dietPreferenceService,
             RecipeRecommendationService recipeRecommendationService,
             QwenAgentClient qwenAgentClient,
-            ObjectMapper objectMapper
+            AgentIntentRecognizer intentRecognizer,
+            ObjectMapper objectMapper,
+            AgentRunStore runStore
     ) {
         this.conversationMapper = conversationMapper;
         this.messageMapper = messageMapper;
@@ -125,7 +144,9 @@ public class AgentService {
         this.dietPreferenceService = dietPreferenceService;
         this.recipeRecommendationService = recipeRecommendationService;
         this.qwenAgentClient = qwenAgentClient;
+        this.intentRecognizer = intentRecognizer;
         this.objectMapper = objectMapper;
+        this.runStore = runStore;
     }
 
     public SseEmitter stream(AgentChatRequest request, AuthPrincipal principal) {
@@ -136,9 +157,46 @@ public class AgentService {
         requireUser(principal);
         AgentAttachment attachment = AgentAttachment.from(image);
         validateRequest(request, attachment);
+        String runId = UUID.randomUUID().toString();
+        Instant now = Instant.now();
+        boolean recoverable = attachment == null;
+        AgentRun initialRun = new AgentRun(
+                runId,
+                principal.id(),
+                request.conversationId(),
+                AgentStatus.RUNNING,
+                AgentNode.CONVERSATION,
+                AgentNode.CONVERSATION,
+                recoverable,
+                now,
+                now,
+                now,
+                null,
+                null
+        );
+        AgentState initialState = new AgentState(
+                runId,
+                principal.id(),
+                request.conversationId(),
+                request.message() == null ? "" : request.message().trim(),
+                attachment != null,
+                AgentStatus.RUNNING,
+                AgentNode.CONVERSATION,
+                AgentNode.CONVERSATION,
+                0,
+                0,
+                0,
+                false,
+                List.of(),
+                List.of(),
+                0,
+                null,
+                now
+        );
+        runStore.create(initialRun, new AgentCheckpoint(runId, 0, initialState, now));
         SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
         AtomicBoolean cancelled = new AtomicBoolean(false);
-        Future<?> worker = workerExecutor.submit(() -> run(emitter, cancelled, request, principal, attachment));
+        Future<?> worker = workerExecutor.submit(() -> run(runId, emitter, cancelled, request, principal, attachment, null));
         Runnable cancel = () -> {
             cancelled.set(true);
             worker.cancel(true);
@@ -149,41 +207,184 @@ public class AgentService {
         return emitter;
     }
 
+    /**
+     * Resume a stale run from its latest checkpoint. This method is called by
+     * AgentRecoveryService without an HTTP connection; events are persisted by
+     * the normal message flow and the next client request can inspect the run.
+     */
+    public void resume(String runId, String owner) {
+        AgentRun run = runStore.findRun(runId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent 运行不存在"));
+        AgentCheckpoint checkpoint = runStore.findCheckpoint(runId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Agent 缺少可恢复状态"));
+        AgentState state = checkpoint.state();
+        if (!run.recoverable() || state.hasAttachment()) {
+            markFailed(runId, "ATTACHMENT_NOT_RECOVERABLE", "包含图片附件的任务无法在服务重启后自动恢复");
+            return;
+        }
+        if (state.status() == AgentStatus.WAITING_CONFIRMATION
+                || state.nextNode() == AgentNode.WAITING_CONFIRMATION) {
+            updateRun(runId, AgentStatus.WAITING_CONFIRMATION, AgentNode.WAITING_CONFIRMATION,
+                    AgentNode.WAITING_CONFIRMATION, null);
+            return;
+        }
+        if (state.status() == AgentStatus.COMPLETED
+                || state.status() == AgentStatus.FAILED
+                || state.status() == AgentStatus.CANCELLED) {
+            return;
+        }
+        AuthPrincipal principal = new AuthPrincipal(state.userId(), "agent-recovery", AppRole.USER);
+        AgentExecution execution = AgentExecution.from(state);
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        try {
+            if (execution.conversationId == null) {
+                AgentConversation conversation = newConversation(state.userId());
+                execution.conversationId = conversation.getId();
+                if (execution.messages.isEmpty()) {
+                    execution.messages.add(QwenAgentClient.ConversationMessage.user(execution.userMessage));
+                    saveMessage(state.userId(), conversation.getId(), ROLE_USER, "text", execution.userMessage);
+                }
+                persistCheckpoint(execution, AgentStatus.RECOVERING, AgentNode.CONVERSATION,
+                        AgentNode.MODEL_DECISION, null);
+            }
+            updateRun(runId, AgentStatus.RECOVERING, state.currentNode(), state.nextNode(), null);
+            driveAgent(null, cancelled, principal, execution.conversationId, execution, null);
+            if (execution.confirmationRequested) {
+                updateRun(runId, AgentStatus.WAITING_CONFIRMATION, AgentNode.WAITING_CONFIRMATION,
+                        AgentNode.WAITING_CONFIRMATION, null);
+            } else {
+                updateRun(runId, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+            }
+        } catch (Throwable exception) {
+            if (!cancelled.get() && !Thread.currentThread().isInterrupted()) {
+                markFailed(runId, "RECOVERY_FAILED", errorMessage(exception));
+            }
+        }
+    }
+
     public void deleteConversation(Long userId, Long conversationId) {
         if (conversationMapper.deleteOwned(userId, conversationId) == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "会话不存在");
         }
     }
 
+    public AgentConversationHistoryResponse latestConversationHistory(Long userId) {
+        AgentConversation conversation = conversationMapper.findLatest(userId);
+        return conversation == null ? null : conversationHistoryResponse(userId, conversation);
+    }
+
+    public AgentConversationHistoryResponse conversationHistoryDetails(Long userId, Long conversationId) {
+        AgentConversation conversation = conversationMapper.findOwned(userId, conversationId);
+        if (conversation == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "会话不存在");
+        }
+        return conversationHistoryResponse(userId, conversation);
+    }
+
+    private AgentConversationHistoryResponse conversationHistoryResponse(Long userId, AgentConversation conversation) {
+        List<AgentMessageResponse> messages = messageMapper.findRecentMessages(
+                        userId, conversation.getId(), 80
+                ).stream()
+                .map(message -> new AgentMessageResponse(
+                        message.getId(),
+                        message.getRole(),
+                        message.getBlockType(),
+                        message.getContent(),
+                        message.getCreatedAt()
+                ))
+                .toList();
+        AgentRunStatusResponse activeRun = runStore.findActiveForConversation(userId, conversation.getId())
+                .map(run -> new AgentRunStatusResponse(
+                        run.runId(),
+                        run.conversationId(),
+                        run.status(),
+                        run.currentNode(),
+                        run.nextNode(),
+                        run.errorCode(),
+                        run.errorMessage(),
+                        run.updatedAt()
+                ))
+                .orElse(null);
+        return new AgentConversationHistoryResponse(
+                conversation.getId(),
+                conversation.getTitle(),
+                conversation.getCreatedAt(),
+                conversation.getUpdatedAt(),
+                messages,
+                activeRun
+        );
+    }
+
     private void run(
+            String runId,
             SseEmitter emitter,
             AtomicBoolean cancelled,
             AgentChatRequest request,
             AuthPrincipal principal,
-            AgentAttachment attachment
+            AgentAttachment attachment,
+            String existingLeaseOwner
     ) {
+        String leaseOwner = existingLeaseOwner == null ? runId + ":" + UUID.randomUUID() : existingLeaseOwner;
+        if (existingLeaseOwner == null && !runStore.tryAcquireLease(runId, leaseOwner, RUN_LEASE_DURATION)) {
+            return;
+        }
         AgentConversation conversation = null;
         try {
             conversation = conversation(request, principal.id());
-            sendOrCancel(emitter, cancelled, "conversation.ready", Map.of("conversationId", conversation.getId()));
+            updateRun(runId, AgentStatus.RUNNING, AgentNode.CONVERSATION, AgentNode.CONVERSATION, null,
+                    conversation.getId());
+            sendOrCancel(emitter, cancelled, "conversation.ready", Map.of(
+                    "conversationId", conversation.getId(),
+                    "runId", runId
+            ));
 
             if (request.confirmationId() != null) {
                 handleConfirmation(emitter, cancelled, principal, conversation, request);
+                updateRun(runId, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
                 return;
             }
 
             String message = normalizedMessage(request.message(), attachment);
             String modelMessage = imageContext(emitter, cancelled, conversation.getId(), message, attachment);
             saveMessage(principal.id(), conversation.getId(), ROLE_USER, "text", modelMessage);
-            runAgent(emitter, cancelled, principal, conversation.getId(), modelMessage, attachment);
+            AgentExecution execution = new AgentExecution(
+                    runId,
+                    principal.id(),
+                    conversation.getId(),
+                    modelMessage,
+                    attachment != null,
+                    conversationHistory(principal.id(), conversation.getId()),
+                    0,
+                    0,
+                    0,
+                    false,
+                    List.of(),
+                    0,
+                    AgentNode.MODEL_DECISION
+            );
+            if (execution.messages.isEmpty()) {
+                execution.messages.add(QwenAgentClient.ConversationMessage.user(modelMessage));
+            }
+            persistCheckpoint(execution, AgentStatus.RUNNING, AgentNode.CONVERSATION, AgentNode.MODEL_DECISION, null);
+            driveAgent(emitter, cancelled, principal, conversation.getId(), execution, attachment);
             conversationMapper.touch(principal.id(), conversation.getId());
-            sendOrCancel(emitter, cancelled, "done", Map.of("conversationId", conversation.getId()));
-            emitter.complete();
+            if (execution.confirmationRequested) {
+                updateRun(runId, AgentStatus.WAITING_CONFIRMATION, AgentNode.WAITING_CONFIRMATION,
+                        AgentNode.WAITING_CONFIRMATION, null);
+            } else {
+                updateRun(runId, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+            }
+            sendOrCancel(emitter, cancelled, "done", Map.of("conversationId", conversation.getId(), "runId", runId));
+            if (emitter != null) {
+                emitter.complete();
+            }
         } catch (Throwable exception) {
             if (cancelled.get() || Thread.currentThread().isInterrupted()) {
+                updateRun(runId, AgentStatus.CANCELLED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
                 return;
             }
             String message = errorMessage(exception);
+            markFailed(runId, "AGENT_RUN_FAILED", message);
             if (conversation != null) {
                 try {
                     saveMessage(principal.id(), conversation.getId(), ROLE_ASSISTANT, "text", message);
@@ -192,65 +393,165 @@ public class AgentService {
                 }
             }
             send(emitter, cancelled, "error", Map.of("message", message));
-            emitter.complete();
+            if (emitter != null) {
+                emitter.complete();
+            }
+        } finally {
+            if (existingLeaseOwner == null) {
+                runStore.releaseLease(runId, leaseOwner);
+            }
         }
     }
 
-    private void runAgent(
+    public AgentRunStatusResponse runStatus(Long userId, String runId) {
+        AgentRun run = runStore.findRun(runId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent 运行不存在"));
+        if (!Objects.equals(userId, run.userId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent 运行不存在");
+        }
+        return new AgentRunStatusResponse(
+                run.runId(),
+                run.conversationId(),
+                run.status(),
+                run.currentNode(),
+                run.nextNode(),
+                run.errorCode(),
+                run.errorMessage(),
+                run.updatedAt()
+        );
+    }
+
+    public AgentConfirmationStatusResponse confirmationStatus(AuthPrincipal principal, Long confirmationId) {
+        requireUser(principal);
+        return writeService.status(principal, confirmationId);
+    }
+
+    private void driveAgent(
             SseEmitter emitter,
             AtomicBoolean cancelled,
             AuthPrincipal principal,
             Long conversationId,
-            String userMessage,
+            AgentExecution execution,
             AgentAttachment attachment
     ) {
-        List<QwenAgentClient.ConversationMessage> messages = conversationHistory(principal.id(), conversationId);
-        if (messages.isEmpty()) {
-            messages.add(QwenAgentClient.ConversationMessage.user(userMessage));
-        }
-        int toolCallCount = 0;
-        boolean confirmationRequested = false;
         sendToolStarted(emitter, cancelled, "小厨灵正在理解你的需求");
 
-        for (int round = 0; round < MAX_AGENT_ROUNDS; round++) {
-            QwenAgentClient.AgentTurn turn = qwenAgentClient.complete(
-                    messages,
-                    toolRegistry.functionDefinitions(userMessage, attachment != null)
-            );
-            messages.add(QwenAgentClient.ConversationMessage.assistant(turn));
-            if (turn.toolCalls().isEmpty()) {
-                sendText(emitter, cancelled, conversationId, limit(turn.content(), 12_000));
-                return;
+        while (true) {
+            if (execution.nextNode == AgentNode.TOOL_EXECUTE && !execution.pendingToolCalls.isEmpty()) {
+                // A restart may leave a tool call checkpointed but not yet observed.
+                // Resume that call before asking the model for a new decision.
+            } else {
+                if (execution.round >= MAX_AGENT_ROUNDS) {
+                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "小厨灵尚未完成工具调用，请缩小问题范围后重试");
+                }
+                execution.currentNode = AgentNode.MODEL_DECISION;
+                execution.nextNode = AgentNode.MODEL_DECISION;
+                persistCheckpoint(execution, AgentStatus.RUNNING, AgentNode.MODEL_DECISION, AgentNode.MODEL_DECISION, null);
+                QwenAgentClient.AgentTurn turn = qwenAgentClient.complete(
+                        execution.messages,
+                        toolDefinitions(execution)
+                );
+                execution.round++;
+                execution.messages.add(QwenAgentClient.ConversationMessage.assistant(turn));
+                execution.pendingToolCalls = turn.toolCalls();
+                execution.pendingToolIndex = 0;
+                if (turn.toolCalls().isEmpty()) {
+                    sendText(emitter, cancelled, conversationId, limit(turn.content(), 12_000));
+                    persistCheckpoint(execution, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+                    return;
+                }
+                execution.currentNode = AgentNode.TOOL_EXECUTE;
+                execution.nextNode = AgentNode.TOOL_EXECUTE;
+                persistCheckpoint(execution, AgentStatus.RUNNING, AgentNode.MODEL_DECISION, AgentNode.TOOL_EXECUTE, null);
             }
 
-            for (QwenAgentClient.ToolCall call : turn.toolCalls()) {
-                toolCallCount++;
-                if (toolCallCount > MAX_TOOL_CALLS) {
+            while (execution.pendingToolIndex < execution.pendingToolCalls.size()) {
+                QwenAgentClient.ToolCall call = execution.pendingToolCalls.get(execution.pendingToolIndex);
+                execution.toolCallCount++;
+                if (execution.toolCallCount > MAX_TOOL_CALLS) {
                     throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "小厨灵调用工具次数过多，请简化问题后重试");
                 }
                 AgentToolRegistry.Tool tool = toolRegistry.requireFunction(call.name());
                 JsonNode arguments = toolArguments(call.arguments());
+                String requestJson = toolOutput(arguments);
+                persistStep(execution, AgentNode.TOOL_EXECUTE, "tool.started", tool.toolName(),
+                        "RUNNING", requestJson, null, call.id(), null);
+                persistCheckpoint(execution, AgentStatus.RUNNING, AgentNode.TOOL_EXECUTE, AgentNode.TOOL_EXECUTE, null);
                 sendToolStarted(emitter, cancelled, tool);
-                ToolExecution execution;
+                ToolExecution toolExecution;
                 if ((tool == AgentToolRegistry.Tool.RECIPE_SAVE || kitchenToolService.isMutation(tool, arguments))
-                        && confirmationRequested) {
-                    execution = new ToolExecution(
+                        && execution.confirmationRequested) {
+                    toolExecution = new ToolExecution(
                             Map.of("status", "confirmation_already_requested"),
                             "本轮已发起一项操作确认"
                     );
                 } else if (kitchenToolService.isMutation(tool, arguments)) {
-                    execution = requestActionConfirmation(
+                    toolExecution = requestActionConfirmation(
                             emitter, cancelled, principal.id(), conversationId, tool, arguments);
                 } else {
-                    execution = executeTool(
-                            tool, arguments, emitter, cancelled, principal, conversationId, userMessage, attachment);
+                    toolExecution = executeTool(
+                            tool, arguments, emitter, cancelled, principal, conversationId, execution.userMessage, attachment);
                 }
-                confirmationRequested = confirmationRequested || execution.confirmationRequested();
-                sendToolResult(emitter, cancelled, tool, execution.summary());
-                messages.add(QwenAgentClient.ConversationMessage.tool(call.id(), toolOutput(execution.output())));
+                execution.confirmationRequested = execution.confirmationRequested || toolExecution.confirmationRequested();
+                sendToolResult(emitter, cancelled, tool, toolExecution.summary());
+                String output = toolOutput(toolExecution.output());
+                execution.messages.add(QwenAgentClient.ConversationMessage.tool(call.id(), output));
+                persistStep(execution, AgentNode.OBSERVE, "tool.result", tool.toolName(),
+                        "SUCCESS", requestJson, output, call.id(), null);
+                execution.pendingToolIndex++;
+                execution.currentNode = AgentNode.OBSERVE;
+                execution.nextNode = AgentNode.MODEL_DECISION;
+                persistCheckpoint(execution, execution.confirmationRequested
+                        ? AgentStatus.WAITING_CONFIRMATION : AgentStatus.RUNNING,
+                        AgentNode.OBSERVE,
+                        execution.confirmationRequested ? AgentNode.WAITING_CONFIRMATION : AgentNode.MODEL_DECISION,
+                        null);
+            }
+            execution.pendingToolCalls = List.of();
+            execution.pendingToolIndex = 0;
+            if (execution.confirmationRequested) {
+                return;
             }
         }
-        throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "小厨灵尚未完成工具调用，请缩小问题范围后重试");
+    }
+
+    private List<Map<String, Object>> toolDefinitions(AgentExecution execution) {
+        List<Map<String, Object>> definitions = toolRegistry.functionDefinitions(
+                execution.userMessage,
+                execution.hasAttachment
+        );
+        boolean saveToolAlreadyExposed = containsFunction(definitions, AgentToolRegistry.Tool.RECIPE_SAVE.functionName());
+        if (saveToolAlreadyExposed) {
+            execution.intentResolutionAttempted = true;
+            execution.recipeSaveIntent = true;
+            return definitions;
+        }
+        if (execution.intentResolutionAttempted) {
+            return definitions;
+        }
+        AgentIntentRecognizer.RecognitionResult result = intentRecognizer.recognize(
+                execution.userMessage,
+                execution.messages
+        );
+        execution.intentResolutionAttempted = true;
+        execution.recipeSaveIntent = result.isSaveRecipe();
+        if (!result.isSaveRecipe()) {
+            return definitions;
+        }
+        List<Map<String, Object>> enriched = new ArrayList<>(definitions);
+        enriched.add(toolRegistry.functionDefinition(AgentToolRegistry.Tool.RECIPE_SAVE));
+        return List.copyOf(enriched);
+    }
+
+    private boolean containsFunction(List<Map<String, Object>> definitions, String functionName) {
+        for (Map<String, Object> definition : definitions) {
+            Object function = definition == null ? null : definition.get("function");
+            if (function instanceof Map<?, ?> functionMap
+                    && functionName.equals(String.valueOf(functionMap.get("name")))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private ToolExecution executeTool(
@@ -437,7 +738,9 @@ public class AgentService {
         }
         conversationMapper.touch(principal.id(), conversation.getId());
         sendOrCancel(emitter, cancelled, "done", Map.of("conversationId", conversation.getId()));
-        emitter.complete();
+        if (emitter != null) {
+            emitter.complete();
+        }
     }
 
     private ToolExecution requestSave(
@@ -493,6 +796,10 @@ public class AgentService {
             }
             return existing;
         }
+        return newConversation(userId);
+    }
+
+    private AgentConversation newConversation(Long userId) {
         AgentConversation conversation = new AgentConversation();
         conversation.setUserId(userId);
         conversation.setTitle("厨房助手对话");
@@ -757,6 +1064,129 @@ public class AgentService {
         }
     }
 
+    private void persistCheckpoint(
+            AgentExecution execution,
+            AgentStatus status,
+            AgentNode currentNode,
+            AgentNode nextNode,
+            String error
+    ) {
+        Instant now = Instant.now();
+        AgentState state = execution.snapshot(status, currentNode, nextNode, error, now);
+        long version = runStore.findCheckpoint(execution.runId)
+                .map(checkpoint -> checkpoint.version() + 1)
+                .orElse(0L);
+        runStore.saveCheckpoint(new AgentCheckpoint(execution.runId, version, state, now));
+        updateRun(execution.runId, status, currentNode, nextNode, error, execution.conversationId);
+    }
+
+    private void persistStep(
+            AgentExecution execution,
+            AgentNode node,
+            String action,
+            String toolName,
+            String status,
+            String requestJson,
+            String responseJson,
+            String idempotencyKey,
+            String errorMessage
+    ) {
+        Instant now = Instant.now();
+        long stepNo = ++execution.stepNo;
+        runStore.appendStep(new AgentStep(
+                execution.runId,
+                stepNo,
+                node,
+                action,
+                toolName,
+                status,
+                requestJson,
+                responseJson,
+                idempotencyKey,
+                now,
+                now,
+                errorMessage
+        ));
+    }
+
+    private void updateRun(
+            String runId,
+            AgentStatus status,
+            AgentNode currentNode,
+            AgentNode nextNode,
+            String errorMessage
+    ) {
+        updateRun(runId, status, currentNode, nextNode, errorMessage, null);
+    }
+
+    private void updateRun(
+            String runId,
+            AgentStatus status,
+            AgentNode currentNode,
+            AgentNode nextNode,
+            String errorMessage,
+            Long conversationId
+    ) {
+        runStore.findRun(runId).ifPresent(existing -> {
+            Instant now = Instant.now();
+            runStore.saveRun(new AgentRun(
+                    existing.runId(),
+                    existing.userId(),
+                    conversationId == null ? existing.conversationId() : conversationId,
+                    status,
+                    currentNode,
+                    nextNode,
+                    existing.recoverable(),
+                    now,
+                    existing.createdAt() == null ? now : existing.createdAt(),
+                    now,
+                    existing.errorCode(),
+                    errorMessage
+            ));
+        });
+    }
+
+    private void markFailed(String runId, String errorCode, String errorMessage) {
+        Instant now = Instant.now();
+        runStore.findRun(runId).ifPresent(existing -> runStore.saveRun(new AgentRun(
+                existing.runId(),
+                existing.userId(),
+                existing.conversationId(),
+                AgentStatus.FAILED,
+                AgentNode.FINALIZE,
+                AgentNode.FINALIZE,
+                existing.recoverable(),
+                now,
+                existing.createdAt() == null ? now : existing.createdAt(),
+                now,
+                errorCode,
+                errorMessage
+        )));
+        runStore.findCheckpoint(runId).ifPresent(checkpoint -> {
+            AgentState state = checkpoint.state();
+            AgentState failed = new AgentState(
+                    state.runId(),
+                    state.userId(),
+                    state.conversationId(),
+                    state.userMessage(),
+                    state.hasAttachment(),
+                    AgentStatus.FAILED,
+                    AgentNode.FINALIZE,
+                    AgentNode.FINALIZE,
+                    state.round(),
+                    state.toolCallCount(),
+                    state.stepNo(),
+                    state.confirmationRequested(),
+                    state.messages(),
+                    state.pendingToolCalls(),
+                    state.pendingToolIndex(),
+                    errorMessage,
+                    now
+            );
+            runStore.saveCheckpoint(new AgentCheckpoint(runId, checkpoint.version() + 1, failed, now));
+        });
+    }
+
     private void saveMessage(Long ignoredUserId, Long conversationId, String role, String blockType, String content) {
         AgentMessage message = new AgentMessage();
         message.setConversationId(conversationId);
@@ -778,6 +1208,9 @@ public class AgentService {
     private boolean send(SseEmitter emitter, AtomicBoolean cancelled, String event, Object data) {
         if (cancelled.get()) {
             return false;
+        }
+        if (emitter == null) {
+            return true;
         }
         try {
             emitter.send(SseEmitter.event().name(event).data(data));
@@ -891,6 +1324,107 @@ public class AgentService {
     private record ToolExecution(Object output, String summary, boolean confirmationRequested) {
         private ToolExecution(Object output, String summary) {
             this(output, summary, false);
+        }
+    }
+
+    private static final class AgentExecution {
+
+        private final String runId;
+        private final Long userId;
+        private Long conversationId;
+        private final String userMessage;
+        private final boolean hasAttachment;
+        private final List<QwenAgentClient.ConversationMessage> messages;
+        private int round;
+        private int toolCallCount;
+        private long stepNo;
+        private boolean confirmationRequested;
+        private List<QwenAgentClient.ToolCall> pendingToolCalls;
+        private int pendingToolIndex;
+        private AgentNode currentNode;
+        private AgentNode nextNode;
+        private boolean intentResolutionAttempted;
+        private boolean recipeSaveIntent;
+
+        private AgentExecution(
+                String runId,
+                Long userId,
+                Long conversationId,
+                String userMessage,
+                boolean hasAttachment,
+                List<QwenAgentClient.ConversationMessage> messages,
+                int round,
+                int toolCallCount,
+                long stepNo,
+                boolean confirmationRequested,
+                List<QwenAgentClient.ToolCall> pendingToolCalls,
+                int pendingToolIndex,
+                AgentNode nextNode
+        ) {
+            this.runId = runId;
+            this.userId = userId;
+            this.conversationId = conversationId;
+            this.userMessage = userMessage == null ? "" : userMessage;
+            this.hasAttachment = hasAttachment;
+            this.messages = new ArrayList<>(messages == null ? List.of() : messages);
+            this.round = round;
+            this.toolCallCount = toolCallCount;
+            this.stepNo = stepNo;
+            this.confirmationRequested = confirmationRequested;
+            this.pendingToolCalls = pendingToolCalls == null ? List.of() : List.copyOf(pendingToolCalls);
+            this.pendingToolIndex = pendingToolIndex;
+            this.currentNode = nextNode;
+            this.nextNode = nextNode;
+        }
+
+        private static AgentExecution from(AgentState state) {
+            AgentExecution execution = new AgentExecution(
+                    state.runId(),
+                    state.userId(),
+                    state.conversationId(),
+                    state.userMessage(),
+                    state.hasAttachment(),
+                    state.messages(),
+                    state.round(),
+                    state.toolCallCount(),
+                    state.stepNo(),
+                    state.confirmationRequested(),
+                    state.pendingToolCalls(),
+                    state.pendingToolIndex(),
+                    state.nextNode()
+            );
+            execution.currentNode = state.currentNode();
+            return execution;
+        }
+
+        private AgentState snapshot(
+                AgentStatus status,
+                AgentNode currentNode,
+                AgentNode nextNode,
+                String error,
+                Instant updatedAt
+        ) {
+            this.currentNode = currentNode;
+            this.nextNode = nextNode;
+            return new AgentState(
+                    runId,
+                    userId,
+                    conversationId,
+                    userMessage,
+                    hasAttachment,
+                    status,
+                    currentNode,
+                    nextNode,
+                    round,
+                    toolCallCount,
+                    stepNo,
+                    confirmationRequested,
+                    messages,
+                    pendingToolCalls,
+                    pendingToolIndex,
+                    error,
+                    updatedAt
+            );
         }
     }
 

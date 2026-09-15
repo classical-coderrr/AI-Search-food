@@ -18,7 +18,11 @@ public class AgentConfirmation {
     private String payloadJson;
     private String status;
     private LocalDateTime createdAt;
+    private LocalDateTime processingAt;
     private LocalDateTime confirmedAt;
+    private String resultMessage;
+    private String errorCode;
+    private String errorMessage;
 
     public Long getId() {
         return id;
@@ -90,5 +94,37 @@ public class AgentConfirmation {
 
     public void setConfirmedAt(LocalDateTime confirmedAt) {
         this.confirmedAt = confirmedAt;
+    }
+
+    public LocalDateTime getProcessingAt() {
+        return processingAt;
+    }
+
+    public void setProcessingAt(LocalDateTime processingAt) {
+        this.processingAt = processingAt;
+    }
+
+    public String getResultMessage() {
+        return resultMessage;
+    }
+
+    public void setResultMessage(String resultMessage) {
+        this.resultMessage = resultMessage;
+    }
+
+    public String getErrorCode() {
+        return errorCode;
+    }
+
+    public void setErrorCode(String errorCode) {
+        this.errorCode = errorCode;
+    }
+
+    public String getErrorMessage() {
+        return errorMessage;
+    }
+
+    public void setErrorMessage(String errorMessage) {
+        this.errorMessage = errorMessage;
     }
 }

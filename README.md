@@ -150,6 +150,18 @@ DASHSCOPE_MODEL=qwen-plus
 DASHSCOPE_VISION_MODEL=qwen-vl-plus
 ```
 
+### Agent 状态与重启恢复
+
+Agent 运行状态、步骤和 checkpoint 默认写入 Redis。Docker Compose 会自动启动并持久化 Redis；本地运行时请先启动 Redis，并设置 `REDIS_HOST`、`REDIS_PORT` 和可选的 `REDIS_PASSWORD`。服务重启后，超过 `AGENT_RECOVERY_STALE_AFTER` 仍未完成的无图片任务会由后台恢复扫描器从最近 checkpoint 继续执行；写操作仍需要用户确认。开发测试可将 `AGENT_STATE_STORE=memory` 且关闭 `AGENT_RECOVERY_ENABLED`。
+
+每次流式响应的 `conversation.ready` 事件会返回 `runId`。如果客户端连接中断，可通过 `GET /api/agent/runs/{runId}` 查询运行状态（`RUNNING`、`RECOVERING`、`WAITING_CONFIRMATION`、`COMPLETED` 或 `FAILED`）。
+
+需要确认的 Agent 写操作会在 `agent_confirmations` 中以幂等键登记。确认执行会先原子抢占为 `PROCESSING`，完成后写入 `CONFIRMED` 和结果消息；重复提交会直接返回已完成结果，不会再次执行。客户端或运维侧可通过 `GET /api/agent/confirmations/{confirmationId}` 查询 `PENDING`、`PROCESSING`、`CONFIRMED`、`UNKNOWN_REVIEW` 等状态。`PROCESSING` 超过 20 分钟会转为 `UNKNOWN_REVIEW`，系统不会自动重试可能已经产生副作用的写操作。
+
+小厨灵客户端会在打开时从服务端恢复最近会话；如果发现未完成的运行，会根据 `runId` 轮询 Redis 状态。服务重启或网络中断后，页面会显示恢复提示，并在运行完成后自动拉取最新消息。
+
+会话恢复接口为 `GET /api/agent/conversations/latest` 和 `GET /api/agent/conversations/{conversationId}/messages`，均按当前登录用户隔离。
+
 `DASHSCOPE_API_KEY` 仅作为兜底配置；管理员端保存的 AI 接入配置优先级更高。生产环境必须替换 `JWT_SECRET`，并使用至少 32 字节的随机值。
 
 ### H2 与 MySQL
