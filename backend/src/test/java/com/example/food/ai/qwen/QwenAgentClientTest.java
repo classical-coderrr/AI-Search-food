@@ -74,6 +74,100 @@ class QwenAgentClientTest {
     }
 
     @Test
+    void normalizesDirectQwenToolCallWithoutIdOrNestedFunction() {
+        RestTemplate restTemplate = new RestTemplateBuilder().build();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        QwenProperties properties = properties("test-api-key");
+        QwenAgentClient client = new QwenAgentClient(restTemplate, new ObjectMapper(), properties);
+
+        server.expect(once(), requestTo(properties.endpoint()))
+                .andRespond(withSuccess("""
+                        {
+                          "choices": [{
+                            "message": {
+                              "content": "",
+                              "tool_calls": [{
+                                "type": "function",
+                                "name": "pantry_list",
+                                "arguments": {}
+                              }]
+                            }
+                          }]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        QwenAgentClient.AgentTurn turn = client.complete(
+                List.of(QwenAgentClient.ConversationMessage.user("我的库存有什么？")),
+                new AgentToolRegistry().functionDefinitions()
+        );
+
+        assertThat(turn.toolCalls()).containsExactly(
+                new QwenAgentClient.ToolCall("qwen_tool_call_1", "pantry_list", "{}")
+        );
+        server.verify();
+    }
+
+    @Test
+    void parsesResponsesApiFunctionCallShape() {
+        RestTemplate restTemplate = new RestTemplateBuilder().build();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        QwenProperties properties = properties("test-api-key");
+        QwenAgentClient client = new QwenAgentClient(restTemplate, new ObjectMapper(), properties);
+
+        server.expect(once(), requestTo(properties.endpoint()))
+                .andRespond(withSuccess("""
+                        {
+                          "output_text": "",
+                          "output": [{
+                            "type": "function_call",
+                            "call_id": "call_response_1",
+                            "name": "pantry_list",
+                            "arguments": "{}"
+                          }]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        QwenAgentClient.AgentTurn turn = client.complete(
+                List.of(QwenAgentClient.ConversationMessage.user("我的库存有什么？")),
+                new AgentToolRegistry().functionDefinitions()
+        );
+
+        assertThat(turn.toolCalls()).containsExactly(
+                new QwenAgentClient.ToolCall("call_response_1", "pantry_list", "{}")
+        );
+        server.verify();
+    }
+
+    @Test
+    void ignoresMalformedStructuredCallWhenTextAnswerIsUsable() {
+        RestTemplate restTemplate = new RestTemplateBuilder().build();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        QwenProperties properties = properties("test-api-key");
+        QwenAgentClient client = new QwenAgentClient(restTemplate, new ObjectMapper(), properties);
+
+        server.expect(once(), requestTo(properties.endpoint()))
+                .andRespond(withSuccess("""
+                        {
+                          "choices": [{
+                            "message": {
+                              "content": "我可以帮你安排晚餐。",
+                              "tool_calls": [{"id": "call_bad", "function": {"arguments": "{}"}}]
+                            }
+                          }]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        QwenAgentClient.AgentTurn turn = client.complete(
+                List.of(QwenAgentClient.ConversationMessage.user("帮我安排晚餐")),
+                new AgentToolRegistry().functionDefinitions()
+        );
+
+        assertThat(turn.content()).isEqualTo("我可以帮你安排晚餐。");
+        assertThat(turn.toolCalls()).isEmpty();
+        server.verify();
+    }
+
+    @Test
     void sendsToolResultBackAndParsesFinalAnswer() {
         RestTemplate restTemplate = new RestTemplateBuilder().build();
         MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();

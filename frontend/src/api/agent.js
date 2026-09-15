@@ -111,3 +111,7 @@ export function getAgentRunStatus(runId) {
 export function getAgentConfirmationStatus(confirmationId) {
   return http.get(`/agent/confirmations/${confirmationId}`)
 }
+
+export function getAgentWriteOperationStatus(idempotencyKey) {
+  return http.get(`/agent/writes/${encodeURIComponent(idempotencyKey)}`)
+}

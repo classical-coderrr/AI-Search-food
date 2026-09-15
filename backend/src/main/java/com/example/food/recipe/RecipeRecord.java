@@ -17,6 +17,7 @@ public class RecipeRecord {
     private Long searchLogId;
     private Long parentRecipeId;
     private Long weeklyMenuPlanId;
+    private String agentIdempotencyKey;
     @TableField(exist = false)
     private String mealType;
     private String title;
@@ -72,6 +73,14 @@ public class RecipeRecord {
 
     public void setWeeklyMenuPlanId(Long weeklyMenuPlanId) {
         this.weeklyMenuPlanId = weeklyMenuPlanId;
+    }
+
+    public String getAgentIdempotencyKey() {
+        return agentIdempotencyKey;
+    }
+
+    public void setAgentIdempotencyKey(String agentIdempotencyKey) {
+        this.agentIdempotencyKey = agentIdempotencyKey;
     }
 
     public String getMealType() {

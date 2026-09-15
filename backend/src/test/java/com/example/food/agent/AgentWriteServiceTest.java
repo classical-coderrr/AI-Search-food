@@ -8,10 +8,12 @@ import com.example.food.security.AppRole;
 import com.example.food.security.AuthPrincipal;
 import com.example.food.security.UserSecurityLogService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.web.server.ResponseStatusException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -19,10 +21,13 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -40,6 +45,9 @@ class AgentWriteServiceTest {
     private AgentKitchenActionService actionService;
 
     @Mock
+    private AgentWriteOperationService operationService;
+
+    @Mock
     private UserSecurityLogService securityLogService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -48,7 +56,16 @@ class AgentWriteServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new AgentWriteService(confirmationMapper, savedRecipeService, actionService, securityLogService, objectMapper);
+        service = new AgentWriteService(
+                confirmationMapper,
+                savedRecipeService,
+                actionService,
+                operationService,
+                securityLogService,
+                objectMapper
+        );
+        lenient().when(operationService.claim(any(), any(), anyString(), anyString()))
+                .thenAnswer(invocation -> AgentWriteOperationService.ClaimResult.acquired(new AgentWriteOperation()));
     }
 
     @Test
@@ -61,17 +78,19 @@ class AgentWriteServiceTest {
         when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);
         when(confirmationMapper.claim(7L, 9L)).thenReturn(1);
         when(confirmationMapper.markConfirmed(7L, 9L, "菜谱已保存到我的菜谱")).thenReturn(1);
-        when(savedRecipeService.save(any(SaveRecipeRequest.class), eq(principal), isNull())).thenReturn(detail);
+        when(savedRecipeService.save(any(SaveRecipeRequest.class), eq(principal), isNull(), eq("key-9")))
+                .thenReturn(detail);
 
         AgentWriteService.ConfirmationResult result = service.saveRecipe(principal, 9L, "key-9");
 
         assertThat(result.status()).isEqualTo("completed");
         assertThat(result.detail()).isEqualTo(detail);
         ArgumentCaptor<SaveRecipeRequest> request = ArgumentCaptor.forClass(SaveRecipeRequest.class);
-        verify(savedRecipeService).save(request.capture(), eq(principal), isNull());
+        verify(savedRecipeService).save(request.capture(), eq(principal), isNull(), eq("key-9"));
         assertThat(request.getValue().searchLogId()).isEqualTo(42L);
         assertThat(request.getValue().title()).isEqualTo("番茄炒蛋");
         verify(confirmationMapper).markConfirmed(7L, 9L, "菜谱已保存到我的菜谱");
+        verify(operationService).complete(eq(7L), eq("key-9"), eq("菜谱已保存到我的菜谱"), eq(detail));
         verify(securityLogService).record(7L, "AGENT_SAVE_RECIPE", "/api/agent/chat/stream", "confirmationId=9");
     }
 
@@ -88,6 +107,26 @@ class AgentWriteServiceTest {
     }
 
     @Test
+    void returnsStoredOperationResultWithoutExecutingTheBusinessWriteAgain() {
+        AgentConfirmation confirmation = confirmation("PENDING", "{\"id\":12}");
+        confirmation.setActionType("PANTRY_DELETE");
+        AgentWriteOperation existing = new AgentWriteOperation();
+        existing.setStatus(AgentWriteOperationService.STATUS_COMPLETED);
+        existing.setResultMessage("食材已删除");
+        when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);
+        when(operationService.claim(7L, 9L, "PANTRY_DELETE", "key-9"))
+                .thenReturn(new AgentWriteOperationService.ClaimResult(false, existing));
+        when(operationService.replay(existing))
+                .thenReturn(AgentWriteService.ConfirmationResult.alreadyCompleted("食材已删除"));
+
+        AgentWriteService.ConfirmationResult result = service.execute(principal, 9L, "key-9");
+
+        assertThat(result.status()).isEqualTo("already-completed");
+        verify(actionService, never()).execute(any(), any(), any(), anyString());
+        verify(confirmationMapper, never()).markConfirmed(any(), any(), anyString());
+    }
+
+    @Test
     void executesGenericKitchenActionOnlyAfterAtomicClaim() {
         AgentConfirmation confirmation = confirmation("PENDING", "{\"id\":12}");
         confirmation.setActionType("PANTRY_DELETE");
@@ -101,8 +140,28 @@ class AgentWriteServiceTest {
 
         assertThat(result.status()).isEqualTo("completed");
         assertThat(result.message()).isEqualTo("食材已删除");
+        InOrder order = inOrder(operationService, confirmationMapper);
+        order.verify(operationService).claim(7L, 9L, "PANTRY_DELETE", "key-9");
+        order.verify(confirmationMapper).claim(7L, 9L);
         verify(confirmationMapper).markConfirmed(7L, 9L, "食材已删除");
+        verify(operationService).complete(eq(7L), eq("key-9"), eq("食材已删除"), isNull());
         verify(securityLogService).record(7L, "AGENT_PANTRY_DELETE", "/api/agent/chat/stream", "confirmationId=9");
+    }
+
+    @Test
+    void recordsDeterministicWriteFailureForStatusQuery() {
+        AgentConfirmation confirmation = confirmation("PENDING", "{\"id\":12}");
+        confirmation.setActionType("PANTRY_DELETE");
+        when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);
+        when(confirmationMapper.claim(7L, 9L)).thenReturn(1);
+        when(actionService.execute(eq("PANTRY_DELETE"), any(), eq(principal), anyString()))
+                .thenThrow(new ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "参数错误"));
+
+        assertThatThrownBy(() -> service.execute(principal, 9L, "key-9"))
+                .isInstanceOf(ResponseStatusException.class);
+
+        verify(operationService).fail(7L, "key-9", "400", "参数错误");
+        verify(confirmationMapper, never()).markConfirmed(any(), any(), anyString());
     }
 
     @Test

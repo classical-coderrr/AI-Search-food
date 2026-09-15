@@ -74,3 +74,10 @@ test('小厨灵从服务端恢复会话并轮询 Redis 运行状态', () => {
   assert.match(agentSource, /正在读取 Redis 中的运行状态/)
   assert.match(agentSource, /恢复完成，正在加载最新结果/)
 })
+
+test('恢复到等待确认时释放生成状态并保留确认卡片可操作', () => {
+  assert.match(
+    agentSource,
+    /status\.status === 'WAITING_CONFIRMATION'[\s\S]*?finishRunTracking\(\)[\s\S]*?return/
+  )
+})

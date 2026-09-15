@@ -4,6 +4,7 @@ import com.example.food.agent.dto.AgentChatRequest;
 import com.example.food.agent.dto.AgentConfirmationStatusResponse;
 import com.example.food.agent.dto.AgentConversationHistoryResponse;
 import com.example.food.agent.dto.AgentRunStatusResponse;
+import com.example.food.agent.dto.AgentWriteOperationStatusResponse;
 import com.example.food.common.ApiResponse;
 import com.example.food.security.AuthPrincipal;
 import jakarta.validation.Valid;
@@ -67,6 +68,14 @@ public class AgentController {
             @PathVariable Long confirmationId
     ) {
         return ApiResponse.ok(agentService.confirmationStatus(principal, confirmationId));
+    }
+
+    @GetMapping("/writes/{idempotencyKey}")
+    public ApiResponse<AgentWriteOperationStatusResponse> writeOperationStatus(
+            @AuthenticationPrincipal AuthPrincipal principal,
+            @PathVariable String idempotencyKey
+    ) {
+        return ApiResponse.ok(agentService.operationStatus(principal, idempotencyKey));
     }
 
     @GetMapping("/conversations/latest")

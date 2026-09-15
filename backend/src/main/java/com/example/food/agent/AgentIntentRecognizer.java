@@ -249,5 +249,25 @@ public class AgentIntentRecognizer {
         public boolean isSaveRecipe() {
             return saveRecipe;
         }
+
+        /**
+         * Stable source label used by the Agent step audit. A not-candidate
+         * result is a deterministic gate and does not represent a model call.
+         */
+        public String auditSource() {
+            String resolutionReason = reason == null ? "" : reason;
+            return switch (resolutionReason) {
+                case "not_candidate" -> AgentIntentAuditService.SOURCE_RULE_GATE;
+                case "disabled" -> AgentIntentAuditService.SOURCE_CONFIG;
+                case "unavailable", "invalid_response" -> AgentIntentAuditService.SOURCE_MODEL_FALLBACK;
+                default -> available
+                        ? AgentIntentAuditService.SOURCE_MODEL
+                        : AgentIntentAuditService.SOURCE_MODEL_FALLBACK;
+            };
+        }
+
+        public boolean modelCalled() {
+            return !"not_candidate".equals(reason) && !"disabled".equals(reason);
+        }
     }
 }

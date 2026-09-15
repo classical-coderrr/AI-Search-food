@@ -733,6 +733,9 @@ async function trackRun(targetRunId, assistant) {
       } else if (status.status === 'WAITING_CONFIRMATION') {
         recoveryStatus.value = '上次操作等待你的确认'
         if (assistant) assistant.statusText = '等待你的确认'
+        // 等待确认不是后台执行中：停止恢复轮询并释放 loading，确认卡片仍可提交。
+        finishRunTracking()
+        return
       } else if (status.status === 'COMPLETED') {
         recoveryStatus.value = '恢复完成，正在加载最新结果'
         await loadConversationHistory(status.conversationId || conversationId.value)

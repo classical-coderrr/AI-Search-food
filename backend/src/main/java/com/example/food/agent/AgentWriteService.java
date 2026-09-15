@@ -2,6 +2,7 @@ package com.example.food.agent;
 
 import com.example.food.ai.recipe.dto.RecipeGenerateResponse;
 import com.example.food.agent.dto.AgentConfirmationStatusResponse;
+import com.example.food.agent.dto.AgentWriteOperationStatusResponse;
 import com.example.food.recipe.SavedRecipeService;
 import com.example.food.recipe.dto.RecipeHistoryDetailResponse;
 import com.example.food.recipe.dto.SaveRecipeRequest;
@@ -33,6 +34,7 @@ public class AgentWriteService {
     private final AgentConfirmationMapper confirmationMapper;
     private final SavedRecipeService savedRecipeService;
     private final AgentKitchenActionService actionService;
+    private final AgentWriteOperationService operationService;
     private final UserSecurityLogService securityLogService;
     private final ObjectMapper objectMapper;
 
@@ -40,12 +42,14 @@ public class AgentWriteService {
             AgentConfirmationMapper confirmationMapper,
             SavedRecipeService savedRecipeService,
             AgentKitchenActionService actionService,
+            AgentWriteOperationService operationService,
             UserSecurityLogService securityLogService,
             ObjectMapper objectMapper
     ) {
         this.confirmationMapper = confirmationMapper;
         this.savedRecipeService = savedRecipeService;
         this.actionService = actionService;
+        this.operationService = operationService;
         this.securityLogService = securityLogService;
         this.objectMapper = objectMapper;
     }
@@ -67,20 +71,52 @@ public class AgentWriteService {
         if (STATUS_PROCESSING.equals(confirmation.getStatus())) {
             return ConfirmationResult.processing();
         }
+        AgentWriteOperationService.ClaimResult operation = operationService.claim(
+                principal.id(), confirmationId, confirmation.getActionType(), normalizedIdempotencyKey);
+        if (!operation.acquired()) {
+            return operationService.replay(operation.operation());
+        }
+
+        // Claim the durable idempotency ledger before locking the confirmation row.
+        // The ledger uses a REQUIRES_NEW transaction and references the confirmation
+        // by foreign key; reversing this order makes MySQL wait on our own outer
+        // transaction until innodb_lock_wait_timeout is reached.
         if (!STATUS_PENDING.equals(confirmation.getStatus())
                 || confirmationMapper.claim(principal.id(), confirmationId) != 1) {
             AgentConfirmation current = confirmationMapper.findOwned(principal.id(), confirmationId);
+            operationService.fail(
+                    principal.id(),
+                    normalizedIdempotencyKey,
+                    "CONFIRMATION_CLAIM_LOST",
+                    "确认状态已被其他请求更新，未执行写操作"
+            );
             return current == null ? ConfirmationResult.unknown("操作确认已失效，请重新发起") : resultForStatus(current);
         }
 
         ConfirmationResult result;
-        if (ACTION_SAVE_RECIPE.equals(confirmation.getActionType())) {
-            RecipeHistoryDetailResponse detail = saveRecipePayload(principal, confirmation.getPayloadJson());
-            result = ConfirmationResult.completed(detail, "菜谱已保存到我的菜谱");
-        } else {
-            AgentKitchenActionService.ActionResult action = actionService.execute(
-                    confirmation.getActionType(), readPayload(confirmation.getPayloadJson()), principal, normalizedIdempotencyKey);
-            result = ConfirmationResult.completed(action.detail(), action.message());
+        try {
+            if (ACTION_SAVE_RECIPE.equals(confirmation.getActionType())) {
+                RecipeHistoryDetailResponse detail = saveRecipePayload(
+                        principal, confirmation.getPayloadJson(), normalizedIdempotencyKey);
+                result = ConfirmationResult.completed(detail, "菜谱已保存到我的菜谱");
+            } else {
+                AgentKitchenActionService.ActionResult action = actionService.execute(
+                        confirmation.getActionType(), readPayload(confirmation.getPayloadJson()), principal, normalizedIdempotencyKey);
+                result = ConfirmationResult.completed(action.detail(), action.message());
+            }
+
+            operationService.complete(principal.id(), normalizedIdempotencyKey, result.message(), result.detail());
+        } catch (ResponseStatusException exception) {
+            operationService.fail(
+                    principal.id(),
+                    normalizedIdempotencyKey,
+                    String.valueOf(exception.getStatusCode().value()),
+                    exception.getReason()
+            );
+            throw exception;
+        } catch (RuntimeException exception) {
+            operationService.fail(principal.id(), normalizedIdempotencyKey, "WRITE_FAILED", exception.getMessage());
+            throw exception;
         }
 
         if (confirmationMapper.markConfirmed(principal.id(), confirmationId, result.message()) != 1) {
@@ -117,6 +153,10 @@ public class AgentWriteService {
                 confirmation.getErrorCode(),
                 confirmation.getErrorMessage()
         );
+    }
+
+    public AgentWriteOperationStatusResponse operationStatus(AuthPrincipal principal, String idempotencyKey) {
+        return operationService.status(principal, idempotencyKey);
     }
 
     public ConfirmationResult saveRecipe(AuthPrincipal principal, Long confirmationId, String idempotencyKey) {
@@ -168,7 +208,11 @@ public class AgentWriteService {
         };
     }
 
-    private RecipeHistoryDetailResponse saveRecipePayload(AuthPrincipal principal, String payloadJson) {
+    private RecipeHistoryDetailResponse saveRecipePayload(
+            AuthPrincipal principal,
+            String payloadJson,
+            String idempotencyKey
+    ) {
         RecipeGenerateResponse recipe = readRecipe(payloadJson);
         if (recipe.searchLogId() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "本次菜谱缺少搜索记录，暂时无法安全保存");
@@ -178,7 +222,7 @@ public class AgentWriteService {
                 recipe.missingIngredients(), recipe.steps(), recipe.tips(), recipe.videoKeywords(), recipe.explanation(),
                 recipe.nutritionEstimate(), valueOrDefault(recipe.provider(), "qwen"), valueOrDefault(recipe.model(), "unknown")
         );
-        return savedRecipeService.save(request, principal, null);
+        return savedRecipeService.save(request, principal, null, idempotencyKey);
     }
 
     private RecipeGenerateResponse readRecipe(String payloadJson) {

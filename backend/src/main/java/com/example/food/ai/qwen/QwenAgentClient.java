@@ -274,39 +274,179 @@ public class QwenAgentClient {
         if (choices == null || !choices.isArray() || choices.isEmpty()) {
             choices = root == null ? null : root.path("output").path("choices");
         }
-        if (choices == null || !choices.isArray() || choices.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "千问 Agent 服务未返回有效结果");
-        }
 
-        JsonNode message = choices.get(0).path("message");
-        String content = message.path("content").isTextual() ? message.path("content").textValue().trim() : "";
         List<ToolCall> toolCalls = new ArrayList<>();
-        JsonNode calls = message.path("tool_calls");
-        if (calls.isArray()) {
-            for (JsonNode call : calls) {
-                JsonNode function = call.path("function");
-                String id = call.path("id").asText("").trim();
-                String name = function.path("name").asText("").trim();
-                String arguments = function.path("arguments").asText("{}");
-                if (id.isEmpty() || name.isEmpty()) {
-                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "千问 Agent 返回了无效工具调用");
-                }
-                toolCalls.add(new ToolCall(id, name, arguments));
-            }
+        String content;
+        boolean invalidStructuredCall = false;
+        if (choices != null && choices.isArray() && !choices.isEmpty()) {
+            JsonNode message = choices.get(0).path("message");
+            content = message.path("content").isTextual() ? message.path("content").textValue().trim() : "";
+            ParsedStructuredToolCalls parsedCalls = parseOpenAiToolCalls(message.path("tool_calls"), 0);
+            toolCalls.addAll(parsedCalls.toolCalls());
+            invalidStructuredCall = parsedCalls.invalid();
+        } else if (root != null && root.path("output").isArray()) {
+            // Qwen also exposes the Responses API shape when an endpoint is configured that way.
+            content = outputText(root, root.path("output"));
+            ParsedStructuredToolCalls parsedCalls = parseResponsesToolCalls(root.path("output"), 0);
+            toolCalls.addAll(parsedCalls.toolCalls());
+            invalidStructuredCall = parsedCalls.invalid();
+        } else {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "千问 Agent 服务未返回有效结果");
         }
         ParsedTextToolCalls parsedTextToolCalls = parseTextToolCalls(content, toolCalls.size());
         content = parsedTextToolCalls.content();
         toolCalls.addAll(parsedTextToolCalls.toolCalls());
         if (content.isEmpty() && toolCalls.isEmpty()) {
+            if (invalidStructuredCall) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "千问 Agent 返回了无效工具调用");
+            }
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "千问 Agent 没有返回回答或工具调用");
         }
         return new AgentTurn(content, List.copyOf(toolCalls), runtimeConfig.provider(), runtimeConfig.modelName());
+    }
+
+    private ParsedStructuredToolCalls parseOpenAiToolCalls(JsonNode calls, int existingCallCount) {
+        if (calls == null || calls.isMissingNode() || calls.isNull()) {
+            return new ParsedStructuredToolCalls(List.of(), false);
+        }
+        List<ToolCall> toolCalls = new ArrayList<>();
+        boolean invalid = false;
+        int generatedId = existingCallCount;
+        List<JsonNode> nodes = calls.isArray() ? toList(calls) : List.of(calls);
+        for (JsonNode call : nodes) {
+            JsonNode function = call.path("function").isObject() ? call.path("function") : call;
+            String name = function.path("name").asText("").trim();
+            if (name.isEmpty()) {
+                invalid = true;
+                continue;
+            }
+            String id = firstText(call, "id", "call_id");
+            if (id.isEmpty()) {
+                id = "qwen_tool_call_" + (++generatedId);
+            }
+            try {
+                toolCalls.add(new ToolCall(id, name, normalizeToolArguments(
+                        firstPresent(function, "arguments", "input", call.path("arguments"))
+                )));
+            } catch (IOException | IllegalArgumentException exception) {
+                invalid = true;
+            }
+        }
+        return new ParsedStructuredToolCalls(List.copyOf(toolCalls), invalid);
+    }
+
+    private ParsedStructuredToolCalls parseResponsesToolCalls(JsonNode output, int existingCallCount) {
+        List<ToolCall> toolCalls = new ArrayList<>();
+        boolean invalid = false;
+        int generatedId = existingCallCount;
+        for (JsonNode item : toList(output)) {
+            String type = item.path("type").asText("");
+            if (!("function_call".equals(type) || "tool_call".equals(type))) {
+                continue;
+            }
+            String name = item.path("name").asText("").trim();
+            if (name.isEmpty()) {
+                invalid = true;
+                continue;
+            }
+            String id = firstText(item, "call_id", "id");
+            if (id.isEmpty()) {
+                id = "qwen_tool_call_" + (++generatedId);
+            }
+            try {
+                toolCalls.add(new ToolCall(id, name, normalizeToolArguments(
+                        firstPresent(item, "arguments", "input", item.path("arguments"))
+                )));
+            } catch (IOException | IllegalArgumentException exception) {
+                invalid = true;
+            }
+        }
+        return new ParsedStructuredToolCalls(List.copyOf(toolCalls), invalid);
+    }
+
+    private String outputText(JsonNode root, JsonNode output) {
+        String direct = root.path("output_text").asText("").trim();
+        if (!direct.isEmpty()) {
+            return direct;
+        }
+        StringBuilder content = new StringBuilder();
+        for (JsonNode item : toList(output)) {
+            if (!"message".equals(item.path("type").asText(""))) {
+                continue;
+            }
+            JsonNode blocks = item.path("content");
+            if (blocks.isTextual()) {
+                content.append(blocks.asText());
+            } else if (blocks.isArray()) {
+                for (JsonNode block : blocks) {
+                    if (block.path("text").isTextual()) {
+                        content.append(block.path("text").asText());
+                    }
+                }
+            }
+        }
+        return content.toString().trim();
+    }
+
+    private List<JsonNode> toList(JsonNode node) {
+        List<JsonNode> nodes = new ArrayList<>();
+        if (node != null && node.isArray()) {
+            node.forEach(nodes::add);
+        } else if (node != null && !node.isMissingNode() && !node.isNull()) {
+            nodes.add(node);
+        }
+        return nodes;
+    }
+
+    private String firstText(JsonNode node, String... fields) {
+        for (String field : fields) {
+            String value = node.path(field).asText("").trim();
+            if (!value.isEmpty()) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private JsonNode firstPresent(JsonNode primary, String firstField, String secondField, JsonNode fallback) {
+        JsonNode first = primary.path(firstField);
+        if (!first.isMissingNode() && !first.isNull()) {
+            return first;
+        }
+        JsonNode second = primary.path(secondField);
+        if (!second.isMissingNode() && !second.isNull()) {
+            return second;
+        }
+        return fallback;
+    }
+
+    private String normalizeToolArguments(JsonNode arguments) throws IOException {
+        if (arguments == null || arguments.isMissingNode() || arguments.isNull()) {
+            return "{}";
+        }
+        if (arguments.isTextual()) {
+            String text = arguments.asText().trim();
+            if (text.isEmpty()) {
+                return "{}";
+            }
+            JsonNode parsed = objectMapper.readTree(text);
+            if (parsed == null || !parsed.isObject()) {
+                throw new IllegalArgumentException("工具参数不是 JSON 对象");
+            }
+            return objectMapper.writeValueAsString(parsed);
+        }
+        if (!arguments.isObject()) {
+            throw new IllegalArgumentException("工具参数不是 JSON 对象");
+        }
+        return objectMapper.writeValueAsString(arguments);
     }
 
     private AgentTurn parseAnthropic(JsonNode root, AiModelRuntimeConfig runtimeConfig) {
         JsonNode blocks = root == null ? null : root.path("content");
         StringBuilder content = new StringBuilder();
         List<ToolCall> toolCalls = new ArrayList<>();
+        boolean invalidStructuredCall = false;
+        int generatedId = 0;
         if (blocks != null && blocks.isArray()) {
             for (JsonNode block : blocks) {
                 String type = block.path("type").asText("");
@@ -316,21 +456,19 @@ public class QwenAgentClient {
                         content.append(text);
                     }
                 } else if ("tool_use".equals(type)) {
-                    String id = block.path("id").asText("").trim();
                     String name = block.path("name").asText("").trim();
-                    if (id.isEmpty() || name.isEmpty()) {
-                        throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "千问 Agent 返回了无效工具调用");
+                    if (name.isEmpty()) {
+                        invalidStructuredCall = true;
+                        continue;
+                    }
+                    String id = firstText(block, "id", "tool_use_id");
+                    if (id.isEmpty()) {
+                        id = "anthropic_tool_call_" + (++generatedId);
                     }
                     try {
-                        toolCalls.add(new ToolCall(
-                                id,
-                                name,
-                                objectMapper.writeValueAsString(block.path("input").isMissingNode()
-                                        ? objectMapper.createObjectNode()
-                                        : block.path("input"))
-                        ));
-                    } catch (IOException exception) {
-                        throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "千问 Agent 返回了无效工具参数", exception);
+                        toolCalls.add(new ToolCall(id, name, normalizeToolArguments(block.path("input"))));
+                    } catch (IOException | IllegalArgumentException exception) {
+                        invalidStructuredCall = true;
                     }
                 }
             }
@@ -339,6 +477,9 @@ public class QwenAgentClient {
         }
         ParsedTextToolCalls parsedTextToolCalls = parseTextToolCalls(content.toString(), toolCalls.size());
         if (parsedTextToolCalls.content().isEmpty() && toolCalls.isEmpty() && parsedTextToolCalls.toolCalls().isEmpty()) {
+            if (invalidStructuredCall) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "千问 Agent 返回了无效工具调用");
+            }
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "千问 Agent 没有返回回答或工具调用");
         }
         toolCalls.addAll(parsedTextToolCalls.toolCalls());
@@ -400,6 +541,9 @@ public class QwenAgentClient {
     }
 
     private record ParsedTextToolCalls(String content, List<ToolCall> toolCalls) {
+    }
+
+    private record ParsedStructuredToolCalls(List<ToolCall> toolCalls, boolean invalid) {
     }
 
     public record ConversationMessage(

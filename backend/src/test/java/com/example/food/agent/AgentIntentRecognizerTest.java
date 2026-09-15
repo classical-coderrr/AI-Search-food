@@ -43,6 +43,8 @@ class AgentIntentRecognizerTest {
         assertThat(result.intent()).isEqualTo("SAVE_RECIPE");
         assertThat(result.confidence()).isEqualTo(0.96d);
         assertThat(result.recipeReference()).isEqualTo("LATEST_GENERATED");
+        assertThat(result.auditSource()).isEqualTo(AgentIntentAuditService.SOURCE_MODEL);
+        assertThat(result.modelCalled()).isTrue();
         verify(client).complete(anyList(), anyList());
     }
 
@@ -97,6 +99,8 @@ class AgentIntentRecognizerTest {
 
         assertThat(result.available()).isFalse();
         assertThat(result.reason()).isEqualTo("not_candidate");
+        assertThat(result.auditSource()).isEqualTo(AgentIntentAuditService.SOURCE_RULE_GATE);
+        assertThat(result.modelCalled()).isFalse();
         org.mockito.Mockito.verifyNoInteractions(client);
     }
 

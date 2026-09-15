@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -85,6 +86,27 @@ class SavedRecipeServiceTest {
         assertThat(ingredientCaptor.getValue().getRecipeId()).isEqualTo(99L);
         assertThat(stepCaptor.getValue().getRecipeId()).isEqualTo(99L);
         assertThat(result.id()).isEqualTo(99L);
+    }
+
+    @Test
+    void replaysExistingAgentSaveByIdempotencyKeyWithoutCreatingAnotherRecipe() {
+        RecipeRecord existing = new RecipeRecord();
+        existing.setId(101L);
+        existing.setUserId(7L);
+        existing.setTitle("番茄炒蛋");
+        existing.setSearchLogId(10L);
+        when(recipeRecordMapper.findByUserIdAndAgentIdempotencyKey(7L, "key-1"))
+                .thenReturn(existing);
+        when(recipeRecordMapper.selectById(101L)).thenReturn(existing);
+        when(searchLogMapper.selectById(10L)).thenReturn(searchLog(10L, 7L, null));
+        when(recipeIngredientMapper.selectList(any())).thenReturn(List.of());
+        when(recipeStepMapper.selectList(any())).thenReturn(List.of());
+
+        RecipeHistoryDetailResponse result = savedRecipeService.save(
+                request(), new AuthPrincipal(7L, "13800138000", AppRole.USER), null, "key-1");
+
+        assertThat(result.id()).isEqualTo(101L);
+        verify(recipeRecordMapper, never()).insert(any(RecipeRecord.class));
     }
 
     @Test

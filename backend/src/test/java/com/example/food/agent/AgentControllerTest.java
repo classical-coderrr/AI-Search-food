@@ -5,6 +5,7 @@ import com.example.food.agent.dto.AgentConfirmationStatusResponse;
 import com.example.food.agent.dto.AgentRunStatusResponse;
 import com.example.food.agent.dto.AgentConversationHistoryResponse;
 import com.example.food.agent.dto.AgentMessageResponse;
+import com.example.food.agent.dto.AgentWriteOperationStatusResponse;
 import com.example.food.agent.state.AgentNode;
 import com.example.food.agent.state.AgentStatus;
 import com.example.food.security.AppRole;
@@ -26,6 +27,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 import java.time.LocalDateTime;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -133,6 +135,23 @@ class AgentControllerTest {
                 .andExpect(jsonPath("$.data.status").value("UNKNOWN_REVIEW"));
 
         verify(agentService).confirmationStatus(PRINCIPAL, 9L);
+    }
+
+    @Test
+    void readsWriteOperationStatusByIdempotencyKey() throws Exception {
+        when(agentService.operationStatus(PRINCIPAL, "key-1")).thenReturn(new AgentWriteOperationStatusResponse(
+                11L, 9L, "PANTRY_UPDATE", "key-1", "COMPLETED",
+                LocalDateTime.now().minusMinutes(1), LocalDateTime.now().minusMinutes(1), LocalDateTime.now(),
+                "库存已更新", JsonNodeFactory.instance.objectNode().put("itemId", 12), null, null
+        ));
+
+        mockMvc.perform(get("/api/agent/writes/key-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.data.result.itemId").value(12));
+
+        verify(agentService).operationStatus(PRINCIPAL, "key-1");
     }
 
     @Test

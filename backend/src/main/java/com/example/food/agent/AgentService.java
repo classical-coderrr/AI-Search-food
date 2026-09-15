@@ -11,6 +11,7 @@ import com.example.food.agent.dto.AgentRunStatusResponse;
 import com.example.food.agent.dto.AgentConversationHistoryResponse;
 import com.example.food.agent.dto.AgentConfirmationStatusResponse;
 import com.example.food.agent.dto.AgentMessageResponse;
+import com.example.food.agent.dto.AgentWriteOperationStatusResponse;
 import com.example.food.agent.state.AgentCheckpoint;
 import com.example.food.agent.state.AgentNode;
 import com.example.food.agent.state.AgentRun;
@@ -46,6 +47,8 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.time.LocalDate;
@@ -67,6 +70,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 public class AgentService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(AgentService.class);
 
     private static final long STREAM_TIMEOUT_MILLIS = 120_000L;
     private static final int MAX_MESSAGE_LENGTH = 1000;
@@ -95,6 +100,7 @@ public class AgentService {
     private final RecipeRecommendationService recipeRecommendationService;
     private final QwenAgentClient qwenAgentClient;
     private final AgentIntentRecognizer intentRecognizer;
+    private final AgentIntentAuditService intentAuditService;
     private final ObjectMapper objectMapper;
     private final AgentRunStore runStore;
     private final ExecutorService workerExecutor = Executors.newCachedThreadPool(
@@ -124,6 +130,7 @@ public class AgentService {
             RecipeRecommendationService recipeRecommendationService,
             QwenAgentClient qwenAgentClient,
             AgentIntentRecognizer intentRecognizer,
+            AgentIntentAuditService intentAuditService,
             ObjectMapper objectMapper,
             AgentRunStore runStore
     ) {
@@ -145,6 +152,7 @@ public class AgentService {
         this.recipeRecommendationService = recipeRecommendationService;
         this.qwenAgentClient = qwenAgentClient;
         this.intentRecognizer = intentRecognizer;
+        this.intentAuditService = intentAuditService;
         this.objectMapper = objectMapper;
         this.runStore = runStore;
     }
@@ -383,6 +391,8 @@ public class AgentService {
                 updateRun(runId, AgentStatus.CANCELLED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
                 return;
             }
+            LOGGER.error("Agent run failed, runId={}, userId={}, conversationId={}",
+                    runId, principal.id(), conversation == null ? null : conversation.getId(), exception);
             String message = errorMessage(exception);
             markFailed(runId, "AGENT_RUN_FAILED", message);
             if (conversation != null) {
@@ -424,6 +434,11 @@ public class AgentService {
     public AgentConfirmationStatusResponse confirmationStatus(AuthPrincipal principal, Long confirmationId) {
         requireUser(principal);
         return writeService.status(principal, confirmationId);
+    }
+
+    public AgentWriteOperationStatusResponse operationStatus(AuthPrincipal principal, String idempotencyKey) {
+        requireUser(principal);
+        return writeService.operationStatus(principal, idempotencyKey);
     }
 
     private void driveAgent(
@@ -521,12 +536,28 @@ public class AgentService {
                 execution.hasAttachment
         );
         boolean saveToolAlreadyExposed = containsFunction(definitions, AgentToolRegistry.Tool.RECIPE_SAVE.functionName());
+        if (execution.intentResolutionAttempted) {
+            if (execution.recipeSaveIntent && !saveToolAlreadyExposed) {
+                List<Map<String, Object>> enriched = new ArrayList<>(definitions);
+                enriched.add(toolRegistry.functionDefinition(AgentToolRegistry.Tool.RECIPE_SAVE));
+                return List.copyOf(enriched);
+            }
+            return definitions;
+        }
         if (saveToolAlreadyExposed) {
             execution.intentResolutionAttempted = true;
             execution.recipeSaveIntent = true;
-            return definitions;
-        }
-        if (execution.intentResolutionAttempted) {
+            execution.intentResolutionSource = AgentIntentAuditService.SOURCE_RULE;
+            persistIntentResolution(
+                    execution,
+                    AgentIntentAuditService.SOURCE_RULE,
+                    "SAVE_RECIPE",
+                    1d,
+                    "LATEST_GENERATED",
+                    "规则命中保存动作与本次菜谱指代",
+                    true,
+                    false
+            );
             return definitions;
         }
         AgentIntentRecognizer.RecognitionResult result = intentRecognizer.recognize(
@@ -535,12 +566,48 @@ public class AgentService {
         );
         execution.intentResolutionAttempted = true;
         execution.recipeSaveIntent = result.isSaveRecipe();
+        execution.intentResolutionSource = result.auditSource();
+        persistIntentResolution(
+                execution,
+                result.auditSource(),
+                result.intent(),
+                result.confidence(),
+                result.recipeReference(),
+                result.reason(),
+                result.isSaveRecipe(),
+                result.modelCalled()
+        );
         if (!result.isSaveRecipe()) {
             return definitions;
         }
         List<Map<String, Object>> enriched = new ArrayList<>(definitions);
         enriched.add(toolRegistry.functionDefinition(AgentToolRegistry.Tool.RECIPE_SAVE));
         return List.copyOf(enriched);
+    }
+
+    private void persistIntentResolution(
+            AgentExecution execution,
+            String source,
+            String intent,
+            double confidence,
+            String recipeReference,
+            String reason,
+            boolean saveToolExposed,
+            boolean modelCalled
+    ) {
+        intentAuditService.record(
+                execution.runId,
+                ++execution.stepNo,
+                source,
+                intent,
+                confidence,
+                recipeReference,
+                reason,
+                saveToolExposed,
+                modelCalled,
+                execution.userMessage.length(),
+                execution.hasAttachment
+        );
     }
 
     private boolean containsFunction(List<Map<String, Object>> definitions, String functionName) {
@@ -1181,7 +1248,10 @@ public class AgentService {
                     state.pendingToolCalls(),
                     state.pendingToolIndex(),
                     errorMessage,
-                    now
+                    now,
+                    state.intentResolutionAttempted(),
+                    state.recipeSaveIntent(),
+                    state.intentResolutionSource()
             );
             runStore.saveCheckpoint(new AgentCheckpoint(runId, checkpoint.version() + 1, failed, now));
         });
@@ -1345,6 +1415,7 @@ public class AgentService {
         private AgentNode nextNode;
         private boolean intentResolutionAttempted;
         private boolean recipeSaveIntent;
+        private String intentResolutionSource;
 
         private AgentExecution(
                 String runId,
@@ -1394,6 +1465,9 @@ public class AgentService {
                     state.nextNode()
             );
             execution.currentNode = state.currentNode();
+            execution.intentResolutionAttempted = state.intentResolutionAttempted();
+            execution.recipeSaveIntent = state.recipeSaveIntent();
+            execution.intentResolutionSource = state.intentResolutionSource();
             return execution;
         }
 
@@ -1423,7 +1497,10 @@ public class AgentService {
                     pendingToolCalls,
                     pendingToolIndex,
                     error,
-                    updatedAt
+                    updatedAt,
+                    intentResolutionAttempted,
+                    recipeSaveIntent,
+                    intentResolutionSource
             );
         }
     }

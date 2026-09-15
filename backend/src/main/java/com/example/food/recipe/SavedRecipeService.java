@@ -11,6 +11,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpStatus;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -48,7 +49,25 @@ public class SavedRecipeService {
             AuthPrincipal principal,
             String anonymousId
     ) {
+        return save(request, principal, anonymousId, null);
+    }
+
+    @Transactional
+    public RecipeHistoryDetailResponse save(
+            SaveRecipeRequest request,
+            AuthPrincipal principal,
+            String anonymousId,
+            String agentIdempotencyKey
+    ) {
         requireUser(principal);
+        String normalizedIdempotencyKey = normalizeAgentIdempotencyKey(agentIdempotencyKey);
+        if (normalizedIdempotencyKey != null) {
+            RecipeRecord existing = recipeRecordMapper.findByUserIdAndAgentIdempotencyKey(
+                    principal.id(), normalizedIdempotencyKey);
+            if (existing != null) {
+                return detail(principal.id(), existing.getId());
+            }
+        }
         SearchLog searchLog = searchLogMapper.selectById(request.searchLogId());
         if (searchLog == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "搜索记录不存在");
@@ -59,6 +78,7 @@ public class SavedRecipeService {
         RecipeGenerateResponse.NutritionEstimate nutrition = validNutrition(request.nutritionEstimate());
         RecipeRecord record = new RecipeRecord();
         record.setUserId(principal.id());
+        record.setAgentIdempotencyKey(normalizedIdempotencyKey);
         record.setSearchLogId(request.searchLogId());
         record.setTitle(request.title().trim());
         if (nutrition != null) {
@@ -76,7 +96,19 @@ public class SavedRecipeService {
         record.setAiModel(modelLabel(request.provider(), request.model()));
         record.setRawResponse(toJson(recipe));
         record.setCreatedAt(LocalDateTime.now());
-        recipeRecordMapper.insert(record);
+        try {
+            recipeRecordMapper.insert(record);
+        } catch (DuplicateKeyException duplicate) {
+            if (normalizedIdempotencyKey == null) {
+                throw duplicate;
+            }
+            RecipeRecord existing = recipeRecordMapper.findByUserIdAndAgentIdempotencyKey(
+                    principal.id(), normalizedIdempotencyKey);
+            if (existing == null) {
+                throw duplicate;
+            }
+            return detail(principal.id(), existing.getId());
+        }
 
         insertIngredients(record.getId(), request.ingredients());
         insertSteps(record.getId(), request.steps());
@@ -291,6 +323,17 @@ public class SavedRecipeService {
         }
         String normalized = value.trim();
         return "不限".equals(normalized) ? null : normalized;
+    }
+
+    private String normalizeAgentIdempotencyKey(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String normalized = value.trim();
+        if (normalized.length() > 96) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "幂等键长度不能超过 96 个字符");
+        }
+        return normalized;
     }
 
     private String toJson(Object value) {

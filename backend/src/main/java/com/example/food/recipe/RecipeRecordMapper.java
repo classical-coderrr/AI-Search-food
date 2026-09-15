@@ -78,4 +78,16 @@ public interface RecipeRecordMapper extends BaseMapper<RecipeRecord> {
             @Param("userId") Long userId,
             @Param("searchLogId") Long searchLogId
     );
+
+    @Select("""
+            SELECT *
+            FROM recipe_records
+            WHERE user_id = #{userId}
+              AND agent_idempotency_key = #{idempotencyKey}
+            LIMIT 1
+            """)
+    RecipeRecord findByUserIdAndAgentIdempotencyKey(
+            @Param("userId") Long userId,
+            @Param("idempotencyKey") String idempotencyKey
+    );
 }
