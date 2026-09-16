@@ -572,3 +572,59 @@ Agent 步骤审计测试首次编译参数数量不匹配
 - 原因：PowerShell 下未将包含逗号的 Maven 系统属性整体作为字符串传递。
 - 解决方案：将 `-Dmaven.repo.local` 和 `-Dtest` 参数都用单独的字符串参数传递后重试。
 - 验证结果：恢复扫描器和内存状态仓库定向测试 6/6 通过。
+
+客户端崩溃恢复脚本命令续行和占位符输入错误
+- 日期：2026-09-15
+- 问题现象：执行演练脚本时将 PowerShell 续行反引号写成 `\``，并把示例中的尖括号占位符及反斜杠一并传入参数，导致脚本收到多余参数，或使用错误的 runId/JWT 请求接口。
+- 原因：PowerShell 的续行符必须是行尾单独的反引号；示例中的 `<...>` 只表示需要替换的内容，不属于实际参数值。
+- 解决方案：改用单行命令，或使用不带反斜杠的反引号续行；实际参数只保留 runId 和 JWT 本身。
+- 验证结果：已确认脚本参数格式，待使用进行中的真实 runId 执行 Docker 崩溃演练。
+
+客户端在 Windows PowerShell 5.1 执行演练脚本时发生 UTF-8 编码解析错误
+- 日期：2026-09-15
+- 问题现象：执行 `scripts/agent-recovery-drill.ps1` 时，PowerShell 报多个“意外的标记 `}`”和“字符串缺少终止符”；脚本中的中文提示显示为乱码。
+- 原因：脚本以无 BOM 的 UTF-8 保存，而 Windows PowerShell 5.1 按本地 ANSI 编码读取，中文字符串被误解码并破坏脚本语法。
+- 解决方案：将演练脚本的运行时输出和错误文本改为 ASCII，避免依赖 PowerShell 的 UTF-8 自动识别；中文操作说明保留在 `agent.md`。
+- 验证结果：当前环境 PowerShell 语法解析、Windows PowerShell 5.1 语法解析和 `git diff --check` 均通过；待用户使用真实 runId 和 JWT 复跑演练。
+
+崩溃恢复演练传入已完成的 runId
+- 日期：2026-09-15
+- 问题现象：演练脚本返回 `The drill requires RUNNING or RECOVERING, but the current status is COMPLETED`。
+- 原因：传入的 runId 已经完成，后端没有可供恢复扫描器接管的运行中任务；此时执行 SIGKILL 只能测试普通重启，不能证明 checkpoint 恢复。
+- 解决方案：重新发起一个持续时间较长的 Agent 请求，拿到 `conversation.ready` 中的新 runId 后，立即在另一个 PowerShell 窗口执行演练脚本。
+- 验证结果：脚本按预期拒绝已完成任务，避免把普通完成误判为崩溃恢复成功。
+
+崩溃恢复演练重启后读取 Docker 健康状态失败
+- 日期：2026-09-15
+- 问题现象：后端被 SIGKILL 并重启后，脚本在轮询阶段执行 `ConvertFrom-Json` 报“传入的对象无效，应为 `:` 或 `}`”；客户端页面同时提示暂时无法读取上次运行状态。
+- 原因：容器启动阶段 `docker compose ps --format json` 可能输出截断或多行 JSON，Windows PowerShell 5.1 直接解析整段输出不稳定。
+- 解决方案：改用 `docker compose ps -q backend` 获取容器 ID，再用 `docker inspect --format` 读取 `State.Health.Status`，不再依赖 Compose JSON 输出。
+- 验证结果：PowerShell 语法解析和 `git diff --check` 通过；重启后的 backend 已恢复为 healthy，MySQL、Redis、frontend 均保持 healthy。
+
+崩溃恢复演练的临时恢复参数未应用到已存在容器
+- 日期：2026-09-15
+- 问题现象：检查重启后的 backend 环境变量时发现仍为默认的 `PT5M/PT30S`，没有使用演练脚本要求的 `PT5S/PT2S`。
+- 原因：`docker compose up -d backend` 对被 kill 的已有容器只执行启动，不一定重新创建容器，因此不会刷新临时环境变量。
+- 解决方案：恢复启动命令增加 `--force-recreate`，确保临时恢复参数写入新容器。
+- 验证结果：脚本已更新，Compose 配置能够读取进程级的 `PT5S/PT2S` 覆盖值；待用户用新 runId 重新演练。
+
+崩溃恢复演练已触发恢复但任务最终失败
+- 日期：2026-09-15
+- 问题现象：runId `174fe94e-a887-4790-9c95-9b4e16af741b` 的 backend 日志出现 `Recovering agent run ... status=RUNNING, nextNode=MODEL_DECISION`，但 Redis 最终状态为 `FAILED`，错误码为 `RECOVERY_FAILED`。
+- 原因：服务重启后已从 checkpoint 继续执行；后续千问 Agent 服务调用失败，Redis 记录错误“千问 Agent 服务调用失败，请稍后重试”。当前证据不足以进一步判断是外部服务、网络还是配置问题。
+- 解决方案：将“恢复触发成功”和“业务最终完成”分开判定；后续需单独检查千问服务配置、网络和调用日志。
+- 验证结果：backend、frontend、MySQL、Redis 均 healthy；恢复日志存在；Redis active run 集合已移除该 runId，最终任务确实结束但未成功完成。
+
+崩溃恢复演练脚本超时早于运行租约过期
+- 日期：2026-09-16
+- 问题现象：脚本在 180 秒时报告最近 10 分钟未找到恢复日志，且轮询状态仍为 `RUNNING`。
+- 原因：被 SIGKILL 的原 worker 租约 TTL 为 10 分钟；恢复扫描器在租约未过期前会主动跳过该 runId，脚本的 180 秒超时早于可接管时间。
+- 解决方案：继续等待租约自然过期，不删除 Redis 租约；租约释放后扫描器即可接管。
+- 验证结果：租约过期后日志出现 `Recovering agent run 86e1fddb-fae9-416a-a23c-0a26dfed5a67`，Redis 最终状态为 `COMPLETED`，说明本次崩溃恢复实际成功。
+
+合并前 Docker Compose 检查无法连接 Docker Desktop
+- 日期：2026-09-16
+- 问题现象：执行 `docker compose config --quiet` 和 `docker compose ps` 时提示无法连接 `dockerDesktopLinuxEngine` named pipe。
+- 原因：Docker Desktop 当前未运行或 Linux Engine 尚未启动。
+- 解决方案：本次只进行 Git 合并和推送，不启动或修改 Docker 服务；后续需要本地运行容器时再启动 Docker Desktop。
+- 验证结果：PowerShell 脚本语法检查通过；Docker 相关检查因守护进程不可用而未完成。

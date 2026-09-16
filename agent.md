@@ -316,6 +316,8 @@ Agent 写工具确认后会先在 `agent_write_operations` 中以 `(user_id, ide
 
 仓库新增 `scripts/agent-recovery-drill.ps1`，用于在真实 Docker、Redis 和 MySQL 环境中演练一次后端进程崩溃。脚本不会删除容器、数据卷或 Redis 数据，只会对 `backend` 执行一次 `SIGKILL`，随后以较短的恢复参数启动后端：
 
+脚本运行时输出使用 ASCII 文本，以兼容 Windows PowerShell 5.1 对无 BOM UTF-8 脚本的编码识别；本说明和操作步骤仍使用中文。
+
 ```powershell
 .\scripts\agent-recovery-drill.ps1 `
   -RunId "正在生成的运行 ID" `
