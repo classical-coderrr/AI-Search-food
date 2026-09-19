@@ -13,6 +13,7 @@ import com.example.food.agent.dto.AgentConfirmationStatusResponse;
 import com.example.food.agent.dto.AgentMessageResponse;
 import com.example.food.agent.dto.AgentWriteOperationStatusResponse;
 import com.example.food.agent.state.AgentCheckpoint;
+import com.example.food.agent.state.AgentFaultInjector;
 import com.example.food.agent.state.AgentNode;
 import com.example.food.agent.state.AgentRun;
 import com.example.food.agent.state.AgentRunStore;
@@ -41,6 +42,7 @@ import com.example.food.weekly.dto.WeeklyMenuResponse;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -103,6 +105,7 @@ public class AgentService {
     private final AgentIntentAuditService intentAuditService;
     private final ObjectMapper objectMapper;
     private final AgentRunStore runStore;
+    private final AgentFaultInjector faultInjector;
     private final ExecutorService workerExecutor = Executors.newCachedThreadPool(
             runnable -> {
                 Thread thread = new Thread(runnable, "kitchen-agent-" + System.nanoTime());
@@ -111,6 +114,11 @@ public class AgentService {
             }
     );
 
+    /**
+     * Compatibility constructor used by focused unit tests and integrations
+     * that instantiate the service directly. Normal application wiring uses
+     * the fault-injectable constructor below.
+     */
     public AgentService(
             AgentConversationMapper conversationMapper,
             AgentMessageMapper messageMapper,
@@ -134,6 +142,57 @@ public class AgentService {
             ObjectMapper objectMapper,
             AgentRunStore runStore
     ) {
+        this(
+                conversationMapper,
+                messageMapper,
+                confirmationMapper,
+                toolRegistry,
+                kitchenToolService,
+                writeService,
+                ingredientRecognitionService,
+                pantryService,
+                notificationService,
+                weeklyMenuService,
+                savedRecipeService,
+                healthProfileService,
+                nutritionTargetService,
+                healthNutritionService,
+                dietPreferenceService,
+                recipeRecommendationService,
+                qwenAgentClient,
+                intentRecognizer,
+                intentAuditService,
+                objectMapper,
+                runStore,
+                new AgentFaultInjector()
+        );
+    }
+
+    @Autowired
+    public AgentService(
+            AgentConversationMapper conversationMapper,
+            AgentMessageMapper messageMapper,
+            AgentConfirmationMapper confirmationMapper,
+            AgentToolRegistry toolRegistry,
+            AgentKitchenToolService kitchenToolService,
+            AgentWriteService writeService,
+            IngredientRecognitionService ingredientRecognitionService,
+            UserPantryService pantryService,
+            NotificationService notificationService,
+            WeeklyMenuService weeklyMenuService,
+            SavedRecipeService savedRecipeService,
+            UserHealthProfileService healthProfileService,
+            UserNutritionTargetService nutritionTargetService,
+            HealthNutritionService healthNutritionService,
+            UserDietPreferenceService dietPreferenceService,
+            RecipeRecommendationService recipeRecommendationService,
+            QwenAgentClient qwenAgentClient,
+            AgentIntentRecognizer intentRecognizer,
+            AgentIntentAuditService intentAuditService,
+            ObjectMapper objectMapper,
+            AgentRunStore runStore,
+            AgentFaultInjector faultInjector
+    ) {
         this.conversationMapper = conversationMapper;
         this.messageMapper = messageMapper;
         this.confirmationMapper = confirmationMapper;
@@ -155,6 +214,7 @@ public class AgentService {
         this.intentAuditService = intentAuditService;
         this.objectMapper = objectMapper;
         this.runStore = runStore;
+        this.faultInjector = faultInjector == null ? new AgentFaultInjector() : faultInjector;
     }
 
     public SseEmitter stream(AgentChatRequest request, AuthPrincipal principal) {
@@ -241,6 +301,10 @@ public class AgentService {
                 || state.status() == AgentStatus.CANCELLED) {
             return;
         }
+        if (state.currentNode() == AgentNode.FINALIZE || state.nextNode() == AgentNode.FINALIZE) {
+            resumeFinalize(runId, state);
+            return;
+        }
         AuthPrincipal principal = new AuthPrincipal(state.userId(), "agent-recovery", AppRole.USER);
         AgentExecution execution = AgentExecution.from(state);
         AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -263,11 +327,51 @@ public class AgentService {
             } else {
                 updateRun(runId, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
             }
+        } catch (AgentFaultInjector.AgentCrashException crash) {
+            // A real process crash does not get converted to FAILED. Keeping
+            // the last checkpoint lets the next instance resume it.
+            throw crash;
         } catch (Throwable exception) {
             if (!cancelled.get() && !Thread.currentThread().isInterrupted()) {
                 markFailed(runId, "RECOVERY_FAILED", errorMessage(exception));
             }
         }
+    }
+
+    private void resumeFinalize(String runId, AgentState state) {
+        AgentExecution execution = AgentExecution.from(state);
+        String content = lastAssistantContent(state.messages());
+        if (StringUtils.hasText(content)
+                && !assistantMessageExists(state.userId(), state.conversationId(), content)) {
+            saveMessage(state.userId(), state.conversationId(), ROLE_ASSISTANT, "text", content);
+        }
+        persistCheckpoint(execution, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+        updateRun(runId, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+    }
+
+    private String lastAssistantContent(List<QwenAgentClient.ConversationMessage> messages) {
+        if (messages == null) {
+            return "";
+        }
+        for (int index = messages.size() - 1; index >= 0; index--) {
+            QwenAgentClient.ConversationMessage message = messages.get(index);
+            if (message != null
+                    && "assistant".equalsIgnoreCase(message.role())
+                    && (message.toolCalls() == null || message.toolCalls().isEmpty())
+                    && StringUtils.hasText(message.content())) {
+                return message.content();
+            }
+        }
+        return "";
+    }
+
+    private boolean assistantMessageExists(Long userId, Long conversationId, String content) {
+        if (messageMapper == null || userId == null || conversationId == null) {
+            return false;
+        }
+        return messageMapper.findRecentByBlockType(userId, conversationId, "text", 20).stream()
+                .anyMatch(message -> ROLE_ASSISTANT.equals(message.getRole())
+                        && Objects.equals(message.getContent(), content));
     }
 
     public void deleteConversation(Long userId, Long conversationId) {
@@ -386,6 +490,10 @@ public class AgentService {
             if (emitter != null) {
                 emitter.complete();
             }
+        } catch (AgentFaultInjector.AgentCrashException crash) {
+            // Leave the durable checkpoint untouched so the recovery scanner
+            // can pick the run up after the next process starts.
+            throw crash;
         } catch (Throwable exception) {
             if (cancelled.get() || Thread.currentThread().isInterrupted()) {
                 updateRun(runId, AgentStatus.CANCELLED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
@@ -462,22 +570,44 @@ public class AgentService {
                 execution.currentNode = AgentNode.MODEL_DECISION;
                 execution.nextNode = AgentNode.MODEL_DECISION;
                 persistCheckpoint(execution, AgentStatus.RUNNING, AgentNode.MODEL_DECISION, AgentNode.MODEL_DECISION, null);
-                QwenAgentClient.AgentTurn turn = qwenAgentClient.complete(
-                        execution.messages,
-                        toolDefinitions(execution)
-                );
+                List<Map<String, Object>> definitions = toolDefinitions(execution);
+                String modelRequestJson = toolOutput(Map.of(
+                        "round", execution.round + 1,
+                        "messageCount", execution.messages.size(),
+                        "toolCount", definitions.size()
+                ));
+                persistStep(execution, AgentNode.MODEL_DECISION, "model.started", "agent.model",
+                        "RUNNING", modelRequestJson, null, null, null);
+                faultInjector.hit(execution.runId, AgentFaultInjector.Point.MODEL_BEFORE);
+                QwenAgentClient.AgentTurn turn;
+                try {
+                    turn = qwenAgentClient.complete(execution.messages, definitions);
+                } catch (Throwable exception) {
+                    persistStep(execution, AgentNode.MODEL_DECISION, "model.result", "agent.model",
+                            "FAILED", modelRequestJson, null, null, errorMessage(exception));
+                    throw exception;
+                }
                 execution.round++;
                 execution.messages.add(QwenAgentClient.ConversationMessage.assistant(turn));
                 execution.pendingToolCalls = turn.toolCalls();
                 execution.pendingToolIndex = 0;
+                persistStep(execution, AgentNode.MODEL_DECISION, "model.result", "agent.model",
+                        "SUCCESS", modelRequestJson, modelResponseJson(turn), null, null);
                 if (turn.toolCalls().isEmpty()) {
+                    execution.currentNode = AgentNode.MODEL_DECISION;
+                    execution.nextNode = AgentNode.FINALIZE;
+                    persistCheckpoint(execution, AgentStatus.RUNNING, AgentNode.MODEL_DECISION, AgentNode.FINALIZE, null);
+                    faultInjector.hit(execution.runId, AgentFaultInjector.Point.MODEL_AFTER);
+                    faultInjector.hit(execution.runId, AgentFaultInjector.Point.FINALIZE_BEFORE);
                     sendText(emitter, cancelled, conversationId, limit(turn.content(), 12_000));
                     persistCheckpoint(execution, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+                    faultInjector.hit(execution.runId, AgentFaultInjector.Point.FINALIZE_AFTER);
                     return;
                 }
                 execution.currentNode = AgentNode.TOOL_EXECUTE;
                 execution.nextNode = AgentNode.TOOL_EXECUTE;
                 persistCheckpoint(execution, AgentStatus.RUNNING, AgentNode.MODEL_DECISION, AgentNode.TOOL_EXECUTE, null);
+                faultInjector.hit(execution.runId, AgentFaultInjector.Point.MODEL_AFTER);
             }
 
             while (execution.pendingToolIndex < execution.pendingToolCalls.size()) {
@@ -492,6 +622,7 @@ public class AgentService {
                 persistStep(execution, AgentNode.TOOL_EXECUTE, "tool.started", tool.toolName(),
                         "RUNNING", requestJson, null, call.id(), null);
                 persistCheckpoint(execution, AgentStatus.RUNNING, AgentNode.TOOL_EXECUTE, AgentNode.TOOL_EXECUTE, null);
+                faultInjector.hit(execution.runId, AgentFaultInjector.Point.TOOL_BEFORE);
                 sendToolStarted(emitter, cancelled, tool);
                 ToolExecution toolExecution;
                 if ((tool == AgentToolRegistry.Tool.RECIPE_SAVE || kitchenToolService.isMutation(tool, arguments))
@@ -521,6 +652,10 @@ public class AgentService {
                         AgentNode.OBSERVE,
                         execution.confirmationRequested ? AgentNode.WAITING_CONFIRMATION : AgentNode.MODEL_DECISION,
                         null);
+                faultInjector.hit(execution.runId, AgentFaultInjector.Point.TOOL_AFTER);
+                if (execution.confirmationRequested) {
+                    faultInjector.hit(execution.runId, AgentFaultInjector.Point.WAITING_CONFIRMATION);
+                }
             }
             execution.pendingToolCalls = List.of();
             execution.pendingToolIndex = 0;
@@ -680,6 +815,15 @@ public class AgentService {
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("厨房助手工具结果序列化失败", exception);
         }
+    }
+
+    private String modelResponseJson(QwenAgentClient.AgentTurn turn) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("provider", turn.provider());
+        response.put("model", turn.model());
+        response.put("toolCallCount", turn.toolCalls() == null ? 0 : turn.toolCalls().size());
+        response.put("contentLength", turn.content() == null ? 0 : turn.content().length());
+        return toolOutput(response);
     }
 
     private ToolExecution kitchenTool(

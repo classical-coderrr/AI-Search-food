@@ -307,10 +307,12 @@ Agent 写工具确认后会先在 `agent_write_operations` 中以 `(user_id, ide
 ### 阶段三：步骤级恢复演练
 
 - [x] 增加恢复扫描器的自动化测试：抢租约、跳过已占用租约、单个任务失败后继续扫描、Redis 暂时不可用时等待下一轮重试；
-- [ ] 为模型调用前后、工具调用前后、等待确认和完成节点补齐故障注入测试；
-- [ ] 验证从 `DECIDE`、`TOOL_EXECUTE`、`OBSERVE`、`WAITING_CONFIRMATION`、`FINALIZE` 恢复；
-- [ ] 验证恢复任务不会重复执行已确认成功的只读或写操作；
-- [ ] 验收：每个崩溃点都能得到确定结果或进入人工复核。
+- [x] 为模型调用前后、工具调用前后、等待确认和完成节点补齐故障注入测试；
+- [x] 验证从 `MODEL_DECISION`、`TOOL_EXECUTE`、`OBSERVE`、`WAITING_CONFIRMATION`、`FINALIZE` 恢复；
+- [x] 验证恢复任务不会重复执行已完成的只读操作；写操作继续由确认幂等账本保护，恢复时只停留在确认态；
+- [x] 验收：每个已覆盖崩溃点都能得到确定结果或安全停留在人工确认状态。
+
+步骤级演练通过 `AgentFaultInjector` 提供可替换的崩溃注入点：模型调用前后、工具调用前后、等待确认和完成后。生产实现为空操作，测试替身抛出 `AgentCrashException`，模拟进程在最近一次 checkpoint 提交后立即退出。模型结果会先以脱敏元数据写入 `agent_steps`，并将无工具结果推进到 `FINALIZE` checkpoint；因此恢复不会重复调用模型。工具结果写入 `OBSERVE` checkpoint 后才允许恢复继续决策；等待确认的 checkpoint 只恢复为 `WAITING_CONFIRMATION`，不会自动执行写操作。`FINALIZE` 恢复会从 checkpoint 中补写尚未落库的最终文本，并按消息内容去重。
 
 ### 崩溃窗口演练工具（本分支）
 
@@ -332,7 +334,7 @@ Agent 写工具确认后会先在 `agent_write_operations` 中以 `(user_id, ide
 4. 等待后端健康，轮询 Redis 中同一个 `runId` 的状态；
 5. 检查恢复日志，最终状态为 `COMPLETED` 或 `WAITING_CONFIRMATION` 才算通过。
 
-演练前需要先在客户端发起一个尚未完成的请求，并立即复制该请求的 `runId`。如果任务在执行脚本前已经完成，脚本会主动拒绝，避免把一次普通完成误判成恢复成功。当前分支已通过恢复扫描器单元测试、模型决策 checkpoint 恢复测试和待执行只读工具 checkpoint 恢复测试；真实 Docker 演练需要在有进行中任务时执行上述脚本。
+演练前需要先在客户端发起一个尚未完成的请求，并立即复制该请求的 `runId`。如果任务在执行脚本前已经完成，脚本会主动拒绝，避免把一次普通完成误判成恢复成功。当前分支已通过恢复扫描器、各步骤故障注入、模型决策 checkpoint、工具执行/观察 checkpoint、等待确认和完成节点恢复测试；真实 Docker 演练需要在有进行中任务时执行上述脚本。
 
 ### 阶段四：SSE 事件续传
 
