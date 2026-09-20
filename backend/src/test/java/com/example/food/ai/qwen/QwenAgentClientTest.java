@@ -280,6 +280,40 @@ class QwenAgentClientTest {
     }
 
     @Test
+    void parsesBareJsonToolCallInsteadOfShowingItToUser() {
+        RestTemplate restTemplate = new RestTemplateBuilder().build();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        QwenProperties properties = properties("test-api-key");
+        QwenAgentClient client = new QwenAgentClient(restTemplate, new ObjectMapper(), properties);
+
+        server.expect(once(), requestTo(properties.endpoint()))
+                .andRespond(withSuccess("""
+                        {
+                          "choices": [{
+                            "message": {
+                              "content": "{\\"name\\":\\"recipe\\\\_generate\\",\\"arguments\\":{\\"ingredients\\":[\\"黄瓜\\",\\"火腿\\"]}}"
+                            }
+                          }]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        QwenAgentClient.AgentTurn turn = client.complete(
+                List.of(QwenAgentClient.ConversationMessage.user("生成一道黄瓜和火腿的菜")),
+                new AgentToolRegistry().functionDefinitions()
+        );
+
+        assertThat(turn.content()).isEmpty();
+        assertThat(turn.toolCalls()).containsExactly(
+                new QwenAgentClient.ToolCall(
+                        "text_tool_call_1",
+                        "recipe_generate",
+                        "{\"ingredients\":[\"黄瓜\",\"火腿\"]}"
+                )
+        );
+        server.verify();
+    }
+
+    @Test
     void appendsChatCompletionsToConfiguredOpenAiBaseEndpoint() {
         RestTemplate restTemplate = new RestTemplateBuilder().build();
         MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();

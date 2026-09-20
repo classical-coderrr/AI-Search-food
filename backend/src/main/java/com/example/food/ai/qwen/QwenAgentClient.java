@@ -315,7 +315,7 @@ public class QwenAgentClient {
         List<JsonNode> nodes = calls.isArray() ? toList(calls) : List.of(calls);
         for (JsonNode call : nodes) {
             JsonNode function = call.path("function").isObject() ? call.path("function") : call;
-            String name = function.path("name").asText("").trim();
+            String name = normalizeToolName(function.path("name").asText(""));
             if (name.isEmpty()) {
                 invalid = true;
                 continue;
@@ -344,7 +344,7 @@ public class QwenAgentClient {
             if (!("function_call".equals(type) || "tool_call".equals(type))) {
                 continue;
             }
-            String name = item.path("name").asText("").trim();
+            String name = normalizeToolName(item.path("name").asText(""));
             if (name.isEmpty()) {
                 invalid = true;
                 continue;
@@ -456,7 +456,7 @@ public class QwenAgentClient {
                         content.append(text);
                     }
                 } else if ("tool_use".equals(type)) {
-                    String name = block.path("name").asText("").trim();
+                    String name = normalizeToolName(block.path("name").asText(""));
                     if (name.isEmpty()) {
                         invalidStructuredCall = true;
                         continue;
@@ -493,7 +493,8 @@ public class QwenAgentClient {
 
         Matcher matcher = TEXT_TOOL_CALL_PATTERN.matcher(content);
         if (!matcher.find()) {
-            return new ParsedTextToolCalls(content, List.of());
+            ParsedTextToolCalls bareToolCall = parseBareJsonToolCall(content, existingCallCount);
+            return bareToolCall == null ? new ParsedTextToolCalls(content, List.of()) : bareToolCall;
         }
 
         StringBuilder cleanedContent = new StringBuilder();
@@ -507,7 +508,7 @@ public class QwenAgentClient {
                 if (call == null || !call.isObject()) {
                     throw new IllegalArgumentException("工具调用不是 JSON 对象");
                 }
-                String name = call.path("name").asText("").trim();
+                String name = normalizeToolName(call.path("name").asText(""));
                 if (name.isEmpty()) {
                     throw new IllegalArgumentException("工具名称为空");
                 }
@@ -531,7 +532,66 @@ public class QwenAgentClient {
             cursor = matcher.end();
         } while (matcher.find());
         cleanedContent.append(content, cursor, content.length());
-        return new ParsedTextToolCalls(cleanedContent.toString().trim(), List.copyOf(toolCalls));
+        String cleaned = cleanedContent.toString().trim();
+        ParsedTextToolCalls bareToolCall = parseBareJsonToolCall(cleaned, generatedId);
+        return bareToolCall == null
+                ? new ParsedTextToolCalls(cleaned, List.copyOf(toolCalls))
+                : new ParsedTextToolCalls(bareToolCall.content(), mergeToolCalls(toolCalls, bareToolCall.toolCalls()));
+    }
+
+    private ParsedTextToolCalls parseBareJsonToolCall(String content, int existingCallCount) {
+        if (content == null || content.isBlank()) {
+            return null;
+        }
+        String candidate = content.trim();
+        if (candidate.startsWith("```") && candidate.endsWith("```")) {
+            int firstLineBreak = candidate.indexOf('\n');
+            if (firstLineBreak < 0) {
+                return null;
+            }
+            candidate = candidate.substring(firstLineBreak + 1, candidate.length() - 3).trim();
+        }
+        if (!candidate.startsWith("{") || !candidate.endsWith("}")) {
+            return null;
+        }
+        try {
+            JsonNode call = objectMapper.readTree(candidate.replace("\\_", "_"));
+            if (call == null || !call.isObject() || !call.has("name")) {
+                return null;
+            }
+            String name = normalizeToolName(call.path("name").asText(""));
+            if (name.isEmpty()) {
+                throw new IllegalArgumentException("工具名称为空");
+            }
+            JsonNode arguments = call.path("arguments");
+            if (arguments.isMissingNode() || arguments.isNull()) {
+                arguments = objectMapper.createObjectNode();
+            } else if (arguments.isTextual()) {
+                arguments = objectMapper.readTree(arguments.textValue());
+            }
+            if (arguments == null || !arguments.isObject()) {
+                throw new IllegalArgumentException("工具参数不是 JSON 对象");
+            }
+            String id = call.path("id").asText("").trim();
+            if (id.isEmpty()) {
+                id = "text_tool_call_" + (existingCallCount + 1);
+            }
+            return new ParsedTextToolCalls("", List.of(
+                    new ToolCall(id, name, objectMapper.writeValueAsString(arguments))
+            ));
+        } catch (IOException | IllegalArgumentException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "模型返回了无效工具调用", exception);
+        }
+    }
+
+    private List<ToolCall> mergeToolCalls(List<ToolCall> first, List<ToolCall> second) {
+        List<ToolCall> merged = new ArrayList<>(first);
+        merged.addAll(second);
+        return List.copyOf(merged);
+    }
+
+    private String normalizeToolName(String name) {
+        return name == null ? "" : name.replace("\\_", "_").trim();
     }
 
     public record AgentTurn(String content, List<ToolCall> toolCalls, String provider, String model) {

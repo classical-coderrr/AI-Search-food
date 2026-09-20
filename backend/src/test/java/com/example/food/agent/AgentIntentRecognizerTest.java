@@ -122,6 +122,54 @@ class AgentIntentRecognizerTest {
         assertThat(result.reason()).isEqualTo("invalid_response");
     }
 
+    @Test
+    void routesUnmatchedRecipeRequestByMeaning() {
+        QwenAgentClient client = mock(QwenAgentClient.class);
+        when(client.complete(anyList(), anyList())).thenReturn(new QwenAgentClient.AgentTurn(
+                "",
+                List.of(new QwenAgentClient.ToolCall(
+                        "route-1",
+                        "agent_intent_classify",
+                        "{\"intent\":\"GENERATE_RECIPE\",\"confidence\":0.98,\"recipe_reference\":\"NONE\"}"
+                )),
+                "qwen",
+                "qwen-plus"
+        ));
+        AgentIntentRecognizer recognizer = new AgentIntentRecognizer(client, new ObjectMapper(), properties());
+
+        AgentIntentRecognizer.RecognitionResult result = recognizer.recognizeRoute(
+                "冰箱里那两根黄瓜和一包火腿怎么解决？",
+                List.of()
+        );
+
+        assertThat(result.available()).isTrue();
+        assertThat(result.intent()).isEqualTo(AgentIntentRecognizer.GENERATE_RECIPE);
+        assertThat(recognizer.isUsableRoute(result)).isTrue();
+        verify(client).complete(anyList(), anyList());
+    }
+
+    @Test
+    void keepsOrdinaryChatAsAUsableNonToolRoute() {
+        QwenAgentClient client = mock(QwenAgentClient.class);
+        when(client.complete(anyList(), anyList())).thenReturn(new QwenAgentClient.AgentTurn(
+                "",
+                List.of(new QwenAgentClient.ToolCall(
+                        "route-2",
+                        "agent_intent_classify",
+                        "{\"intent\":\"OTHER\",\"confidence\":0.96,\"recipe_reference\":\"NONE\"}"
+                )),
+                "qwen",
+                "qwen-plus"
+        ));
+        AgentIntentRecognizer recognizer = new AgentIntentRecognizer(client, new ObjectMapper(), properties());
+
+        AgentIntentRecognizer.RecognitionResult result = recognizer.recognizeRoute("你好", List.of());
+
+        assertThat(result.available()).isTrue();
+        assertThat(result.intent()).isEqualTo(AgentIntentRecognizer.OTHER);
+        assertThat(recognizer.isUsableRoute(result)).isTrue();
+    }
+
     private AgentIntentProperties properties() {
         AgentIntentProperties properties = new AgentIntentProperties();
         properties.setEnabled(true);

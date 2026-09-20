@@ -93,6 +93,8 @@ public class AgentService {
     private static final String CONFIRMATION_CONFIRMED = "CONFIRMED";
     private static final String CONFIRMATION_UNKNOWN_REVIEW = "UNKNOWN_REVIEW";
     private static final String CONFIRMATION_FAILED = "FAILED";
+    private static final String SEMANTIC_ROUTE_FALLBACK =
+            "\u6211\u6ca1\u80fd\u7406\u89e3\u4f60\u7684\u610f\u601d,\u8bf7\u518d\u8bf4\u4e00\u904d";
 
     private final AgentConversationMapper conversationMapper;
     private final AgentMessageMapper messageMapper;
@@ -749,6 +751,14 @@ public class AgentService {
                 execution.nextNode = AgentNode.MODEL_DECISION;
                 persistCheckpoint(execution, AgentStatus.RUNNING, AgentNode.MODEL_DECISION, AgentNode.MODEL_DECISION, null);
                 List<Map<String, Object>> definitions = toolDefinitions(execution);
+                if (definitions.isEmpty() && execution.semanticRoutingFailed) {
+                    execution.currentNode = AgentNode.MODEL_DECISION;
+                    execution.nextNode = AgentNode.FINALIZE;
+                    persistCheckpoint(execution, AgentStatus.RUNNING, AgentNode.MODEL_DECISION, AgentNode.FINALIZE, null);
+                    sendText(emitter, cancelled, conversationId, SEMANTIC_ROUTE_FALLBACK);
+                    persistCheckpoint(execution, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+                    return;
+                }
                 String modelRequestJson = toolOutput(Map.of(
                         "round", execution.round + 1,
                         "messageCount", execution.messages.size(),
@@ -848,6 +858,9 @@ public class AgentService {
                 execution.userMessage,
                 execution.hasAttachment
         );
+        if (definitions.isEmpty()) {
+            return semanticRouteDefinitions(execution);
+        }
         boolean saveToolAlreadyExposed = containsFunction(definitions, AgentToolRegistry.Tool.RECIPE_SAVE.functionName());
         if (execution.intentResolutionAttempted) {
             if (execution.recipeSaveIntent && !saveToolAlreadyExposed) {
@@ -896,6 +909,88 @@ public class AgentService {
         List<Map<String, Object>> enriched = new ArrayList<>(definitions);
         enriched.add(toolRegistry.functionDefinition(AgentToolRegistry.Tool.RECIPE_SAVE));
         return List.copyOf(enriched);
+    }
+
+    private List<Map<String, Object>> semanticRouteDefinitions(AgentExecution execution) {
+        if (!execution.semanticRoutingAttempted) {
+            AgentIntentRecognizer.RecognitionResult result = intentRecognizer.recognizeRoute(
+                    execution.userMessage,
+                    execution.messages
+            );
+            if (result == null) {
+                // Older checkpoints and compatibility test doubles predate
+                // semantic routing. Keep their existing model path instead
+                // of treating a missing optional result as a live failure.
+                result = new AgentIntentRecognizer.RecognitionResult(
+                        true,
+                        false,
+                        AgentIntentRecognizer.OTHER,
+                        1d,
+                        "NONE",
+                        "legacy_router"
+                );
+            }
+            execution.semanticRoutingAttempted = true;
+            execution.semanticRoute = result.intent();
+            boolean legacyRoute = "legacy_router".equals(result.reason());
+            execution.semanticRoutingFailed = !legacyRoute && !intentRecognizer.isUsableRoute(result);
+            persistIntentResolution(
+                    execution,
+                    result.auditSource(),
+                    result.intent(),
+                    result.confidence(),
+                    result.recipeReference(),
+                    result.reason(),
+                    result.isSaveRecipe(),
+                    result.modelCalled()
+            );
+        }
+        if (execution.semanticRoutingFailed) {
+            return List.of();
+        }
+        if (AgentIntentRecognizer.SAVE_RECIPE.equals(execution.semanticRoute)) {
+            return List.of(toolRegistry.functionDefinition(AgentToolRegistry.Tool.RECIPE_SAVE));
+        }
+        return semanticToolDefinitions(execution.semanticRoute);
+    }
+
+    private List<Map<String, Object>> semanticToolDefinitions(String route) {
+        if (route == null || AgentIntentRecognizer.OTHER.equals(route)) {
+            return List.of();
+        }
+        List<AgentToolRegistry.Tool> tools = switch (route) {
+            case AgentIntentRecognizer.GENERATE_RECIPE -> List.of(AgentToolRegistry.Tool.RECIPE_GENERATE);
+            case AgentIntentRecognizer.PANTRY_QUERY -> List.of(
+                    AgentToolRegistry.Tool.PANTRY_LIST,
+                    AgentToolRegistry.Tool.PANTRY_EXPIRY
+            );
+            case AgentIntentRecognizer.WEEKLY_MENU -> List.of(
+                    AgentToolRegistry.Tool.WEEKLY_MENU,
+                    AgentToolRegistry.Tool.MEAL_PLAN_MANAGE
+            );
+            case AgentIntentRecognizer.SAVED_RECIPES -> List.of(
+                    AgentToolRegistry.Tool.SAVED_RECIPES,
+                    AgentToolRegistry.Tool.RECIPE_LIBRARY_MANAGE
+            );
+            case AgentIntentRecognizer.NOTIFICATION_QUERY -> List.of(
+                    AgentToolRegistry.Tool.NOTIFICATIONS,
+                    AgentToolRegistry.Tool.NOTIFICATION_MANAGE
+            );
+            case AgentIntentRecognizer.NUTRITION_QUERY -> List.of(
+                    AgentToolRegistry.Tool.NUTRITION_PROFILE,
+                    AgentToolRegistry.Tool.PROFILE_MANAGE
+            );
+            case AgentIntentRecognizer.KITCHEN_ACTION -> List.of(
+                    AgentToolRegistry.Tool.PANTRY_MANAGE,
+                    AgentToolRegistry.Tool.MEAL_PLAN_MANAGE,
+                    AgentToolRegistry.Tool.NOTIFICATION_MANAGE,
+                    AgentToolRegistry.Tool.RECIPE_LIBRARY_MANAGE,
+                    AgentToolRegistry.Tool.PROFILE_MANAGE,
+                    AgentToolRegistry.Tool.FINISHED_DISH_MANAGE
+            );
+            default -> List.of();
+        };
+        return tools.stream().map(toolRegistry::functionDefinition).toList();
     }
 
     private void persistIntentResolution(
@@ -1798,6 +1893,11 @@ public class AgentService {
         private boolean intentResolutionAttempted;
         private boolean recipeSaveIntent;
         private String intentResolutionSource;
+        private boolean semanticRoutingAttempted;
+        private boolean semanticRoutingFailed;
+        private String semanticRoute;
+        private Long targetRecipeSearchLogId;
+        private String previousRecipeTitle;
 
         private AgentExecution(
                 String runId,
@@ -1850,6 +1950,11 @@ public class AgentService {
             execution.intentResolutionAttempted = state.intentResolutionAttempted();
             execution.recipeSaveIntent = state.recipeSaveIntent();
             execution.intentResolutionSource = state.intentResolutionSource();
+            execution.semanticRoutingAttempted = state.semanticRoutingAttempted();
+            execution.semanticRoutingFailed = state.semanticRoutingFailed();
+            execution.semanticRoute = state.semanticRoute();
+            execution.targetRecipeSearchLogId = state.targetRecipeSearchLogId();
+            execution.previousRecipeTitle = state.previousRecipeTitle();
             return execution;
         }
 
@@ -1882,7 +1987,12 @@ public class AgentService {
                     updatedAt,
                     intentResolutionAttempted,
                     recipeSaveIntent,
-                    intentResolutionSource
+                    intentResolutionSource,
+                    semanticRoutingAttempted,
+                    semanticRoutingFailed,
+                    semanticRoute,
+                    targetRecipeSearchLogId,
+                    previousRecipeTitle
             );
         }
     }
