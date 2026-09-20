@@ -234,6 +234,28 @@ public class RecipeStreamingService {
                     }
                     recipeRecommendationService.validateVideoGrounding(response, prepared);
                     try {
+                        recipeRecommendationService.validateRequiredIngredientCoverage(
+                                request,
+                                response,
+                                recipeIndex,
+                                recommendationCount,
+                                recipePlan
+                        );
+                    } catch (ResponseStatusException exception) {
+                        if (attempt + 1 >= MAX_RECIPE_ATTEMPTS) {
+                            throw exception;
+                        }
+                        retryMessage = "第 " + (recipeIndex + 1) + " 道菜谱未覆盖指定食材，正在按核心食材重新生成";
+                        retryInstruction = recipeRecommendationService.ingredientCoverageRetryInstruction(
+                                request,
+                                recipeIndex,
+                                recommendationCount,
+                                recipePlan
+                        );
+                        response = null;
+                        continue;
+                    }
+                    try {
                         recipeRecommendationService.validateRecipeIngredientPair(
                                 request,
                                 response,

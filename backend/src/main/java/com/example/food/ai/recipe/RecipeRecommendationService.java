@@ -167,8 +167,11 @@ public class RecipeRecommendationService {
         PreparedPrompt prepared = preparePrompt(request, principal);
         QwenRecipeClient.RecipePlan recipePlan = planRecipeSelection(request, 1, prepared);
         RecipeGenerateResponse response = null;
+        String retryInstruction = null;
         for (int attempt = 0; attempt < 2; attempt++) {
-            String prompt = attempt == 0 ? prepared.prompt() : prepared.prompt() + pantryFallbackRetryInstruction();
+            String prompt = attempt == 0
+                    ? prepared.prompt()
+                    : prepared.prompt() + (retryInstruction == null ? pantryFallbackRetryInstruction() : retryInstruction);
             prompt += recipePlanInstruction(recipePlan);
             response = qwenRecipeClient.generateRecipe(prompt);
             try {
@@ -177,9 +180,18 @@ public class RecipeRecommendationService {
                 if (attempt == 1) {
                     throw exception;
                 }
+                retryInstruction = pantryFallbackRetryInstruction();
                 continue;
             }
-            validateIngredientAlignment(request, response);
+            try {
+                validateIngredientAlignment(request, response);
+            } catch (org.springframework.web.server.ResponseStatusException exception) {
+                if (attempt == 1) {
+                    throw exception;
+                }
+                retryInstruction = ingredientAlignmentRetryInstruction(request);
+                continue;
+            }
             validateVideoGrounding(response, prepared);
             break;
         }
@@ -298,10 +310,7 @@ public class RecipeRecommendationService {
                     """.formatted(recipeIndex + 1, total, variant), previousRecipes);
         }
 
-        List<String> plannedCorePair = plannedCoreIngredients(request, recipePlan);
-        List<String> coreIngredients = plannedCorePair.isEmpty()
-                ? ingredientPairForBatch(request, recipeIndex, total)
-                : plannedCorePair;
+        List<String> coreIngredients = requiredCoreIngredients(request, recipeIndex, total, recipePlan);
         String corePair = String.join("、", coreIngredients);
         String excludedIngredients = splitIngredientNames(request == null ? null : request.ingredients()).stream()
                 .filter(ingredient -> !coreIngredients.contains(ingredient))
@@ -339,6 +348,25 @@ public class RecipeRecommendationService {
                 .distinct()
                 .limit(2)
                 .toList();
+    }
+
+    /**
+     * Returns the core ingredients that both the prompt and post-generation
+     * validation expect for this recipe slot.
+     */
+    public List<String> requiredCoreIngredients(
+            RecipeGenerateRequest request,
+            int recipeIndex,
+            int total,
+            QwenRecipeClient.RecipePlan recipePlan
+    ) {
+        if (request == null || request.includeAiIngredientRecommendation() || !hasText(request.ingredients())) {
+            return List.of();
+        }
+        List<String> planned = plannedCoreIngredients(request, recipePlan);
+        return planned.isEmpty()
+                ? ingredientPairForBatch(request, recipeIndex, total)
+                : planned;
     }
 
     public String recipePlanningPrompt(
@@ -631,6 +659,20 @@ public class RecipeRecommendationService {
                 """;
     }
 
+    public String ingredientAlignmentRetryInstruction(RecipeGenerateRequest request) {
+        String requested = request == null || request.includeAiIngredientRecommendation()
+                ? "本次输入食材"
+                : requestedIngredients(request);
+        return """
+
+
+                【指定食材覆盖校正】
+                上一次生成结果没有完整覆盖本次输入的全部指定食材。
+                本次必须在 ingredients 和 steps 中实际使用以下全部食材：%s。
+                不得只在菜名、简介或 missingIngredients 中提及；请返回完整、真实、可执行的 JSON 菜谱。
+                """.formatted(requested);
+    }
+
     public RecipeGenerateResponse persist(
             RecipeGenerateRequest request,
             RecipeGenerateResponse response,
@@ -874,9 +916,63 @@ public class RecipeRecommendationService {
         }
     }
 
+    /**
+     * Validates that a generated recipe contains at least one of the core
+     * ingredients assigned to its recipe slot. The batch-level coverage check
+     * alone is too late to identify which recipe needs to be regenerated.
+     */
+    public void validateRequiredIngredientCoverage(
+            RecipeGenerateRequest request,
+            RecipeGenerateResponse response,
+            int recipeIndex,
+            int total,
+            QwenRecipeClient.RecipePlan recipePlan
+    ) {
+        List<String> required = requiredCoreIngredients(request, recipeIndex, total, recipePlan);
+        if (required.isEmpty()) {
+            return;
+        }
+        Set<String> generated = generatedIngredientNames(response);
+        boolean covered = required.stream()
+                .anyMatch(expected -> generated.stream().anyMatch(actual -> ingredientMatches(expected, actual)));
+        if (!covered) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_GATEWAY,
+                    "第 " + (recipeIndex + 1) + " 道菜谱未使用指定核心食材（需要包含："
+                            + String.join("、", required) + "），请点击重试"
+            );
+        }
+    }
+
+    public String ingredientCoverageRetryInstruction(
+            RecipeGenerateRequest request,
+            int recipeIndex,
+            int total,
+            QwenRecipeClient.RecipePlan recipePlan
+    ) {
+        List<String> required = requiredCoreIngredients(request, recipeIndex, total, recipePlan);
+        String requiredText = required.isEmpty() ? "本道菜的指定核心食材" : String.join("、", required);
+        return """
+
+
+                【指定食材覆盖校正】
+                上一次生成的第 %d 道菜没有在 ingredients 中明确使用本菜指定的核心食材。
+                本次必须在 ingredients 和 steps 中实际使用以下至少一种核心食材：%s。
+                不要只在菜名、简介或营养说明中提及；请返回完整、真实、可执行的 JSON 菜谱。
+                """.formatted(recipeIndex + 1, requiredText);
+    }
+
     public void validateBatchIngredientAlignment(
             RecipeGenerateRequest request,
             List<RecipeGenerateResponse> responses
+    ) {
+        validateBatchIngredientAlignment(request, responses, List.of());
+    }
+
+    public void validateBatchIngredientAlignment(
+            RecipeGenerateRequest request,
+            List<RecipeGenerateResponse> responses,
+            List<QwenRecipeClient.RecipePlan> recipePlans
     ) {
         if (request == null || request.includeAiIngredientRecommendation() || !hasText(request.ingredients())) {
             return;
@@ -899,6 +995,18 @@ public class RecipeRecommendationService {
         if (requested.size() > 1) {
             int responseCount = responses == null ? 0 : responses.size();
             for (int index = 0; index < responseCount; index++) {
+                QwenRecipeClient.RecipePlan recipePlan = recipePlans != null && index < recipePlans.size()
+                        ? recipePlans.get(index)
+                        : null;
+                if (recipePlans != null && !recipePlans.isEmpty()) {
+                    validateRequiredIngredientCoverage(
+                            request,
+                            responses.get(index),
+                            index,
+                            responseCount,
+                            recipePlan
+                    );
+                }
                 validateRecipeIngredientPair(request, responses.get(index), index, responseCount);
             }
         }

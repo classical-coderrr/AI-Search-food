@@ -74,6 +74,16 @@ public class SavedRecipeService {
         }
         verifySearchLogOwnership(searchLog, principal, anonymousId);
 
+        // A generated recipe belongs to one search record. Repeated Agent
+        // save requests may carry different confirmation/idempotency keys,
+        // so the operation key alone cannot prevent duplicate recipe rows.
+        // Reuse the existing record for the same user and search result.
+        RecipeRecord existingForSearch = recipeRecordMapper.findByUserIdAndSearchLogId(
+                principal.id(), request.searchLogId());
+        if (existingForSearch != null) {
+            return detail(principal.id(), existingForSearch.getId());
+        }
+
         RecipeGenerateResponse recipe = recipeFromRequest(request);
         RecipeGenerateResponse.NutritionEstimate nutrition = validNutrition(request.nutritionEstimate());
         RecipeRecord record = new RecipeRecord();

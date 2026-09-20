@@ -3,6 +3,7 @@ package com.example.food.agent;
 import com.example.food.agent.dto.AgentChatRequest;
 import com.example.food.agent.dto.AgentConfirmationStatusResponse;
 import com.example.food.agent.dto.AgentConversationHistoryResponse;
+import com.example.food.agent.dto.AgentEventResponse;
 import com.example.food.agent.dto.AgentRunStatusResponse;
 import com.example.food.agent.dto.AgentWriteOperationStatusResponse;
 import com.example.food.common.ApiResponse;
@@ -15,8 +16,10 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -60,6 +63,39 @@ public class AgentController {
             @PathVariable String runId
     ) {
         return ApiResponse.ok(agentService.runStatus(principal.id(), runId));
+    }
+
+    @GetMapping("/runs/{runId}/events")
+    public ApiResponse<java.util.List<AgentEventResponse>> eventHistory(
+            @AuthenticationPrincipal AuthPrincipal principal,
+            @PathVariable String runId,
+            @RequestParam(name = "afterEventSeq", defaultValue = "0") long afterEventSeq,
+            @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId
+    ) {
+        return ApiResponse.ok(agentService.eventHistory(principal.id(), runId,
+                resolveEventSeq(afterEventSeq, lastEventId)));
+    }
+
+    @GetMapping(value = "/runs/{runId}/events/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter replayEvents(
+            @AuthenticationPrincipal AuthPrincipal principal,
+            @PathVariable String runId,
+            @RequestParam(name = "afterEventSeq", defaultValue = "0") long afterEventSeq,
+            @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId
+    ) {
+        return agentService.replayEvents(principal.id(), runId,
+                resolveEventSeq(afterEventSeq, lastEventId));
+    }
+
+    private long resolveEventSeq(long queryValue, String headerValue) {
+        if (queryValue > 0 || headerValue == null || headerValue.isBlank()) {
+            return Math.max(0L, queryValue);
+        }
+        try {
+            return Math.max(0L, Long.parseLong(headerValue.trim()));
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
     }
 
     @GetMapping("/confirmations/{confirmationId}")

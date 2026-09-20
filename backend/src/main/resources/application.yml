@@ -41,6 +41,10 @@ app:
       scan-delay: ${AGENT_RECOVERY_SCAN_DELAY:PT30S}
       stale-after: ${AGENT_RECOVERY_STALE_AFTER:PT5M}
       lease-duration: ${AGENT_RECOVERY_LEASE_DURATION:PT10M}
+    write-drill:
+      enabled: ${AGENT_WRITE_DRILL_ENABLED:false}
+      pause-before-business-write: ${AGENT_WRITE_DRILL_PAUSE_BEFORE:PT0S}
+      pause-after-business-write: ${AGENT_WRITE_DRILL_PAUSE_AFTER:PT0S}
   ingredient-images:
     enabled: ${INGREDIENT_IMAGES_ENABLED:true}
   finished-dish-reviews:
@@ -96,3 +100,12 @@ app:
       model: ${DASHSCOPE_MODEL:qwen-plus}
       vision-model: ${DASHSCOPE_VISION_MODEL:qwen-vl-plus}
       endpoint: ${DASHSCOPE_BASE_URL:${DASHSCOPE_ENDPOINT:https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
+  endpoint:
+    health:
+      show-details: never

@@ -12,6 +12,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
@@ -37,6 +38,8 @@ public class AgentWriteService {
     private final AgentWriteOperationService operationService;
     private final UserSecurityLogService securityLogService;
     private final ObjectMapper objectMapper;
+    private final AgentWriteDrill writeDrill;
+    private final AgentMetrics metrics;
 
     public AgentWriteService(
             AgentConfirmationMapper confirmationMapper,
@@ -46,12 +49,58 @@ public class AgentWriteService {
             UserSecurityLogService securityLogService,
             ObjectMapper objectMapper
     ) {
+        this(
+                confirmationMapper,
+                savedRecipeService,
+                actionService,
+                operationService,
+                securityLogService,
+                objectMapper,
+                new AgentWriteDrill(new AgentWriteDrillProperties(false, Duration.ZERO, Duration.ZERO)),
+                AgentMetrics.disabled()
+        );
+    }
+
+    public AgentWriteService(
+            AgentConfirmationMapper confirmationMapper,
+            SavedRecipeService savedRecipeService,
+            AgentKitchenActionService actionService,
+            AgentWriteOperationService operationService,
+            UserSecurityLogService securityLogService,
+            ObjectMapper objectMapper,
+            AgentWriteDrill writeDrill
+    ) {
+        this(
+                confirmationMapper,
+                savedRecipeService,
+                actionService,
+                operationService,
+                securityLogService,
+                objectMapper,
+                writeDrill,
+                AgentMetrics.disabled()
+        );
+    }
+
+    @Autowired
+    public AgentWriteService(
+            AgentConfirmationMapper confirmationMapper,
+            SavedRecipeService savedRecipeService,
+            AgentKitchenActionService actionService,
+            AgentWriteOperationService operationService,
+            UserSecurityLogService securityLogService,
+            ObjectMapper objectMapper,
+            AgentWriteDrill writeDrill,
+            AgentMetrics metrics
+    ) {
         this.confirmationMapper = confirmationMapper;
         this.savedRecipeService = savedRecipeService;
         this.actionService = actionService;
         this.operationService = operationService;
         this.securityLogService = securityLogService;
         this.objectMapper = objectMapper;
+        this.writeDrill = writeDrill;
+        this.metrics = metrics == null ? AgentMetrics.disabled() : metrics;
     }
 
     @Transactional
@@ -74,6 +123,7 @@ public class AgentWriteService {
         AgentWriteOperationService.ClaimResult operation = operationService.claim(
                 principal.id(), confirmationId, confirmation.getActionType(), normalizedIdempotencyKey);
         if (!operation.acquired()) {
+            metrics.duplicateWrite();
             return operationService.replay(operation.operation());
         }
 
@@ -93,6 +143,7 @@ public class AgentWriteService {
             return current == null ? ConfirmationResult.unknown("操作确认已失效，请重新发起") : resultForStatus(current);
         }
 
+        writeDrill.pauseBeforeBusinessWrite(principal.id(), normalizedIdempotencyKey);
         ConfirmationResult result;
         try {
             if (ACTION_SAVE_RECIPE.equals(confirmation.getActionType())) {
@@ -104,6 +155,8 @@ public class AgentWriteService {
                         confirmation.getActionType(), readPayload(confirmation.getPayloadJson()), principal, normalizedIdempotencyKey);
                 result = ConfirmationResult.completed(action.detail(), action.message());
             }
+
+            writeDrill.pauseAfterBusinessWrite(principal.id(), normalizedIdempotencyKey);
 
             operationService.complete(principal.id(), normalizedIdempotencyKey, result.message(), result.detail());
         } catch (ResponseStatusException exception) {

@@ -7,12 +7,16 @@ import com.example.food.ai.ingredient.IngredientRecognitionService;
 import com.example.food.ai.ingredient.dto.IngredientRecognitionResponse;
 import com.example.food.ai.qwen.QwenAgentClient;
 import com.example.food.agent.dto.AgentChatRequest;
+import com.example.food.agent.dto.AgentEventResponse;
 import com.example.food.agent.dto.AgentRunStatusResponse;
 import com.example.food.agent.dto.AgentConversationHistoryResponse;
 import com.example.food.agent.dto.AgentConfirmationStatusResponse;
 import com.example.food.agent.dto.AgentMessageResponse;
 import com.example.food.agent.dto.AgentWriteOperationStatusResponse;
 import com.example.food.agent.state.AgentCheckpoint;
+import com.example.food.agent.state.AgentEvent;
+import com.example.food.agent.state.AgentEventStore;
+import com.example.food.agent.state.InMemoryAgentEventStore;
 import com.example.food.agent.state.AgentFaultInjector;
 import com.example.food.agent.state.AgentNode;
 import com.example.food.agent.state.AgentRun;
@@ -43,6 +47,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -83,6 +88,11 @@ public class AgentService {
     private static final Duration RUN_LEASE_DURATION = Duration.ofMinutes(10);
     private static final String ROLE_USER = "USER";
     private static final String ROLE_ASSISTANT = "ASSISTANT";
+    private static final String CONFIRMATION_PENDING = "PENDING";
+    private static final String CONFIRMATION_PROCESSING = "PROCESSING";
+    private static final String CONFIRMATION_CONFIRMED = "CONFIRMED";
+    private static final String CONFIRMATION_UNKNOWN_REVIEW = "UNKNOWN_REVIEW";
+    private static final String CONFIRMATION_FAILED = "FAILED";
 
     private final AgentConversationMapper conversationMapper;
     private final AgentMessageMapper messageMapper;
@@ -105,7 +115,10 @@ public class AgentService {
     private final AgentIntentAuditService intentAuditService;
     private final ObjectMapper objectMapper;
     private final AgentRunStore runStore;
+    private final AgentEventStore eventStore;
+    private final AgentMetrics metrics;
     private final AgentFaultInjector faultInjector;
+    private final ThreadLocal<String> activeRunId = new ThreadLocal<>();
     private final ExecutorService workerExecutor = Executors.newCachedThreadPool(
             runnable -> {
                 Thread thread = new Thread(runnable, "kitchen-agent-" + System.nanoTime());
@@ -164,7 +177,61 @@ public class AgentService {
                 intentAuditService,
                 objectMapper,
                 runStore,
-                new AgentFaultInjector()
+                new AgentFaultInjector(),
+                new InMemoryAgentEventStore(objectMapper),
+                AgentMetrics.disabled()
+        );
+    }
+
+    public AgentService(
+            AgentConversationMapper conversationMapper,
+            AgentMessageMapper messageMapper,
+            AgentConfirmationMapper confirmationMapper,
+            AgentToolRegistry toolRegistry,
+            AgentKitchenToolService kitchenToolService,
+            AgentWriteService writeService,
+            IngredientRecognitionService ingredientRecognitionService,
+            UserPantryService pantryService,
+            NotificationService notificationService,
+            WeeklyMenuService weeklyMenuService,
+            SavedRecipeService savedRecipeService,
+            UserHealthProfileService healthProfileService,
+            UserNutritionTargetService nutritionTargetService,
+            HealthNutritionService healthNutritionService,
+            UserDietPreferenceService dietPreferenceService,
+            RecipeRecommendationService recipeRecommendationService,
+            QwenAgentClient qwenAgentClient,
+            AgentIntentRecognizer intentRecognizer,
+            AgentIntentAuditService intentAuditService,
+            ObjectMapper objectMapper,
+            AgentRunStore runStore,
+            AgentFaultInjector faultInjector
+    ) {
+        this(
+                conversationMapper,
+                messageMapper,
+                confirmationMapper,
+                toolRegistry,
+                kitchenToolService,
+                writeService,
+                ingredientRecognitionService,
+                pantryService,
+                notificationService,
+                weeklyMenuService,
+                savedRecipeService,
+                healthProfileService,
+                nutritionTargetService,
+                healthNutritionService,
+                dietPreferenceService,
+                recipeRecommendationService,
+                qwenAgentClient,
+                intentRecognizer,
+                intentAuditService,
+                objectMapper,
+                runStore,
+                faultInjector,
+                new InMemoryAgentEventStore(objectMapper),
+                AgentMetrics.disabled()
         );
     }
 
@@ -191,7 +258,9 @@ public class AgentService {
             AgentIntentAuditService intentAuditService,
             ObjectMapper objectMapper,
             AgentRunStore runStore,
-            AgentFaultInjector faultInjector
+            AgentFaultInjector faultInjector,
+            AgentEventStore eventStore,
+            AgentMetrics metrics
     ) {
         this.conversationMapper = conversationMapper;
         this.messageMapper = messageMapper;
@@ -214,6 +283,8 @@ public class AgentService {
         this.intentAuditService = intentAuditService;
         this.objectMapper = objectMapper;
         this.runStore = runStore;
+        this.eventStore = eventStore == null ? new InMemoryAgentEventStore(objectMapper) : eventStore;
+        this.metrics = metrics == null ? AgentMetrics.disabled() : metrics;
         this.faultInjector = faultInjector == null ? new AgentFaultInjector() : faultInjector;
     }
 
@@ -262,16 +333,17 @@ public class AgentService {
                 now
         );
         runStore.create(initialRun, new AgentCheckpoint(runId, 0, initialState, now));
+        metrics.runStarted();
         SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
         AtomicBoolean cancelled = new AtomicBoolean(false);
         Future<?> worker = workerExecutor.submit(() -> run(runId, emitter, cancelled, request, principal, attachment, null));
-        Runnable cancel = () -> {
-            cancelled.set(true);
-            worker.cancel(true);
-        };
-        emitter.onCompletion(cancel);
-        emitter.onTimeout(cancel);
-        emitter.onError(error -> cancel.run());
+        // Closing an SSE connection must not cancel the durable Agent run. The
+        // worker continues and persists events so a later reconnect can replay
+        // them from Redis. Explicit cancellation is handled by the run state,
+        // not by a transient browser connection.
+        emitter.onCompletion(() -> { });
+        emitter.onTimeout(() -> { });
+        emitter.onError(error -> { });
         return emitter;
     }
 
@@ -308,6 +380,9 @@ public class AgentService {
         AuthPrincipal principal = new AuthPrincipal(state.userId(), "agent-recovery", AppRole.USER);
         AgentExecution execution = AgentExecution.from(state);
         AtomicBoolean cancelled = new AtomicBoolean(false);
+        Instant recoveryStartedAt = Instant.now();
+        metrics.runRecovered();
+        activeRunId.set(runId);
         try {
             if (execution.conversationId == null) {
                 AgentConversation conversation = newConversation(state.userId());
@@ -326,6 +401,7 @@ public class AgentService {
                         AgentNode.WAITING_CONFIRMATION, null);
             } else {
                 updateRun(runId, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+                metrics.runCompleted(Duration.between(recoveryStartedAt, Instant.now()));
             }
         } catch (AgentFaultInjector.AgentCrashException crash) {
             // A real process crash does not get converted to FAILED. Keeping
@@ -334,7 +410,10 @@ public class AgentService {
         } catch (Throwable exception) {
             if (!cancelled.get() && !Thread.currentThread().isInterrupted()) {
                 markFailed(runId, "RECOVERY_FAILED", errorMessage(exception));
+                metrics.runFailed(Duration.between(recoveryStartedAt, Instant.now()));
             }
+        } finally {
+            activeRunId.remove();
         }
     }
 
@@ -440,6 +519,8 @@ public class AgentService {
         if (existingLeaseOwner == null && !runStore.tryAcquireLease(runId, leaseOwner, RUN_LEASE_DURATION)) {
             return;
         }
+        activeRunId.set(runId);
+        Instant startedAt = Instant.now();
         AgentConversation conversation = null;
         try {
             conversation = conversation(request, principal.id());
@@ -453,6 +534,7 @@ public class AgentService {
             if (request.confirmationId() != null) {
                 handleConfirmation(emitter, cancelled, principal, conversation, request);
                 updateRun(runId, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+                metrics.runCompleted(Duration.between(startedAt, Instant.now()));
                 return;
             }
 
@@ -485,11 +567,10 @@ public class AgentService {
                         AgentNode.WAITING_CONFIRMATION, null);
             } else {
                 updateRun(runId, AgentStatus.COMPLETED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+                metrics.runCompleted(Duration.between(startedAt, Instant.now()));
             }
             sendOrCancel(emitter, cancelled, "done", Map.of("conversationId", conversation.getId(), "runId", runId));
-            if (emitter != null) {
-                emitter.complete();
-            }
+            completeEmitter(emitter);
         } catch (AgentFaultInjector.AgentCrashException crash) {
             // Leave the durable checkpoint untouched so the recovery scanner
             // can pick the run up after the next process starts.
@@ -497,12 +578,14 @@ public class AgentService {
         } catch (Throwable exception) {
             if (cancelled.get() || Thread.currentThread().isInterrupted()) {
                 updateRun(runId, AgentStatus.CANCELLED, AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+                metrics.runFailed(Duration.between(startedAt, Instant.now()));
                 return;
             }
             LOGGER.error("Agent run failed, runId={}, userId={}, conversationId={}",
                     runId, principal.id(), conversation == null ? null : conversation.getId(), exception);
             String message = errorMessage(exception);
             markFailed(runId, "AGENT_RUN_FAILED", message);
+            metrics.runFailed(Duration.between(startedAt, Instant.now()));
             if (conversation != null) {
                 try {
                     saveMessage(principal.id(), conversation.getId(), ROLE_ASSISTANT, "text", message);
@@ -511,13 +594,12 @@ public class AgentService {
                 }
             }
             send(emitter, cancelled, "error", Map.of("message", message));
-            if (emitter != null) {
-                emitter.complete();
-            }
+            completeEmitter(emitter);
         } finally {
             if (existingLeaseOwner == null) {
                 runStore.releaseLease(runId, leaseOwner);
             }
+            activeRunId.remove();
         }
     }
 
@@ -537,6 +619,102 @@ public class AgentService {
                 run.errorMessage(),
                 run.updatedAt()
         );
+    }
+
+    public List<AgentEventResponse> eventHistory(Long userId, String runId, long afterEventSeq) {
+        runStatus(userId, runId);
+        return eventStore.findAfter(runId, Math.max(0L, afterEventSeq), 1000).stream()
+                .map(this::eventResponse)
+                .toList();
+    }
+
+    /**
+     * Replays persisted events and keeps polling until the run reaches a
+     * terminal state. A reconnect therefore receives the missed events first
+     * and then any events produced while the new SSE connection is open.
+     */
+    public SseEmitter replayEvents(Long userId, String runId, long afterEventSeq) {
+        runStatus(userId, runId);
+        SseEmitter emitter = new SseEmitter(30_000L);
+        AtomicBoolean stopped = new AtomicBoolean(false);
+        Future<?> worker = workerExecutor.submit(() -> {
+            long lastSequence = Math.max(0L, afterEventSeq);
+            Instant deadline = Instant.now().plusSeconds(25);
+            try {
+                while (!stopped.get() && Instant.now().isBefore(deadline)) {
+                    List<AgentEvent> pending = eventStore.findAfter(runId, lastSequence, 1000);
+                    for (AgentEvent event : pending) {
+                        if (stopped.get()) {
+                            return;
+                        }
+                        if (!sendStoredEvent(emitter, event)) {
+                            stopped.set(true);
+                            return;
+                        }
+                        metrics.eventReplayed();
+                        lastSequence = Math.max(lastSequence, event.sequence());
+                    }
+                    AgentRun run = runStore.findRun(runId).orElse(null);
+                    if (run == null || isTerminal(run.status())) {
+                        if (pending.isEmpty()) {
+                            completeEmitter(emitter);
+                            return;
+                        }
+                    }
+                    Thread.sleep(300L);
+                }
+                if (!stopped.get()) {
+                    completeEmitter(emitter);
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } catch (Throwable exception) {
+                if (!stopped.get()) {
+                    emitter.completeWithError(exception);
+                }
+            }
+        });
+        Runnable stop = () -> {
+            stopped.set(true);
+            worker.cancel(true);
+        };
+        emitter.onCompletion(stop);
+        emitter.onTimeout(stop);
+        emitter.onError(error -> stop.run());
+        return emitter;
+    }
+
+    private boolean sendStoredEvent(SseEmitter emitter, AgentEvent event) {
+        try {
+            JsonNode data = objectMapper.readTree(event.dataJson());
+            emitter.send(SseEmitter.event()
+                    .id(Long.toString(event.sequence()))
+                    .name(event.event())
+                    .data(data));
+            return true;
+        } catch (IOException | IllegalStateException exception) {
+            return false;
+        }
+    }
+
+    private AgentEventResponse eventResponse(AgentEvent event) {
+        try {
+            return new AgentEventResponse(
+                    event.runId(),
+                    event.sequence(),
+                    event.event(),
+                    objectMapper.readTree(event.dataJson()),
+                    event.createdAt()
+            );
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Agent SSE 事件数据解析失败", exception);
+        }
+    }
+
+    private boolean isTerminal(AgentStatus status) {
+        return status == AgentStatus.COMPLETED
+                || status == AgentStatus.FAILED
+                || status == AgentStatus.CANCELLED;
     }
 
     public AgentConfirmationStatusResponse confirmationStatus(AuthPrincipal principal, Long confirmationId) {
@@ -949,9 +1127,7 @@ public class AgentService {
         }
         conversationMapper.touch(principal.id(), conversation.getId());
         sendOrCancel(emitter, cancelled, "done", Map.of("conversationId", conversation.getId()));
-        if (emitter != null) {
-            emitter.complete();
-        }
+        completeEmitter(emitter);
     }
 
     private ToolExecution requestSave(
@@ -967,15 +1143,31 @@ public class AgentService {
                     "当前会话没有可保存的菜谱"
             );
         }
+        String idempotencyKey = recipeSaveIdempotencyKey(recipe);
+        AgentConfirmation existing = confirmationMapper.findOwnedByIdempotencyKey(userId, idempotencyKey);
+        if (existing != null && !CONFIRMATION_FAILED.equals(existing.getStatus())
+                && !CONFIRMATION_UNKNOWN_REVIEW.equals(existing.getStatus())) {
+            return duplicateSaveExecution(existing);
+        }
         AgentConfirmation confirmation = new AgentConfirmation();
         confirmation.setConversationId(conversationId);
         confirmation.setUserId(userId);
         confirmation.setActionType("SAVE_RECIPE");
-        confirmation.setIdempotencyKey(UUID.randomUUID().toString().replace("-", ""));
+        confirmation.setIdempotencyKey(existing == null
+                ? idempotencyKey
+                : UUID.randomUUID().toString().replace("-", ""));
         confirmation.setPayloadJson(payloadForMessage("recipe-card", Map.of("recipe", recipe)));
         confirmation.setStatus("PENDING");
         confirmation.setCreatedAt(LocalDateTime.now());
-        confirmationMapper.insert(confirmation);
+        try {
+            confirmationMapper.insert(confirmation);
+        } catch (DuplicateKeyException duplicate) {
+            AgentConfirmation concurrent = confirmationMapper.findOwnedByIdempotencyKey(userId, idempotencyKey);
+            if (concurrent == null) {
+                throw duplicate;
+            }
+            return duplicateSaveExecution(concurrent);
+        }
 
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("confirmationId", confirmation.getId());
@@ -997,6 +1189,30 @@ public class AgentService {
                 "已发起保存确认",
                 true
         );
+    }
+
+    private ToolExecution duplicateSaveExecution(AgentConfirmation existing) {
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("status", "save_already_requested");
+        output.put("confirmationId", existing.getId());
+        output.put("idempotencyKey", existing.getIdempotencyKey());
+        String summary = switch (existing.getStatus()) {
+            case CONFIRMATION_PENDING -> "这道菜已经发起保存确认，请点击已有的确认按钮";
+            case CONFIRMATION_PROCESSING -> "这道菜正在保存处理中，请稍后查看结果";
+            case CONFIRMATION_CONFIRMED -> "这道菜已经保存，不会重复保存";
+            case CONFIRMATION_UNKNOWN_REVIEW -> "这道菜的保存结果需要人工复核，系统不会重复执行";
+            default -> "这道菜的保存请求已经存在，请稍后查看结果";
+        };
+        output.put("confirmationStatus", existing.getStatus());
+        return new ToolExecution(output, summary);
+    }
+
+    static String recipeSaveIdempotencyKey(RecipeGenerateResponse recipe) {
+        if (recipe.searchLogId() != null) {
+            return "recipe-save-" + recipe.searchLogId();
+        }
+        return "recipe-save-" + Integer.toHexString(Objects.hash(
+                recipe.title(), recipe.summary(), recipe.ingredients(), recipe.steps()));
     }
 
     private AgentConversation conversation(AgentChatRequest request, Long userId) {
@@ -1311,8 +1527,8 @@ public class AgentService {
                 action,
                 toolName,
                 status,
-                requestJson,
-                responseJson,
+                AgentAuditSanitizer.sanitize(requestJson),
+                AgentAuditSanitizer.sanitize(responseJson),
                 idempotencyKey,
                 now,
                 now,
@@ -1423,15 +1639,37 @@ public class AgentService {
         if (cancelled.get()) {
             return false;
         }
+        String runId = activeRunId.get();
+        if (!StringUtils.hasText(runId)) {
+            throw new IllegalStateException("Agent SSE 事件缺少 runId");
+        }
+        AgentEvent persisted = eventStore.append(runId, event, data);
+        metrics.eventPersisted();
         if (emitter == null) {
             return true;
         }
         try {
-            emitter.send(SseEmitter.event().name(event).data(data));
+            emitter.send(SseEmitter.event()
+                    .id(Long.toString(persisted.sequence()))
+                    .name(event)
+                    .data(data));
             return true;
         } catch (IOException | IllegalStateException exception) {
-            cancelled.set(true);
-            return false;
+            // The event is already durable. Keep driving the Agent without a
+            // live socket; the reconnect endpoint will replay it later.
+            return true;
+        }
+    }
+
+    private void completeEmitter(SseEmitter emitter) {
+        if (emitter == null) {
+            return;
+        }
+        try {
+            emitter.complete();
+        } catch (IllegalStateException ignored) {
+            // The browser may have closed the connection after events were
+            // persisted; the durable run remains valid in that case.
         }
     }
 

@@ -110,6 +110,23 @@ class SavedRecipeServiceTest {
     }
 
     @Test
+    void replaysExistingRecipeWhenRepeatedAgentSaveUsesAnotherIdempotencyKey() {
+        RecipeRecord existing = recipeRecord(102L, 7L, 10L, "番茄炒蛋");
+        when(recipeRecordMapper.findByUserIdAndAgentIdempotencyKey(7L, "key-2")).thenReturn(null);
+        when(searchLogMapper.selectById(10L)).thenReturn(searchLog(10L, 7L, null));
+        when(recipeRecordMapper.findByUserIdAndSearchLogId(7L, 10L)).thenReturn(existing);
+        when(recipeRecordMapper.selectById(102L)).thenReturn(existing);
+        when(recipeIngredientMapper.selectList(any())).thenReturn(List.of());
+        when(recipeStepMapper.selectList(any())).thenReturn(List.of());
+
+        RecipeHistoryDetailResponse result = savedRecipeService.save(
+                request(), new AuthPrincipal(7L, "13800138000", AppRole.USER), null, "key-2");
+
+        assertThat(result.id()).isEqualTo(102L);
+        verify(recipeRecordMapper, never()).insert(any(RecipeRecord.class));
+    }
+
+    @Test
     void persistsStructuredNutritionAlongsideRecipeRecord() {
         stubRecipeInsert();
         when(searchLogMapper.selectById(10L)).thenReturn(searchLog(10L, 7L, null));

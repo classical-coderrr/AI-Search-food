@@ -11,6 +11,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -229,6 +230,48 @@ class RecipeStreamingServiceTest {
         ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
         verify(qwenClient, timeout(2000).times(4)).streamRecipe(prompts.capture(), any(), any());
         assertTrue(prompts.getAllValues().get(1).contains("食材约束校正"));
+        verify(recommendationService, timeout(2000).times(3)).persist(any(), any(), any(), anyString());
+        emitter.complete();
+    }
+
+    @Test
+    void retriesARecipeWhenItsAssignedIngredientIsMissing() {
+        RecipeGenerateResponse tomato = recipeWithIngredients("番茄炒蛋", "番茄");
+        RecipeGenerateResponse egg = recipeWithIngredients("鸡蛋羹", "鸡蛋");
+        AtomicBoolean retried = new AtomicBoolean();
+        when(recommendationService.preparePrompt(any(), any())).thenReturn(
+                new RecipeRecommendationService.PreparedPrompt("prompt", false, false, false)
+        );
+        when(recommendationService.recommendationBatchMode(any())).thenReturn("MEAL_COMBO");
+        when(recommendationService.batchRecipePrompt(anyString(), any(), anyInt(), anyInt(), anyList()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(recommendationService.ingredientCoverageRetryInstruction(any(), anyInt(), anyInt(), any()))
+                .thenReturn("coverage-retry");
+        org.mockito.Mockito.doAnswer(invocation -> {
+            int recipeIndex = invocation.getArgument(2);
+            RecipeGenerateResponse candidate = invocation.getArgument(1);
+            String ingredient = candidate.ingredients().get(0).name();
+            if (recipeIndex == 1 && "番茄".equals(ingredient) && retried.compareAndSet(false, true)) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "缺少鸡蛋");
+            }
+            return null;
+        }).when(recommendationService).validateRequiredIngredientCoverage(
+                any(), any(), anyInt(), anyInt(), any()
+        );
+        when(recommendationService.persist(any(), any(), any(), anyString()))
+                .thenAnswer(invocation -> invocation.getArgument(1));
+        when(qwenClient.streamRecipe(anyString(), any(), any()))
+                .thenReturn(streamResult(tomato), streamResult(tomato), streamResult(egg), streamResult(tomato));
+
+        SseEmitter emitter = service.generate(
+                new RecipeGenerateRequest("番茄、鸡蛋", "dinner", "light", "text"),
+                null,
+                "anon-001"
+        );
+
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(qwenClient, timeout(2000).times(4)).streamRecipe(prompts.capture(), any(), any());
+        assertTrue(prompts.getAllValues().get(2).contains("coverage-retry"));
         verify(recommendationService, timeout(2000).times(3)).persist(any(), any(), any(), anyString());
         emitter.complete();
     }

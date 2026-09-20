@@ -14,6 +14,13 @@ test('小厨灵使用最小化入口而不是新对话入口', () => {
   assert.match(agentSource, /\.agent-quick-prompts \{ display: flex; flex-wrap: wrap; gap: 6px; overflow-x: hidden;/)
 })
 
+test('SSE 断线后按 runId 和事件序号重连并去重', () => {
+  assert.match(agentSource, /resumeAgentEvents/)
+  assert.match(agentSource, /lastEventSeq/)
+  assert.match(agentSource, /sequence <= lastEventSeq\.value/)
+  assert.match(agentSource, /function replayRunEvents\(targetRunId, assistant\)/)
+})
+
 test('最小化只收起面板并把焦点交还启动入口', () => {
   assert.match(agentSource, /ref="launcher"/)
   assert.match(agentSource, /function minimizePanel\(\) \{\s+isOpen\.value = false\s+void nextTick\(\(\) => launcher\.value\?\.focus\(\)\)/)
@@ -80,4 +87,12 @@ test('恢复到等待确认时释放生成状态并保留确认卡片可操作',
     agentSource,
     /status\.status === 'WAITING_CONFIRMATION'[\s\S]*?finishRunTracking\(\)[\s\S]*?return/
   )
+})
+
+test('保存菜谱成功后按钮进入灰色禁用状态并阻止重复提交', () => {
+  assert.match(agentSource, /message\.card\.saveState === 'saved'/)
+  assert.match(agentSource, /message\.card\.saveState && message\.card\.saveState !== 'idle'/)
+  assert.match(agentSource, /function markRecipeSaved\(recipe\)/)
+  assert.match(agentSource, /function markRestoredSavedRecipes\(\)/)
+  assert.match(agentSource, /\.agent-button--saved, \.agent-button--saved:disabled[\s\S]*background: #e2e2e2;/)
 })

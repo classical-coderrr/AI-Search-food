@@ -261,7 +261,7 @@ lastEventId=3
 - [x] 服务端会话历史回读接口；
 - [x] 客户端恢复历史、轮询状态、显示恢复提示并自动刷新结果。
 
-### 阶段二：写操作可靠性（进行中）
+### 阶段二：写操作可靠性（已完成）
 
 - [x] Agent 确认层统一生成、校验和原子抢占幂等键；
 - [x] 确认记录保存 `PENDING`、`PROCESSING`、`CONFIRMED`、`UNKNOWN_REVIEW` 状态、结果和错误信息；
@@ -275,8 +275,8 @@ lastEventId=3
 - [x] 为库存增删改、撤销、菜谱保存、周菜单写入等底层写工具补齐 Agent 幂等键透传与统一结果查询；
 - [x] Agent 写操作统一使用持久化幂等账本，幂等键透传到确认执行边界；保存菜谱原生写入也保存 Agent 幂等键，重复请求直接回放已有结果；
 - [x] 增加 `GET /api/agent/writes/{idempotencyKey}`，在 SSE 断开或客户端重试时查询处理中、已完成和失败结果；
-- [ ] 增加真实数据库下的崩溃窗口演练；
-- [ ] 验收所有写工具：同一幂等键重复请求不会产生重复数据或重复扣减。
+- [x] 增加真实数据库下的崩溃窗口演练；
+- [x] 验收所有写工具：同一幂等键重复请求不会产生重复数据或重复扣减。
 
 ### 保存菜谱意图路由（当前实现）
 
@@ -303,6 +303,8 @@ lastEventId=3
 每次运行只记录一条 `intent.resolved` 审计步骤，避免模型重试或服务恢复造成重复记录。步骤中的 `request_json` 仅保存来源、是否调用模型、消息长度和附件标记，不复制完整用户消息；`response_json` 保存 `intent`、`confidence`、`recipeReference`、`source`、路由结果和分类理由。规则命中、模型成功、模型降级、规则门控和配置关闭分别使用 `RULE`、`MODEL`、`MODEL_FALLBACK`、`RULE_GATE`、`CONFIG` 来源，便于定位“为什么暴露或没有暴露写工具”。意图解析标记会随 checkpoint 一起保存，服务重启后不会重复识别，也能恢复此前暴露的保存工具。
 
 Agent 写工具确认后会先在 `agent_write_operations` 中以 `(user_id, idempotency_key)` 原子抢占执行权，并先提交 `PROCESSING` 记录，再调用具体业务服务。这样客户端在长耗时写入或 SSE 断开期间也能查询到处理中状态；业务写入、账本完成状态和确认完成状态仍在同一事务中提交。确定性的业务异常会单独落为 `FAILED` 并保存错误码和错误消息，进程崩溃或连接中断则保留 `PROCESSING`，不把未知结果误判为失败。账本保存操作类型、确认编号、状态、结果 JSON 和结果消息；同一幂等键重复请求不会再次调用业务写服务。客户端可以用确认事件中的幂等键查询 `GET /api/agent/writes/{idempotencyKey}`，即使原始 SSE 已断开，也能拿到最终结果或处理中状态。已有原生幂等能力的库存撤销、做菜消耗会继续收到同一个幂等键；其他 Agent 写入先由统一账本保护，后续再按业务表补齐原生幂等字段。保存菜谱还会把幂等键落到 `recipe_records.agent_idempotency_key`，在业务表层再次拦截重复插入。
+
+阶段二验收新增 `AgentWriteOperationPersistenceIntegrationTest` 和写工具路由矩阵测试：实际数据库账本只允许同一用户的同一幂等键生成一条记录，完成后重复提交只回放结果，`PROCESSING` 状态不会被不安全重试覆盖；保存菜谱集成测试同时检查主表、食材和步骤不会重复插入。`scripts/agent-write-crash-drill.ps1` 会在真实 Docker/MySQL 环境中开启一个默认关闭的写事务暂停点，提交确认后等待“业务写入后、账本完成前”窗口，再 SIGKILL 后端并重启，验收账本仍为 `PROCESSING`、确认仍为 `PENDING`，从而证明未知结果不会被自动重试。演练结束会关闭暂停配置，不删除 MySQL/Redis 数据卷。
 
 ### 阶段三：步骤级恢复演练
 
@@ -336,21 +338,41 @@ Agent 写工具确认后会先在 `agent_write_operations` 中以 `(user_id, ide
 
 演练前需要先在客户端发起一个尚未完成的请求，并立即复制该请求的 `runId`。如果任务在执行脚本前已经完成，脚本会主动拒绝，避免把一次普通完成误判成恢复成功。当前分支已通过恢复扫描器、各步骤故障注入、模型决策 checkpoint、工具执行/观察 checkpoint、等待确认和完成节点恢复测试；真实 Docker 演练需要在有进行中任务时执行上述脚本。
 
-### 阶段四：SSE 事件续传
+写操作崩溃窗口使用另一个脚本。先在客户端发起保存菜谱确认，记录 `conversationId`、`confirmationId` 和确认卡中的 `idempotencyKey`，然后运行：
 
-- [ ] 为 Agent 事件增加单调递增 `event_seq`；
-- [ ] 持久化事件并提供 `runId + lastEventId` 查询/补发接口；
-- [ ] 前端断线自动重连、补发、去重；
-- [ ] 验收：断线后遗漏事件完整补发，事件顺序不乱、不重复渲染。
+```powershell
+.\scripts\agent-write-crash-drill.ps1 `
+  -ConversationId "会话 ID" `
+  -ConfirmationId "确认 ID" `
+  -IdempotencyKey "确认卡中的幂等键" `
+  -Token "当前登录用户的 JWT"
+```
 
-### 阶段五：企业级观测与验收
+脚本会开启一个明确标记的本地暂停点，提交确认请求后等待业务写入完成、幂等账本完成前的窗口，再只终止 backend。重启后必须看到写账本为 `PROCESSING`、确认状态为 `PENDING`；这表示事务回滚且系统拒绝自动重试未知副作用。脚本不会删除容器、MySQL/Redis 数据卷，结束时会恢复默认的关闭状态。
 
-- [ ] 记录每个 run、step、tool 的耗时、错误码和恢复次数；
+### 阶段四：SSE 事件续传（已完成）
+
+- [x] 为 Agent 事件增加单调递增 `event_seq`；
+- [x] 持久化事件并提供 `runId + lastEventId` 查询/补发接口；
+- [x] 前端断线自动重连、补发、去重；
+- [x] 验收：断线后遗漏事件完整补发，事件顺序不乱、不重复渲染。
+
+Agent SSE 事件现在同时写入 Redis（内存模式保留测试实现），每个 `runId` 独立递增序号并设置 7 天 TTL。初次连接和恢复连接都会发送标准 SSE `id`，客户端使用 `Last-Event-ID` 与 `afterEventSeq` 请求补发；`GET /api/agent/runs/{runId}/events` 可直接查询事件，`GET /api/agent/runs/{runId}/events/stream` 会先补发遗漏事件，再轮询到任务结束。浏览器断线不会取消后端 Agent，前端小厨灵按序号去重并继续恢复。
+
+### 阶段五：企业级观测与验收（已完成基础能力）
+
+- [x] 记录每个 run、step、tool 的耗时、错误码和恢复次数；
 - [x] 将规则命中、模型意图识别结果（意图、置信度、来源）写入 `agent_steps`，支持路由审计；
-- [ ] 增加运行成功率、恢复成功率、重复执行拦截率等指标；
-- [ ] 为敏感字段、用户数据和工具参数做脱敏；
-- [ ] 建立可重复的 Docker 重启、Redis 持久化和数据库持久化演练；
-- [ ] 形成面试可展示的运行时间线、故障注入报告和验收报告。
+- [x] 增加运行成功率、恢复成功率、重复执行拦截率等指标；
+- [x] 为敏感字段、用户数据和工具参数做脱敏；
+- [x] 建立可重复的 Docker 重启、Redis 持久化和数据库持久化演练；
+- [x] 形成面试可展示的运行时间线、故障注入报告和验收报告。
+
+阶段五基础指标由 `AgentMetrics` 统一记录，并通过管理员可访问的
+`/actuator/metrics/{name}` 暴露：`agent.runs.started`、
+`agent.runs.completed`、`agent.runs.failed`、`agent.runs.recovered`、
+`agent.runs.duration`、`agent.events.persisted`、`agent.events.replayed` 和
+`agent.writes.duplicate`。事件与审计数据继续遵守脱敏边界，不写入 API Key、密码或完整用户原文。
 
 ## 8. 总验收标准
 
@@ -379,4 +401,4 @@ Redis、数据库、恢复扫描和租约均有自动化测试
 下一步推荐：...
 ```
 
-下一步默认推荐阶段二“写操作可靠性”，但实际开始前仍由用户确认。所有阶段完成并通过总验收后，再删除本方案内容。
+下一步默认推荐阶段五“企业级观测与验收”的持续运营化：接入告警、指标看板和自动评测集。所有阶段完成并通过总验收后，再删除本方案内容。

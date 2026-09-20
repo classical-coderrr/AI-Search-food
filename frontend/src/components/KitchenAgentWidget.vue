@@ -170,7 +170,7 @@
               <div class="agent-recipe-card__section"><strong>做法</strong><ol><li v-for="step in message.card.payload.recipe?.steps || []" :key="step.order"><span>{{ step.title || `第${step.order}步` }}</span>{{ step.description }}</li></ol></div>
               <div v-if="message.card.payload.recipe?.nutritionEstimate" class="agent-recipe-card__nutrition">每份约 {{ message.card.payload.recipe.nutritionEstimate.caloriesKcal }} 千卡 · 蛋白质 {{ message.card.payload.recipe.nutritionEstimate.proteinG }} 克</div>
               <div class="agent-card__source"><Clock3 :size="13" aria-hidden="true" />{{ message.card.source }}</div>
-              <div class="agent-card__actions"><button type="button" class="agent-button agent-button--primary" @click="saveRecipe(message)"><Save :size="14" aria-hidden="true" />保存菜谱</button><button type="button" class="agent-button" @click="sendPrompt('再来一道不同的')">再来一道</button></div>
+              <div class="agent-card__actions"><button type="button" class="agent-button agent-button--primary" :class="{ 'agent-button--saved': message.card.saveState === 'saved' }" :disabled="loading || (message.card.saveState && message.card.saveState !== 'idle')" @click="saveRecipe(message)"><Save :size="14" aria-hidden="true" />{{ message.card.saveState === 'saved' ? '已保存' : message.card.saveState === 'pending' ? '保存中…' : '保存菜谱' }}</button><button type="button" class="agent-button" @click="sendPrompt('再来一道不同的')">再来一道</button></div>
             </template>
 
             <template v-else-if="message.card.cardType === 'confirmation-card'">
@@ -234,7 +234,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Bell, BookOpen, CalendarDays, Check, ClipboardCheck, Clock3, Database, HeartPulse, LockKeyhole, Maximize2, Minimize2, Paperclip, Save, Send, ShieldCheck, Square, X } from 'lucide-vue-next'
-import { deleteAgentConversation, getAgentConversationMessages, getAgentRunStatus, getLatestAgentConversation, streamAgentChat } from '../api/agent.js'
+import { deleteAgentConversation, getAgentConversationMessages, getAgentRunStatus, getLatestAgentConversation, resumeAgentEvents, streamAgentChat } from '../api/agent.js'
 import { useAuthStore } from '../stores/auth.js'
 import { clampAgentPanelPosition } from '../utils/agentPanelPosition.js'
 
@@ -245,6 +245,7 @@ const draft = ref('')
 const messages = ref([])
 const conversationId = ref(null)
 const runId = ref(null)
+const lastEventSeq = ref(0)
 const recoveryStatus = ref('')
 const trackedRunId = ref(null)
 const panel = ref(null)
@@ -257,6 +258,10 @@ const attachmentPreview = ref('')
 const abortController = ref(null)
 const lastPrompt = ref('')
 const lastAttachment = ref(null)
+const pendingSaveMessage = ref(null)
+const pendingSaveConfirmation = ref(false)
+let replayController = null
+let replaying = false
 const quickPrompts = ['我今天有什么食材', '哪些食材快过期', '今晚能做什么', '本周菜单是什么', '我有哪些提醒']
 const isExpanded = ref(false)
 const desktopViewport = ref(typeof window === 'undefined' || window.innerWidth > 720)
@@ -305,12 +310,13 @@ onBeforeUnmount(() => {
   revokeAllPreviews()
 })
 
-watch([messages, conversationId, runId], () => {
+watch([messages, conversationId, runId, lastEventSeq], () => {
   if (auth.isUser) {
     const storedMessages = messages.value.slice(-80).map(({ imagePreview, ...message }) => message)
     localStorage.setItem(storageKey(), JSON.stringify({
       conversationId: conversationId.value,
       runId: runId.value,
+      lastEventSeq: lastEventSeq.value,
       messages: storedMessages
     }))
   }
@@ -543,6 +549,7 @@ function sendPrompt(prompt, image = null, imagePreview = '') {
 
 async function startStream(payload, image = null) {
   loading.value = true
+  lastEventSeq.value = 0
   const assistant = addMessage({ role: 'assistant', content: '', statusText: '小厨灵正在整理请求', trace: [] })
   abortController.value = new AbortController()
   let trackingRecovery = false
@@ -569,11 +576,19 @@ async function startStream(payload, image = null) {
 }
 
 function applyEvent(event, assistant) {
+  const sequence = Number(event?.id)
+  if (Number.isFinite(sequence) && sequence > 0) {
+    if (sequence <= lastEventSeq.value) return
+    lastEventSeq.value = sequence
+  }
   const data = event.data || {}
   if (event.type === 'conversation.ready') {
     conversationId.value = data.conversationId
     runId.value = data.runId || runId.value
     recoveryStatus.value = ''
+  }
+  if (assistant?.restored && !['conversation.ready', 'done'].includes(event.type)) {
+    return
   }
   if (event.type === 'message.delta') assistant.content += data.content || ''
   if (event.type === 'tool.started') {
@@ -583,17 +598,30 @@ function applyEvent(event, assistant) {
   if (event.type === 'tool.result') {
     assistant.statusText = data.summary || '已完成数据读取'
     if (data.summary && !assistant.trace.includes(data.summary)) assistant.trace.push(data.summary)
+    if (isSaveSuccessMessage(data.summary)) markPendingRecipeSaved()
   }
-  if (event.type === 'card') assistant.card = data
+  if (event.type === 'card') {
+    assistant.card = data
+    if (data.cardType === 'recipe-card' && isSavedRecipeSource(data.source)) {
+      markRecipeSaved(data.payload?.recipe)
+    }
+    if (data.cardType === 'operation-result-card') {
+      const summary = data.payload?.summary || ''
+      if (isSaveSuccessMessage(summary)) markPendingRecipeSaved()
+      else if (pendingSaveConfirmation.value && pendingSaveMessage.value) resetPendingRecipeSave()
+    }
+  }
   if (event.type === 'confirmation.required') assistant.card = { cardType: 'confirmation-card', ...data }
   if (event.type === 'error') {
     assistant.error = true
     assistant.content = data.message || '小厨灵暂时没有完成这次操作，请点击重试。'
+    resetPendingRecipeSave()
   }
 }
 
 async function confirmAction(message) {
   if (loading.value || !message.card?.confirmationId) return
+  if (message.card.actionType === 'SAVE_RECIPE') pendingSaveConfirmation.value = true
   message.card.confirmed = true
   addMessage({ role: 'user', content: `确认执行：${message.card.title || '厨房操作'}` })
   await startStream({ conversationId: conversationId.value, confirmationId: message.card.confirmationId, idempotencyKey: message.card.idempotencyKey })
@@ -601,10 +629,60 @@ async function confirmAction(message) {
 
 function cancelConfirmation(message) {
   message.card.confirmed = true
+  if (message.card.actionType === 'SAVE_RECIPE') resetPendingRecipeSave()
   addMessage({ role: 'assistant', content: '好的，这次操作没有执行。' })
 }
 
-function saveRecipe() {
+function recipeSearchLogId(message) {
+  const searchLogId = message?.card?.payload?.recipe?.searchLogId
+  return searchLogId == null ? null : String(searchLogId)
+}
+
+function markRecipeSaved(recipe) {
+  const searchLogId = recipe?.searchLogId == null ? null : String(recipe.searchLogId)
+  if (!searchLogId) {
+    markPendingRecipeSaved()
+    return
+  }
+  messages.value.forEach((message) => {
+    if (recipeSearchLogId(message) === searchLogId) message.card.saveState = 'saved'
+  })
+  pendingSaveMessage.value = null
+  pendingSaveConfirmation.value = false
+}
+
+function markPendingRecipeSaved() {
+  if (!pendingSaveMessage.value) return
+  pendingSaveMessage.value.card.saveState = 'saved'
+  pendingSaveMessage.value = null
+  pendingSaveConfirmation.value = false
+}
+
+function resetPendingRecipeSave() {
+  if (pendingSaveMessage.value?.card?.saveState === 'pending') {
+    pendingSaveMessage.value.card.saveState = 'idle'
+  }
+  pendingSaveMessage.value = null
+  pendingSaveConfirmation.value = false
+}
+
+function isSaveSuccessMessage(message) {
+  return typeof message === 'string' && /已保存|保存成功|不会重复保存/.test(message)
+}
+
+function isSavedRecipeSource(source) {
+  return typeof source === 'string' && /刚刚保存|已保存/.test(source)
+}
+
+function saveRecipe(message) {
+  if (!message?.card || loading.value || (message.card.saveState && message.card.saveState !== 'idle')) return
+  if (!auth.isUser) {
+    sendPrompt('保存这道菜')
+    return
+  }
+  message.card.saveState = 'pending'
+  pendingSaveMessage.value = message
+  pendingSaveConfirmation.value = false
   sendPrompt('保存这道菜')
 }
 
@@ -641,11 +719,20 @@ function addMessage(message) {
 
 async function restoreConversation() {
   if (!auth.isUser) return
+  const locallySavedRecipeKeys = new Set()
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey()) || 'null')
     conversationId.value = saved?.conversationId || null
     runId.value = saved?.runId || null
+    lastEventSeq.value = Number(saved?.lastEventSeq) || 0
     messages.value = Array.isArray(saved?.messages) ? saved.messages : []
+    messages.value.forEach((message) => {
+      if (message?.card?.saveState === 'saved') {
+        const key = recipeSearchLogId(message)
+        if (key) locallySavedRecipeKeys.add(key)
+      }
+    })
+    markRestoredSavedRecipes()
   } catch {
     messages.value = []
   }
@@ -656,6 +743,12 @@ async function restoreConversation() {
     if (history) {
       conversationId.value = history.conversationId || null
       messages.value = (history.messages || []).map(toUiMessage)
+      locallySavedRecipeKeys.forEach((key) => {
+        messages.value.forEach((message) => {
+          if (recipeSearchLogId(message) === key) message.card.saveState = 'saved'
+        })
+      })
+      markRestoredSavedRecipes()
       runId.value = history.activeRun?.runId || null
     }
   } catch {
@@ -677,6 +770,18 @@ async function restoreConversation() {
   }
 }
 
+function markRestoredSavedRecipes() {
+  const counts = new Map()
+  messages.value.forEach((message) => {
+    const key = recipeSearchLogId(message)
+    if (key) counts.set(key, (counts.get(key) || 0) + 1)
+  })
+  messages.value.forEach((message) => {
+    const key = recipeSearchLogId(message)
+    if (key && counts.get(key) > 1) message.card.saveState = 'saved'
+  })
+}
+
 function toUiMessage(message) {
   const role = String(message?.role || '').toUpperCase() === 'USER' ? 'user' : 'assistant'
   const blockType = message?.blockType || 'text'
@@ -696,7 +801,8 @@ function toUiMessage(message) {
         target.card = {
           cardType: blockType,
           payload: { recipe: parsed },
-          source: '来自已保存会话'
+          source: '来自已保存会话',
+          saveState: 'idle'
         }
       } else {
         target.card = { cardType: blockType, payload: parsed, source: '来自已保存会话' }
@@ -715,6 +821,7 @@ async function trackRun(targetRunId, assistant) {
   recoveryAttempts = 0
   loading.value = true
   recoveryStatus.value = '正在读取 Redis 中的运行状态…'
+  void replayRunEvents(targetRunId, assistant)
 
   const poll = async () => {
     if (trackedRunId.value !== targetRunId) return
@@ -727,9 +834,11 @@ async function trackRun(targetRunId, assistant) {
       if (status.status === 'RUNNING') {
         recoveryStatus.value = '小厨灵仍在后台生成，页面会自动更新'
         if (assistant) assistant.statusText = '小厨灵仍在后台生成'
+        void replayRunEvents(targetRunId, assistant)
       } else if (status.status === 'RECOVERING') {
         recoveryStatus.value = '服务已恢复，小厨灵正在从 checkpoint 继续'
         if (assistant) assistant.statusText = '正在从 checkpoint 继续'
+        void replayRunEvents(targetRunId, assistant)
       } else if (status.status === 'WAITING_CONFIRMATION') {
         recoveryStatus.value = '上次操作等待你的确认'
         if (assistant) assistant.statusText = '等待你的确认'
@@ -772,6 +881,32 @@ async function trackRun(targetRunId, assistant) {
   await poll()
 }
 
+async function replayRunEvents(targetRunId, assistant) {
+  if (!targetRunId || trackedRunId.value !== targetRunId || replaying) return
+  replaying = true
+  replayController?.abort()
+  replayController = new AbortController()
+  try {
+    await resumeAgentEvents(targetRunId, lastEventSeq.value, {
+      signal: replayController.signal,
+      onEvent: (event) => {
+        if (trackedRunId.value === targetRunId) applyEvent(event, assistant)
+      }
+    })
+  } catch (error) {
+    if (error?.name !== 'AbortError') {
+      // Status polling remains the fallback when the replay endpoint is
+      // temporarily unavailable.
+    }
+  } finally {
+    replaying = false
+    replayController = null
+    if (trackedRunId.value === targetRunId && loading.value) {
+      window.setTimeout(() => void replayRunEvents(targetRunId, assistant), 0)
+    }
+  }
+}
+
 async function loadConversationHistory(targetConversationId) {
   if (!targetConversationId) return
   try {
@@ -793,6 +928,9 @@ function stopRunTracking() {
   }
   trackedRunId.value = null
   recoveryAttempts = 0
+  replayController?.abort()
+  replayController = null
+  replaying = false
 }
 
 function finishRunTracking() {
@@ -974,7 +1112,7 @@ async function scrollToBottom() {
 .agent-reminder-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: start; padding: 7px; border-bottom: 1px solid #ead9b9; }.agent-reminder-row__badge { padding: 3px 5px; color: #93672d; background: #f8e5b4; font-size: 10px; font-weight: 900; }.agent-reminder-row div { display: grid; gap: 2px; min-width: 0; }.agent-reminder-row small { color: #80664a; overflow-wrap: anywhere; }
 .agent-nutrition-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }.agent-nutrition-grid div { display: grid; gap: 4px; padding: 8px 6px; border: 1px solid #ead9b9; background: #fffaf0; }.agent-nutrition-grid small { color: #8b765c; font-size: 10px; }.agent-nutrition-grid strong { font-size: 11px; overflow-wrap: anywhere; }
 .agent-recipe-card__topline { color: #a36e2d; }.agent-card h3 { margin: 0; font-size: 19px; line-height: 1.35; }.agent-recipe-card__summary { margin: -3px 0 0; color: #80664a; font-size: 13px; line-height: 1.6; }.agent-recipe-card__section { display: grid; gap: 6px; padding-top: 9px; border-top: 1px solid #ead9b9; }.agent-recipe-card__section > strong { font-size: 12px; }.agent-recipe-card__chips { display: flex; flex-wrap: wrap; gap: 5px; }.agent-recipe-card__chips span { padding: 4px 6px; border: 1px solid #d5b77f; color: #5d4936; background: #fff4d6; font-size: 11px; }.agent-recipe-card__section--missing p { margin: 0; color: #a45246; font-size: 12px; line-height: 1.5; }.agent-recipe-card__section ol { display: grid; gap: 7px; margin: 0; padding-left: 22px; color: #5d4936; font-size: 12px; line-height: 1.55; }.agent-recipe-card__section li span { margin-right: 4px; color: #a36e2d; font-weight: 900; }.agent-recipe-card__nutrition { padding: 7px 8px; color: #4f7660; background: #e8f1e3; font-size: 11px; font-weight: 800; }
-.agent-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 44px; padding: 0 10px; border: 1px solid #b99562; color: #5d4936; background: #fffaf0; font: inherit; font-size: 11px; font-weight: 900; cursor: pointer; }.agent-button:hover, .agent-button:focus-visible { border-color: #4f8ca5; background: #fff4d6; outline: 2px solid #4f8ca5; outline-offset: 2px; }.agent-button--primary { border-color: #3d7866; color: #fff; background: #3d7866; }.agent-button--stop { border-color: #c75b4d; color: #9b4037; background: #fff0ec; }.agent-button--retry { min-width: 64px; color: #9b4037; background: #fff0ec; }.agent-button:disabled { opacity: .5; cursor: not-allowed; }
+.agent-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 44px; padding: 0 10px; border: 1px solid #b99562; color: #5d4936; background: #fffaf0; font: inherit; font-size: 11px; font-weight: 900; cursor: pointer; }.agent-button:hover, .agent-button:focus-visible { border-color: #4f8ca5; background: #fff4d6; outline: 2px solid #4f8ca5; outline-offset: 2px; }.agent-button--primary { border-color: #3d7866; color: #fff; background: #3d7866; }.agent-button--saved, .agent-button--saved:disabled { border-color: #a9a9a9; color: #666; background: #e2e2e2; opacity: 1; cursor: not-allowed; }.agent-button--stop { border-color: #c75b4d; color: #9b4037; background: #fff0ec; }.agent-button--retry { min-width: 64px; color: #9b4037; background: #fff0ec; }.agent-button:disabled { opacity: .5; cursor: not-allowed; }
 .agent-confirmation__title { color: #986424; }.agent-card--confirmation-card p { margin: 0; font-size: 13px; line-height: 1.6; }.agent-card--confirmation-card small { color: #8b765c; font-size: 11px; line-height: 1.5; }
 .agent-result-detail { max-height: 220px; margin: 0; overflow: auto; padding: 9px; border: 1px solid #ead9b9; color: #5d4936; background: #fffaf0; font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-trace { color: #8b765c; font-size: 10px; }.agent-trace summary { width: max-content; color: #876c4d; cursor: pointer; }.agent-trace span { display: block; margin-top: 4px; padding-left: 10px; overflow-wrap: anywhere; }.agent-trace span::before { content: '·'; margin-right: 5px; color: #a36e2d; }

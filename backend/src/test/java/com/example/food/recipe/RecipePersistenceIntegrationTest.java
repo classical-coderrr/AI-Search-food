@@ -124,6 +124,35 @@ class RecipePersistenceIntegrationTest {
     }
 
     @Test
+    void agentIdempotencyKeyPersistsOneRecipeWhenTheSameSaveIsRetried() {
+        Long userId = insertUser("13900000118", "菜谱幂等测试用户");
+        AuthPrincipal principal = new AuthPrincipal(userId, "13900000118", AppRole.USER);
+        Long searchLogId = insertSearchLog(userId, "番茄、鸡蛋", "dinner", "balanced");
+        SaveRecipeRequest request = saveRequest(searchLogId);
+
+        RecipeHistoryDetailResponse first = savedRecipeService.save(request, principal, null, "recipe-retry-key");
+        RecipeHistoryDetailResponse retry = savedRecipeService.save(request, principal, null, "recipe-retry-key");
+
+        assertThat(retry.id()).isEqualTo(first.id());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM recipe_records WHERE user_id = ? AND agent_idempotency_key = ?",
+                Integer.class,
+                userId,
+                "recipe-retry-key"
+        )).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM recipe_ingredients WHERE recipe_id = ?",
+                Integer.class,
+                first.id()
+        )).isEqualTo(request.ingredients().size());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM recipe_steps WHERE recipe_id = ?",
+                Integer.class,
+                first.id()
+        )).isEqualTo(request.steps().size());
+    }
+
+    @Test
     void searchesAndCombinesSavedRecipeFiltersForCurrentUserWithPagination() {
         Long userId = insertUser("13900000116", "筛选测试用户");
         Long otherUserId = insertUser("13900000117", "其他筛选用户");

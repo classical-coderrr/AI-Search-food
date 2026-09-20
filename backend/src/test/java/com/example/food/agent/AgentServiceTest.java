@@ -1,6 +1,7 @@
 package com.example.food.agent;
 
 import com.example.food.ai.qwen.QwenAgentClient;
+import com.example.food.ai.recipe.dto.RecipeGenerateResponse;
 import com.example.food.agent.dto.AgentChatRequest;
 import com.example.food.agent.state.AgentNode;
 import com.example.food.agent.state.AgentState;
@@ -66,6 +67,24 @@ class AgentServiceTest {
         assertThat(restored.intentResolutionAttempted()).isTrue();
         assertThat(restored.recipeSaveIntent()).isTrue();
         assertThat(restored.intentResolutionSource()).isEqualTo(AgentIntentAuditService.SOURCE_MODEL);
+    }
+
+    @Test
+    void usesStableSaveKeyForTheSameGeneratedRecipe() throws Exception {
+        RecipeGenerateResponse recipe = new RecipeGenerateResponse(
+                "番茄炒蛋",
+                "家常快手菜",
+                List.of(),
+                List.of(new RecipeGenerateResponse.Ingredient("番茄", "2个")),
+                List.of(new RecipeGenerateResponse.Step(1, "翻炒", "翻炒至熟", 5)),
+                List.of(),
+                List.of(),
+                "qwen",
+                "qwen-plus",
+                42L
+        );
+
+        assertThat(AgentService.recipeSaveIdempotencyKey(recipe)).isEqualTo("recipe-save-42");
     }
 
     @Test

@@ -6,6 +6,7 @@ import com.example.food.agent.dto.AgentRunStatusResponse;
 import com.example.food.agent.dto.AgentConversationHistoryResponse;
 import com.example.food.agent.dto.AgentMessageResponse;
 import com.example.food.agent.dto.AgentWriteOperationStatusResponse;
+import com.example.food.agent.dto.AgentEventResponse;
 import com.example.food.agent.state.AgentNode;
 import com.example.food.agent.state.AgentStatus;
 import com.example.food.security.AppRole;
@@ -27,6 +28,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 import java.time.LocalDateTime;
+import java.time.Instant;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -118,6 +120,38 @@ class AgentControllerTest {
                 .andExpect(jsonPath("$.data.status").value("RECOVERING"));
 
         verify(agentService).runStatus(7L, "run-1");
+    }
+
+    @Test
+    void readsPersistedEventsAfterCursor() throws Exception {
+        when(agentService.eventHistory(eq(7L), eq("run-1"), eq(3L))).thenReturn(List.of(
+                new AgentEventResponse(
+                        "run-1", 4L, "message.delta",
+                        JsonNodeFactory.instance.objectNode().put("content", "继续"),
+                        Instant.now()
+                )
+        ));
+
+        mockMvc.perform(get("/api/agent/runs/run-1/events")
+                        .param("afterEventSeq", "3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data[0].eventSeq").value(4))
+                .andExpect(jsonPath("$.data[0].event").value("message.delta"))
+                .andExpect(jsonPath("$.data[0].data.content").value("继续"));
+
+        verify(agentService).eventHistory(7L, "run-1", 3L);
+    }
+
+    @Test
+    void reconnectsEventStreamFromLastEventIdHeader() throws Exception {
+        when(agentService.replayEvents(eq(7L), eq("run-1"), eq(4L))).thenReturn(new SseEmitter());
+
+        mockMvc.perform(get("/api/agent/runs/run-1/events/stream")
+                        .header("Last-Event-ID", "4"))
+                .andExpect(status().isOk());
+
+        verify(agentService).replayEvents(7L, "run-1", 4L);
     }
 
     @Test

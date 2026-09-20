@@ -476,6 +476,60 @@ class RecipeRecommendationServiceTest {
     }
 
     @Test
+    void validatesTheCoreIngredientAssignedToEachRecipeSlot() {
+        RecipeGenerateRequest request = new RecipeGenerateRequest(
+                "番茄、鸡蛋",
+                "dinner",
+                "balanced",
+                "text"
+        );
+
+        assertThatThrownBy(() -> recipeRecommendationService.validateRequiredIngredientCoverage(
+                request,
+                recipeResponseWithIngredients("番茄炒蛋", "番茄"),
+                1,
+                3,
+                null
+        ))
+                .hasMessageContaining("第 2 道菜谱未使用指定核心食材")
+                .hasMessageContaining("鸡蛋");
+
+        assertThatCode(() -> recipeRecommendationService.validateRequiredIngredientCoverage(
+                request,
+                recipeResponseWithIngredients("鸡蛋羹", "鸡蛋"),
+                1,
+                3,
+                null
+        )).doesNotThrowAnyException();
+    }
+
+    @Test
+    void usesPlannerCoreIngredientForCoverageValidationAndRetryInstruction() {
+        RecipeGenerateRequest request = new RecipeGenerateRequest(
+                "番茄、鸡蛋",
+                "dinner",
+                "balanced",
+                "text"
+        );
+        QwenRecipeClient.RecipePlan plan = new QwenRecipeClient.RecipePlan(
+                "番茄炒蛋",
+                List.of("鸡蛋"),
+                List.of("番茄炒蛋 家常做法")
+        );
+
+        assertThatThrownBy(() -> recipeRecommendationService.validateRequiredIngredientCoverage(
+                request,
+                recipeResponseWithIngredients("番茄炒蛋", "番茄"),
+                0,
+                3,
+                plan
+        )).hasMessageContaining("鸡蛋");
+        assertThat(recipeRecommendationService.ingredientCoverageRetryInstruction(request, 0, 3, plan))
+                .contains("指定食材覆盖校正")
+                .contains("鸡蛋");
+    }
+
+    @Test
     void keepsThreeRecipeMinimumAndScalesWithDistinctInputCount() {
         assertThat(recipeRecommendationService.recommendationCount(
                 new RecipeGenerateRequest("番茄", "dinner", "balanced", "text")
@@ -648,6 +702,32 @@ class RecipeRecommendationServiceTest {
         assertThat(result.pantryReferenced()).isFalse();
         assertThat(result.pantryFallback()).isTrue();
         assertThat(result.pantryIncompatible()).isTrue();
+    }
+
+    @Test
+    void retriesGenerationWhenTheModelOmitsARequestedIngredient() {
+        RecipeGenerateRequest request = new RecipeGenerateRequest(
+                "番茄、鸡蛋",
+                "dinner",
+                "balanced",
+                "text"
+        );
+        when(qwenRecipeClient.generateRecipe(anyString())).thenReturn(
+                recipeResponseWithIngredients("番茄"),
+                recipeResponseWithIngredients("番茄", "鸡蛋")
+        );
+
+        RecipeGenerateResponse result = recipeRecommendationService.generate(request);
+
+        ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+        verify(qwenRecipeClient, org.mockito.Mockito.times(2)).generateRecipe(promptCaptor.capture());
+        assertThat(promptCaptor.getAllValues().get(1))
+                .contains("指定食材覆盖校正")
+                .contains("番茄、鸡蛋")
+                .contains("ingredients 和 steps");
+        assertThat(result.ingredients())
+                .extracting(RecipeGenerateResponse.Ingredient::name)
+                .contains("鸡蛋");
     }
 
     @Test

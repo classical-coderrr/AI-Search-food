@@ -12,6 +12,12 @@ public interface AgentConfirmationMapper extends BaseMapper<AgentConfirmation> {
     @Select("SELECT * FROM agent_confirmations WHERE id = #{confirmationId} AND user_id = #{userId}")
     AgentConfirmation findOwned(@Param("userId") Long userId, @Param("confirmationId") Long confirmationId);
 
+    @Select("SELECT * FROM agent_confirmations WHERE user_id = #{userId} AND idempotency_key = #{idempotencyKey}")
+    AgentConfirmation findOwnedByIdempotencyKey(
+            @Param("userId") Long userId,
+            @Param("idempotencyKey") String idempotencyKey
+    );
+
     @Update("UPDATE agent_confirmations SET status = 'PROCESSING', processing_at = CURRENT_TIMESTAMP, error_code = NULL, error_message = NULL WHERE id = #{confirmationId} AND user_id = #{userId} AND status = 'PENDING'")
     int claim(@Param("userId") Long userId, @Param("confirmationId") Long confirmationId);
 

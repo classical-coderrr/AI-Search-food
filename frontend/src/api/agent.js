@@ -44,10 +44,43 @@ export async function streamAgentChat(payload, { image, onEvent, signal } = {}) 
     throw new Error('浏览器没有提供流式响应，请刷新后重试')
   }
 
+  return consumeAgentSse(response, { onEvent, signal })
+}
+
+export async function resumeAgentEvents(runId, lastEventId = 0, { onEvent, signal } = {}) {
+  const auth = useAuthStore()
+  const headers = {
+    Accept: 'text/event-stream',
+    'X-Anonymous-Id': getAnonymousId()
+  }
+  if (auth.token) {
+    headers.Authorization = `Bearer ${auth.token}`
+  }
+  headers['Last-Event-ID'] = String(Math.max(0, Number(lastEventId) || 0))
+  const query = new URLSearchParams({ afterEventSeq: String(Math.max(0, Number(lastEventId) || 0)) })
+  const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/events/stream?${query}`, {
+    method: 'GET',
+    headers,
+    signal
+  })
+  if (!response.ok) {
+    const error = new Error(response.status === 401 ? '登录状态已失效，请重新登录后再试' : '暂时无法恢复小厨灵事件，请稍后重试')
+    error.status = response.status
+    throw error
+  }
+  if (!response.body) {
+    throw new Error('浏览器没有提供恢复流式响应，请刷新后重试')
+  }
+  return consumeAgentSse(response, { onEvent, signal })
+}
+
+async function consumeAgentSse(response, { onEvent, signal } = {}) {
+
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   let eventName = 'message'
+  let eventId = ''
   let dataLines = []
 
   const flush = () => {
@@ -59,8 +92,9 @@ export async function streamAgentChat(payload, { image, onEvent, signal } = {}) 
     } catch {
       // Keep non-JSON event payloads readable for future server events.
     }
-    onEvent?.({ type: eventName, data })
+    onEvent?.({ type: eventName, data, id: eventId || null })
     eventName = 'message'
+    eventId = ''
     dataLines = []
   }
 
@@ -71,6 +105,7 @@ export async function streamAgentChat(payload, { image, onEvent, signal } = {}) 
     blocks.forEach((block) => {
       block.split(/\r?\n/).forEach((line) => {
         if (line.startsWith('event:')) eventName = line.slice(6).trim()
+        if (line.startsWith('id:')) eventId = line.slice(3).trim()
         if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
       })
       flush()
@@ -86,6 +121,7 @@ export async function streamAgentChat(payload, { image, onEvent, signal } = {}) 
   if (buffer.trim()) {
     buffer.split(/\r?\n/).forEach((line) => {
       if (line.startsWith('event:')) eventName = line.slice(6).trim()
+      if (line.startsWith('id:')) eventId = line.slice(3).trim()
       if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
     })
     flush()
@@ -106,6 +142,12 @@ export function getAgentConversationMessages(conversationId) {
 
 export function getAgentRunStatus(runId) {
   return http.get(`/agent/runs/${runId}`)
+}
+
+export function getAgentEventHistory(runId, afterEventSeq = 0) {
+  return http.get(`/agent/runs/${encodeURIComponent(runId)}/events`, {
+    params: { afterEventSeq }
+  })
 }
 
 export function getAgentConfirmationStatus(confirmationId) {

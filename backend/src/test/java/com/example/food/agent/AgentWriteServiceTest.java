@@ -12,6 +12,8 @@ import org.springframework.web.server.ResponseStatusException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
@@ -19,6 +21,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -30,6 +33,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -124,6 +128,45 @@ class AgentWriteServiceTest {
         assertThat(result.status()).isEqualTo("already-completed");
         verify(actionService, never()).execute(any(), any(), any(), anyString());
         verify(confirmationMapper, never()).markConfirmed(any(), any(), anyString());
+    }
+
+    @ParameterizedTest(name = "{0} uses the same durable idempotency boundary")
+    @MethodSource("agentWriteActionTypes")
+    void everyAgentWriteActionReplaysTheCompletedOperationWithoutCallingBusinessCode(String actionType) {
+        AgentConfirmation confirmation = confirmation("PENDING", "{}");
+        confirmation.setActionType(actionType);
+        AgentWriteOperation existing = new AgentWriteOperation();
+        existing.setStatus(AgentWriteOperationService.STATUS_COMPLETED);
+        existing.setResultMessage("已完成");
+        when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);
+        when(operationService.claim(7L, 9L, actionType, "key-9"))
+                .thenReturn(new AgentWriteOperationService.ClaimResult(false, existing));
+        when(operationService.replay(existing))
+                .thenReturn(AgentWriteService.ConfirmationResult.alreadyCompleted("已完成"));
+
+        AgentWriteService.ConfirmationResult result = service.execute(principal, 9L, "key-9");
+
+        assertThat(result.status()).isEqualTo("already-completed");
+        verify(operationService).claim(7L, 9L, actionType, "key-9");
+        verify(operationService).replay(existing);
+        verifyNoInteractions(savedRecipeService, actionService);
+    }
+
+    private static Stream<String> agentWriteActionTypes() {
+        return Stream.of(
+                "SAVE_RECIPE",
+                "PANTRY_CREATE", "PANTRY_UPDATE", "PANTRY_CONSUME", "PANTRY_DELETE", "PANTRY_UNDO",
+                "COOKING_CONSUME",
+                "WEEKLY_MENU_GENERATE", "WEEKLY_MENU_SAVE", "WEEKLY_MENU_CLEAR", "WEEKLY_SHOPPING_UPDATE",
+                "RECIPE_SHOPPING_UPDATE", "NOTIFICATION_READ", "NOTIFICATION_READ_ALL", "NOTIFICATION_ARCHIVE",
+                "NOTIFICATION_PREFERENCES_UPDATE", "RECIPE_DELETE", "COLLECTION_CREATE", "COLLECTION_RENAME",
+                "COLLECTION_DELETE", "RECIPE_MOVE", "RECIPE_TAGS_REPLACE", "RECIPE_BATCH_MOVE",
+                "RECIPE_BATCH_TAGS", "RECIPE_BATCH_DELETE", "RECIPE_SHARE_CREATE", "RECIPE_SHARE_DISABLE",
+                "RECOMMENDATION_REACTION_SET", "RECOMMENDATION_REACTION_CLEAR", "RECOMMENDATION_MARK_COOKED",
+                "HEALTH_PROFILE_UPDATE", "HEALTH_PROFILE_DELETE", "DIET_PREFERENCE_UPDATE",
+                "NUTRITION_TARGET_UPDATE", "NUTRITION_TARGET_DELETE", "CHARACTER_NAMES_UPDATE",
+                "CHARACTER_NAMES_RESET", "FINISHED_DISH_REVIEW_DELETE"
+        );
     }
 
     @Test
