@@ -7,6 +7,7 @@ const worldSource = fs.readFileSync(new URL('../views/KitchenWorldView.vue', imp
 const windowSource = fs.readFileSync(new URL('../components/kitchen/SceneWindow.vue', import.meta.url), 'utf8')
 const homeSource = fs.readFileSync(new URL('../views/HomeView.vue', import.meta.url), 'utf8')
 const appSource = fs.readFileSync(new URL('../App.vue', import.meta.url), 'utf8')
+const routerSource = fs.readFileSync(new URL('../router/index.js', import.meta.url), 'utf8')
 
 test('厨房场景使用统一设计尺寸并按工作区宽高等比缩放', () => {
   assert.match(sceneSource, /const DESIGN_WIDTH = 1520/)
@@ -131,6 +132,20 @@ test('首页移除底部操作提示和暂停入口并释放布局空间', () =>
   assert.doesNotMatch(worldSource, /暂停动态/)
   assert.doesNotMatch(worldSource, /grid-template-rows: minmax\(0, 1fr\) auto;/)
   assert.match(worldSource, /padding: clamp\(8px, 1\.2vw, 16px\);/)
+})
+
+test('未登录主入口与登录后使用同一厨房场景', () => {
+  assert.match(routerSource, /import KitchenWorldView from ['"]\.\.\/views\/KitchenWorldView\.vue['"]/)
+  assert.match(routerSource, /name: 'home',[\s\S]*?component: KitchenWorldView/)
+  assert.doesNotMatch(routerSource, /isLoggedIn[\s\S]*?KitchenWorldView/)
+  assert.match(worldSource, /class="kitchen-world-page" aria-label="AI 智能厨房"/)
+})
+
+test('主场景不再绘制右上角状态框，侧栏为小厨灵预留底部空间', () => {
+  assert.doesNotMatch(sceneSource, /drawSceneStats/)
+  assert.match(appSource, /class="sidebar-navigation"/)
+  assert.match(appSource, /\.app-sidebar :deep\(\.agent-widget\)/)
+  assert.match(appSource, /\.sidebar-link,[\s\S]*?flex: 0 0 38px;/)
 })
 
 test('主厨料理大厅内容区域允许滚动查看完整工作台', () => {

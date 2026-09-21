@@ -63,65 +63,67 @@
 
     <el-container class="app-body">
       <aside class="app-sidebar" aria-label="工作区导航">
-        <div class="sidebar-caption">工作区</div>
-        <RouterLink
-          class="sidebar-link"
-          :class="{ 'sidebar-link-active': isKitchenWorkbenchActive }"
-          :to="kitchenWorldLocation()"
-          :aria-current="isKitchenWorkbenchActive ? 'page' : undefined"
-        >
-          <Home :size="17" aria-hidden="true" />
-          <span>智能工作台</span>
-        </RouterLink>
-
-        <div class="sidebar-caption sidebar-caption-spaced">功能扩展</div>
-        <template v-if="auth.isAdmin">
+        <nav class="sidebar-navigation" aria-label="厨房功能入口导航">
+          <div class="sidebar-caption">工作区</div>
           <RouterLink
-            v-for="item in adminPanelNavigation"
-            :key="item.panel"
-            custom
-            :to="adminPanelRoute(item.panel)"
-            v-slot="{ href, navigate }"
+            class="sidebar-link"
+            :class="{ 'sidebar-link-active': isKitchenWorkbenchActive }"
+            :to="kitchenWorldLocation()"
+            :aria-current="isKitchenWorkbenchActive ? 'page' : undefined"
           >
-            <a
-              class="sidebar-link"
-              :class="{ 'sidebar-link-admin-active': activeAdminPanel === item.panel }"
-              :href="href"
-              :aria-current="activeAdminPanel === item.panel ? 'page' : undefined"
-              @click="navigate"
+            <Home :size="17" aria-hidden="true" />
+            <span>智能工作台</span>
+          </RouterLink>
+
+          <div class="sidebar-caption sidebar-caption-spaced">功能扩展</div>
+          <template v-if="auth.isAdmin">
+            <RouterLink
+              v-for="item in adminPanelNavigation"
+              :key="item.panel"
+              custom
+              :to="adminPanelRoute(item.panel)"
+              v-slot="{ href, navigate }"
             >
-              <component :is="item.icon" :size="17" aria-hidden="true" />
-              <span>{{ item.label }}</span>
+              <a
+                class="sidebar-link"
+                :class="{ 'sidebar-link-admin-active': activeAdminPanel === item.panel }"
+                :href="href"
+                :aria-current="activeAdminPanel === item.panel ? 'page' : undefined"
+                @click="navigate"
+              >
+                <component :is="item.icon" :size="17" aria-hidden="true" />
+                <span>{{ item.label }}</span>
+              </a>
+            </RouterLink>
+          </template>
+          <template v-else>
+            <RouterLink
+              v-for="item in userSidebarNavigation"
+              :key="item.featureId"
+              custom
+              :to="kitchenNavigationLocation(item.featureId)"
+              v-slot="{ href }"
+            >
+              <a
+                class="sidebar-link"
+                :class="{ 'sidebar-link-active': isKitchenNavigationActive(item.featureId, route.query) }"
+                :href="href"
+                :aria-current="isKitchenNavigationActive(item.featureId, route.query) ? 'page' : undefined"
+                @click.prevent="requestKitchenNavigation(item.featureId)"
+              >
+                <component :is="item.icon" :size="17" aria-hidden="true" />
+                <span>{{ item.navigation.label }}</span>
+              </a>
+            </RouterLink>
+          </template>
+
+          <RouterLink v-if="auth.isAdmin" custom :to="adminPanelRoute('overview')" v-slot="{ href, navigate }">
+            <a class="sidebar-link sidebar-admin-link" :href="href" @click="navigate">
+              <ShieldCheck :size="17" aria-hidden="true" />
+              <span>管理后台</span>
             </a>
           </RouterLink>
-        </template>
-        <template v-else>
-          <RouterLink
-            v-for="item in userSidebarNavigation"
-            :key="item.featureId"
-            custom
-            :to="kitchenNavigationLocation(item.featureId)"
-            v-slot="{ href }"
-          >
-            <a
-              class="sidebar-link"
-              :class="{ 'sidebar-link-active': isKitchenNavigationActive(item.featureId, route.query) }"
-              :href="href"
-              :aria-current="isKitchenNavigationActive(item.featureId, route.query) ? 'page' : undefined"
-              @click.prevent="requestKitchenNavigation(item.featureId)"
-            >
-              <component :is="item.icon" :size="17" aria-hidden="true" />
-              <span>{{ item.navigation.label }}</span>
-            </a>
-          </RouterLink>
-        </template>
-
-        <RouterLink v-if="auth.isAdmin" custom :to="adminPanelRoute('overview')" v-slot="{ href, navigate }">
-          <a class="sidebar-link sidebar-admin-link" :href="href" @click="navigate">
-            <ShieldCheck :size="17" aria-hidden="true" />
-            <span>管理后台</span>
-          </a>
-        </RouterLink>
+        </nav>
         <KitchenAgentWidget v-if="route.name !== 'login' && !auth.isAdmin" />
       </aside>
 
@@ -877,24 +879,36 @@ function applyTheme(theme) {
 }
 
 .app-sidebar {
+  position: relative;
   display: flex;
   width: 190px;
   flex: 0 0 190px;
   min-height: 0;
   flex-direction: column;
-  gap: 6px;
-  padding: 24px 14px;
+  padding: 18px 14px;
   border-right: 1px solid var(--app-line);
   background: var(--app-surface);
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .app-shell.kitchen-world-chrome .app-sidebar {
   background: #f8efdc;
 }
 
+.sidebar-navigation {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+
 .sidebar-caption {
-  padding: 0 10px 7px;
+  flex: 0 0 auto;
+  padding: 0 10px 4px;
   color: var(--app-text-faint);
   font-size: 11px;
   font-weight: 900;
@@ -903,15 +917,16 @@ function applyTheme(theme) {
 }
 
 .sidebar-caption-spaced {
-  margin-top: 22px;
+  margin-top: 12px;
 }
 
 .sidebar-link,
 .sidebar-placeholder {
+  flex: 0 0 38px;
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  min-height: 42px;
+  min-height: 38px;
   padding: 0 11px;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -964,6 +979,18 @@ function applyTheme(theme) {
   margin-top: auto;
 }
 
+.app-sidebar :deep(.agent-widget) {
+  position: absolute;
+  right: 14px;
+  bottom: 18px;
+  left: 14px;
+}
+
+.app-sidebar :deep(.agent-launcher) {
+  width: 100%;
+  min-width: 0;
+}
+
 @media (max-width: 720px) {
   .app-body {
     flex-direction: column;
@@ -982,6 +1009,15 @@ function applyTheme(theme) {
     border-bottom: 1px solid var(--app-line);
   }
 
+  .sidebar-navigation {
+    flex: 0 0 auto;
+    flex-direction: row;
+    gap: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0;
+  }
+
   .sidebar-caption,
   .sidebar-caption-spaced {
     display: none;
@@ -989,12 +1025,20 @@ function applyTheme(theme) {
 
   .sidebar-link,
   .sidebar-placeholder {
+    flex: 0 0 auto;
     min-width: max-content;
     min-height: 44px;
   }
 
   .sidebar-admin-link {
     margin-top: 0;
+  }
+
+  .app-sidebar :deep(.agent-widget) {
+    position: fixed;
+    right: 16px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    left: 16px;
   }
 
   .app-header {
