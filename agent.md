@@ -338,6 +338,14 @@ Agent 写工具确认后会先在 `agent_write_operations` 中以 `(user_id, ide
 
 演练前需要先在客户端发起一个尚未完成的请求，并立即复制该请求的 `runId`。如果任务在执行脚本前已经完成，脚本会主动拒绝，避免把一次普通完成误判成恢复成功。当前分支已通过恢复扫描器、各步骤故障注入、模型决策 checkpoint、工具执行/观察 checkpoint、等待确认和完成节点恢复测试；真实 Docker 演练需要在有进行中任务时执行上述脚本。
 
+为便于重复总验收，新增 `scripts/agent-live-recovery-drill.ps1`：它会使用专用普通用户登录，发起真实流式 Agent 请求，自动捕获活动 `runId`，再调用上述 SIGKILL 恢复脚本。密码只通过本次命令参数传入，不写入仓库或配置文件：
+
+```powershell
+.\scripts\agent-live-recovery-drill.ps1 `
+  -Phone "演练用户手机号" `
+  -Password "仅临时传入的本地演练密码"
+```
+
 写操作崩溃窗口使用另一个脚本。先在客户端发起保存菜谱确认，记录 `conversationId`、`confirmationId` 和确认卡中的 `idempotencyKey`，然后运行：
 
 ```powershell

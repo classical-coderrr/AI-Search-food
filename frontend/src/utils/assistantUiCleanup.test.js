@@ -96,3 +96,9 @@ test('保存菜谱成功后按钮进入灰色禁用状态并阻止重复提交',
   assert.match(agentSource, /function markRestoredSavedRecipes\(\)/)
   assert.match(agentSource, /\.agent-button--saved, \.agent-button--saved:disabled[\s\S]*background: #e2e2e2;/)
 })
+
+test('菜谱保存携带当前菜谱卡片上下文', () => {
+  assert.doesNotMatch(agentSource, /再来一道/)
+  assert.match(agentSource, /targetRecipeSearchLogId: message\.card\.payload\?\.recipe\?\.searchLogId/)
+  assert.match(agentSource, /startStream\(\{ conversationId: conversationId\.value, message: prompt, \.\.\.requestOptions \}/)
+})

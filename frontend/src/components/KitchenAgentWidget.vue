@@ -170,7 +170,7 @@
               <div class="agent-recipe-card__section"><strong>做法</strong><ol><li v-for="step in message.card.payload.recipe?.steps || []" :key="step.order"><span>{{ step.title || `第${step.order}步` }}</span>{{ step.description }}</li></ol></div>
               <div v-if="message.card.payload.recipe?.nutritionEstimate" class="agent-recipe-card__nutrition">每份约 {{ message.card.payload.recipe.nutritionEstimate.caloriesKcal }} 千卡 · 蛋白质 {{ message.card.payload.recipe.nutritionEstimate.proteinG }} 克</div>
               <div class="agent-card__source"><Clock3 :size="13" aria-hidden="true" />{{ message.card.source }}</div>
-              <div class="agent-card__actions"><button type="button" class="agent-button agent-button--primary" :class="{ 'agent-button--saved': message.card.saveState === 'saved' }" :disabled="loading || (message.card.saveState && message.card.saveState !== 'idle')" @click="saveRecipe(message)"><Save :size="14" aria-hidden="true" />{{ message.card.saveState === 'saved' ? '已保存' : message.card.saveState === 'pending' ? '保存中…' : '保存菜谱' }}</button><button type="button" class="agent-button" @click="sendPrompt('再来一道不同的')">再来一道</button></div>
+              <div class="agent-card__actions"><button type="button" class="agent-button agent-button--primary" :class="{ 'agent-button--saved': message.card.saveState === 'saved' }" :disabled="loading || (message.card.saveState && message.card.saveState !== 'idle')" @click="saveRecipe(message)"><Save :size="14" aria-hidden="true" />{{ message.card.saveState === 'saved' ? '已保存' : message.card.saveState === 'pending' ? '保存中…' : '保存菜谱' }}</button></div>
             </template>
 
             <template v-else-if="message.card.cardType === 'confirmation-card'">
@@ -258,6 +258,7 @@ const attachmentPreview = ref('')
 const abortController = ref(null)
 const lastPrompt = ref('')
 const lastAttachment = ref(null)
+const lastPromptOptions = ref({})
 const pendingSaveMessage = ref(null)
 const pendingSaveConfirmation = ref(false)
 let replayController = null
@@ -535,16 +536,17 @@ function sendMessage() {
   sendPrompt(message || '请识别这张图片中的食材，并告诉我可以怎么处理', image, preview)
 }
 
-function sendPrompt(prompt, image = null, imagePreview = '') {
+function sendPrompt(prompt, image = null, imagePreview = '', requestOptions = {}) {
   if (loading.value) return
   lastPrompt.value = prompt
+  lastPromptOptions.value = { ...requestOptions }
   lastAttachment.value = image
   if (!auth.isUser) {
     addMessage({ role: 'assistant', content: '请先登录普通用户账号。登录后我才能读取你的真实库存、菜单和提醒。' })
     return
   }
   addMessage({ role: 'user', content: prompt, imagePreview })
-  startStream({ conversationId: conversationId.value, message: prompt }, image)
+  startStream({ conversationId: conversationId.value, message: prompt, ...requestOptions }, image)
 }
 
 async function startStream(payload, image = null) {
@@ -683,11 +685,13 @@ function saveRecipe(message) {
   message.card.saveState = 'pending'
   pendingSaveMessage.value = message
   pendingSaveConfirmation.value = false
-  sendPrompt('保存这道菜')
+  sendPrompt('保存这道菜', null, '', {
+    targetRecipeSearchLogId: message.card.payload?.recipe?.searchLogId || null
+  })
 }
 
 function retryLast() {
-  if (lastPrompt.value) sendPrompt(lastPrompt.value, lastAttachment.value)
+  if (lastPrompt.value) sendPrompt(lastPrompt.value, lastAttachment.value, '', lastPromptOptions.value)
 }
 
 function stopGeneration() {

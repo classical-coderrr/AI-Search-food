@@ -11,6 +11,11 @@ public class QwenProperties {
     private String model = "qwen-plus";
     private String visionModel = "qwen-vl-plus";
     private String endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+    /**
+     * Kept enabled for direct-client compatibility; the application profile
+     * explicitly disables the extra planning round for the low-latency path.
+     */
+    private boolean planningEnabled = true;
 
     public QwenProperties() {
     }
@@ -51,5 +56,13 @@ public class QwenProperties {
 
     public void setEndpoint(String endpoint) {
         this.endpoint = endpoint;
+    }
+
+    public boolean planningEnabled() {
+        return planningEnabled;
+    }
+
+    public void setPlanningEnabled(boolean planningEnabled) {
+        this.planningEnabled = planningEnabled;
     }
 }

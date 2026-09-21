@@ -116,6 +116,7 @@ app:
       model: ${DASHSCOPE_MODEL:qwen-plus}
       vision-model: ${DASHSCOPE_VISION_MODEL:qwen-vl-plus}
       endpoint: ${DASHSCOPE_BASE_URL:${DASHSCOPE_ENDPOINT:https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}}
+      planning-enabled: ${AI_RECIPE_PLANNING_ENABLED:false}
 
 management:
   endpoints:

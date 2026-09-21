@@ -1,13 +1,6 @@
 <template>
   <main class="admin-page">
-    <section class="admin-shell" aria-labelledby="admin-title">
-      <header class="admin-header">
-        <div>
-          <p class="eyebrow">系统控制台</p>
-          <h1 id="admin-title">管理后台</h1>
-        </div>
-      </header>
-
+    <section class="admin-shell" aria-label="管理员功能入口">
       <AdminOperationsOverview v-if="activePanel === 'overview'" />
 
       <div v-else-if="activePanel === 'settings'" class="admin-grid">
@@ -310,38 +303,15 @@ function errorMessage(error, fallback) {
 
 .admin-shell {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 10px;
+  grid-template-rows: minmax(0, 1fr);
   width: min(1360px, 100%);
   height: 100%;
   margin: 0 auto;
 }
 
-.admin-header {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.eyebrow {
-  margin: 0 0 4px;
-  color: var(--app-text-muted);
-  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0;
-}
-
-h1,
 h2 {
   margin: 0;
   color: var(--app-text);
-}
-
-h1 {
-  font-size: clamp(24px, 2.5vw, 36px);
-  line-height: 1.1;
 }
 
 h2 {
@@ -513,11 +483,6 @@ h2 {
   .admin-page {
     min-height: calc(100vh - 121px);
     padding: 16px;
-  }
-
-  .admin-header {
-    align-items: flex-start;
-    flex-direction: column;
   }
 
   .summary-grid,

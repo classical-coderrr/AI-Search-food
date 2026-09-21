@@ -11,6 +11,7 @@
 | 演练 | 结果 | 实际证据 |
 | --- | --- | --- |
 | 运行中任务恢复 | 通过 | 对 run `6c26de13-873e-4298-b0fc-c83d15e4f461` 执行 backend `SIGKILL`；backend、MySQL、Redis 均重新变为 healthy，恢复实例接管 Redis checkpoint，日志出现 `Recovering agent run`，目标 run 最终为 `COMPLETED`。 |
+| 运行中任务恢复复验 | 通过 | 使用 `scripts/agent-live-recovery-drill.ps1` 自动发起真实任务；对 run `f82b0d6a-7eab-4451-908d-635e99a8c6c6` 执行 backend `SIGKILL`，恢复日志出现 `Recovering agent run`，backend、MySQL、Redis 均重新变为 healthy，目标 run 最终为 `COMPLETED`。 |
 | 写事务崩溃窗口 | 通过 | 对 confirmation `17` / idempotency key `crash-drill-20260921-01` 在“业务写入后”暂停期间执行 backend `SIGKILL`；重启后 `agent_write_operations.status=PROCESSING`、`agent_confirmations.status=PENDING`，演练食材未落入 `user_pantry_items`。 |
 
 当前结论：写操作未知结果保护和步骤级 Agent 恢复均已完成真实 Docker 验收。恢复租约增加了恢复实例短期存活标记，旧实例在崩溃后不会把残留的 `recovery:` 租约永久阻塞新实例接管。演练现场和数据记录暂保留，便于复现。

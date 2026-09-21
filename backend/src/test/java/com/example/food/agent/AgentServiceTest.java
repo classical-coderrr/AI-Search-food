@@ -56,7 +56,9 @@ class AgentServiceTest {
                 "run-state", 7L, 42L, "收藏一下", false,
                 AgentStatus.RUNNING, AgentNode.MODEL_DECISION, AgentNode.MODEL_DECISION,
                 1, 0, 1, false, List.of(), List.of(), 0, null, null,
-                true, true, AgentIntentAuditService.SOURCE_MODEL
+                true, true, AgentIntentAuditService.SOURCE_MODEL,
+                false, false, null,
+                123L, "番茄炒蛋"
         );
 
         AgentState restored = objectMapper.readValue(
@@ -67,6 +69,8 @@ class AgentServiceTest {
         assertThat(restored.intentResolutionAttempted()).isTrue();
         assertThat(restored.recipeSaveIntent()).isTrue();
         assertThat(restored.intentResolutionSource()).isEqualTo(AgentIntentAuditService.SOURCE_MODEL);
+        assertThat(restored.targetRecipeSearchLogId()).isEqualTo(123L);
+        assertThat(restored.previousRecipeTitle()).isEqualTo("番茄炒蛋");
     }
 
     @Test

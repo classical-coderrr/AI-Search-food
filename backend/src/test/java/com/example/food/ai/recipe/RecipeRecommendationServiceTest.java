@@ -724,7 +724,8 @@ class RecipeRecommendationServiceTest {
         assertThat(promptCaptor.getAllValues().get(1))
                 .contains("指定食材覆盖校正")
                 .contains("番茄、鸡蛋")
-                .contains("ingredients 和 steps");
+                .contains("JSON 的 ingredients 数组")
+                .contains("steps 中实际使用");
         assertThat(result.ingredients())
                 .extracting(RecipeGenerateResponse.Ingredient::name)
                 .contains("鸡蛋");
@@ -864,6 +865,28 @@ class RecipeRecommendationServiceTest {
                 .contains("没有可用视频时可以按常见家常菜知识补全完整做法")
                 .contains("不得虚构菜式、视频或来源");
         verify(groundingService).searchForRecipeGrounding("番茄 家常做法", 6);
+    }
+
+    @Test
+    void searchesCombinedQueryForTwoRequestedIngredients() {
+        VideoSearchService groundingService = org.mockito.Mockito.mock(VideoSearchService.class);
+        RecipeRecommendationService groundedService = new RecipeRecommendationService(
+                qwenRecipeClient,
+                searchLogService,
+                userPantryService,
+                userHealthProfileService,
+                recommendationFeedbackService,
+                userNutritionTargetService,
+                healthNutritionService,
+                groundingService
+        );
+
+        groundedService.promptFor(
+                new RecipeGenerateRequest("黄瓜、火腿", "dinner", "balanced", "text"),
+                null
+        );
+
+        verify(groundingService).searchForRecipeGrounding("黄瓜 火腿 家常做法", 6);
     }
 
     @Test

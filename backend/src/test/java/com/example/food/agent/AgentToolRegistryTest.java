@@ -28,8 +28,13 @@ class AgentToolRegistryTest {
     }
 
     @Test
-    void ordinaryChatDoesNotExposeKitchenTools() {
-        assertThat(registry.functionDefinitions("你好，讲个笑话", false)).isEmpty();
+    void ordinaryChatUsesReadOnlyFastPathTools() {
+        java.util.List<String> tools = registry.functionDefinitions("你好，讲个笑话", false).stream()
+                .map(definition -> ((java.util.Map<?, ?>) definition.get("function")).get("name").toString())
+                .toList();
+
+        assertThat(tools).contains("recipe_generate", "pantry_list", "nutrition_profile")
+                .doesNotContain("pantry_manage", "profile_manage", "recipe_save");
     }
 
     @Test

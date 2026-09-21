@@ -51,6 +51,23 @@ class AgentRecoveryServiceTest {
     }
 
     @Test
+    void takesOverStaleWorkerLeaseAfterProcessCrash() {
+        AgentRunStore runStore = mock(AgentRunStore.class);
+        AgentService agentService = mock(AgentService.class);
+        AgentRun staleRun = run("crashed-worker-run", AgentStatus.RUNNING);
+        when(runStore.findRecoverable(any(Instant.class))).thenReturn(List.of(staleRun));
+        when(runStore.tryAcquireLease(eq("crashed-worker-run"), anyString(), eq(LEASE_DURATION)))
+                .thenReturn(false);
+        when(runStore.tryTakeoverLease(eq("crashed-worker-run"), anyString(), eq(LEASE_DURATION)))
+                .thenReturn(true);
+
+        service(runStore, agentService).recoverStaleRuns();
+
+        verify(agentService).resume(eq("crashed-worker-run"), anyString());
+        verify(runStore).releaseLease(eq("crashed-worker-run"), anyString());
+    }
+
+    @Test
     void releasesLeaseAndContinuesWhenOneRunFails() {
         AgentRunStore runStore = mock(AgentRunStore.class);
         AgentService agentService = mock(AgentService.class);
