@@ -53,5 +53,9 @@ class AdminAgentObservabilityServiceTest {
         assertThat(response.recovery().enabled()).isTrue();
         assertThat(response.recovery().scanDelay()).isEqualTo("PT2S");
         assertThat(response.recovery().stateStore()).isEqualTo("redis");
+        assertThat(response.persistence().enabled()).isTrue();
+        assertThat(response.persistence().snapshotInterval()).isEqualTo("PT5M");
+        assertThat(response.history()).isEmpty();
+        assertThat(response.alerts()).isEmpty();
     }
 }

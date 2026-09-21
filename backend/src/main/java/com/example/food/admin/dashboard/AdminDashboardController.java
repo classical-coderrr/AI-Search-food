@@ -31,7 +31,9 @@ public class AdminDashboardController {
     }
 
     @GetMapping("/agent-observability")
-    public ApiResponse<AdminAgentObservabilityResponse> agentObservability() {
-        return ApiResponse.ok(agentObservabilityService.snapshot());
+    public ApiResponse<AdminAgentObservabilityResponse> agentObservability(
+            @RequestParam(defaultValue = "24h") String range
+    ) {
+        return ApiResponse.ok(agentObservabilityService.snapshot(range));
     }
 }

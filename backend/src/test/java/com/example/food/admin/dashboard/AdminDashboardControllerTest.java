@@ -76,6 +76,7 @@ class AdminDashboardControllerTest {
         String adminToken = jwtService.generateToken(new AuthPrincipal(1L, "admin", AppRole.ADMIN));
 
         mockMvc.perform(get(AGENT_OBSERVABILITY_URL)
+                        .param("range", "7d")
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
@@ -84,6 +85,9 @@ class AdminDashboardControllerTest {
                 .andExpect(jsonPath("$.data.metrics.runsRecovered").isNumber())
                 .andExpect(jsonPath("$.data.metrics.averageRunDurationMs").isNumber())
                 .andExpect(jsonPath("$.data.recovery.enabled").isBoolean())
+                .andExpect(jsonPath("$.data.persistence.enabled").isBoolean())
+                .andExpect(jsonPath("$.data.history").isArray())
+                .andExpect(jsonPath("$.data.alerts").isArray())
                 .andExpect(content().string(not(containsString("apiKey"))))
                 .andExpect(content().string(not(containsString("password"))));
     }

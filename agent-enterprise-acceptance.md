@@ -56,7 +56,7 @@ Last-Event-ID: 3
 
 ## 观测指标
 
-管理员可通过 Actuator 查看：
+管理员可通过管理后台的“Agent 可观测”面板查看当前指标、历史采样和告警，也可通过 `GET /api/admin/dashboard/agent-observability?range=24h` 查询：
 
 ```text
 agent.runs.started
@@ -68,6 +68,8 @@ agent.events.persisted
 agent.events.replayed
 agent.writes.duplicate
 ```
+
+历史采样写入 MySQL 的 `agent_metric_snapshots`，默认每 5 分钟保存一次并保留 30 天；采样保存的是当前间隔增量，跨容器重启后仍能连续展示趋势。告警写入 `agent_observability_alerts`，默认在至少 5 个运行样本后检查失败率、恢复占比和重复写入拦截率，告警恢复后自动标记为 `RESOLVED`，同一规则不会重复创建告警。
 
 审计步骤只保存路由元数据、长度、来源和结果摘要；`AgentAuditSanitizer` 会对 Token、密码、API Key、手机号、Authorization 等字段脱敏。
 

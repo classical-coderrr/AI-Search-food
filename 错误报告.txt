@@ -912,3 +912,10 @@ AgentRecoveryProperties 配置绑定失败
 - 原因：等待方法属于页面 Playwright 对象，应通过 `tab.playwright.waitForTimeout` 调用。
 - 解决方案：改用页面 Playwright 等待方法后继续验证，未修改业务数据。
 - 验证结果：管理员登录成功，Agent 可观测面板可从侧边栏打开，指标卡、图表、质量比率和恢复配置均正常展示。
+
+本轮 Docker 快照核验 SQL 引号错误
+- 日期：2026-09-21
+- 问题现象：首次读取 `agent_metric_snapshots` 时，空值占位符的引号被 PowerShell/容器命令解析为列名，MySQL 返回 `Unknown column 'NONE'`。
+- 原因：验证命令的多层引号转义不正确，不是应用或数据库迁移问题。
+- 解决方案：改用不带空值占位符的 `COUNT(*)` 与 `MAX(captured_at)` 查询，未修改业务数据。
+- 验证结果：MySQL 快照表成功回读，随后确认历史记录从 1 条增长至 6 条。
