@@ -350,7 +350,6 @@ function drawKitchen(stage, width) {
   drawRoom(staticLayer, characterLayer, effectsLayer, foregroundLayer, stations[5], innerX + wideW + gap, lowerY, colW, 190)
 
   drawBreakRoom(staticLayer, innerX, 606, innerW, 132)
-  drawSceneStats(uiLayer, width)
   drawOfficeHeader(uiLayer, width)
 }
 
@@ -539,23 +538,6 @@ function drawBreakRoom(staticLayer, x, y, w, h) {
   drawPictureFrame(parent, x + w - 68, y + 39, 42, 30, 0x9bb58a)
   addText(parent, '今天也要好好吃饭。', x + 36, y + 111, 10, 0xe8d7b7, true)
   cacheStaticRoom(parent)
-}
-
-function drawSceneStats(parent, width) {
-  const stats = [
-    ['库存', '登录后自动匹配'],
-    ['本周', '开始安排菜单']
-  ]
-  const boxW = 130
-  stats.forEach((stat, index) => {
-    const x = width - 32 - (stats.length - index) * (boxW + 8)
-    const box = new Graphics()
-    box.roundRect(x, 38, boxW, 38, 5).fill({ color: 0xefe0bb, alpha: 0.96 })
-    box.roundRect(x, 38, boxW, 38, 5).stroke({ width: 1, color: 0x8b6e4e })
-    parent.addChild(box)
-    addText(parent, stat[0], x + 10, 47, 8, 0x775b3d, true)
-    addText(parent, stat[1], x + 10, 60, 8, 0x4a392c, false)
-  })
 }
 
 function drawCharacter(parent, station, x, feetY, scale, character = null) {
