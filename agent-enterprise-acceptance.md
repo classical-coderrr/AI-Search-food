@@ -4,6 +4,18 @@
 
 小厨灵采用持久化状态、步骤级恢复、写操作幂等和 SSE 事件续传，服务重启或浏览器断线后可以继续任务，并且不会重复执行有副作用的写操作。
 
+## 真实 Docker 演练记录
+
+执行日期：2026-09-21。使用专用演练账号，在当前 Docker Compose 环境中实际操作 MySQL、Redis 和 backend 容器；未删除数据卷。
+
+| 演练 | 结果 | 实际证据 |
+| --- | --- | --- |
+| 运行中任务恢复 | 通过 | 对 run `6c26de13-873e-4298-b0fc-c83d15e4f461` 执行 backend `SIGKILL`；backend、MySQL、Redis 均重新变为 healthy，恢复实例接管 Redis checkpoint，日志出现 `Recovering agent run`，目标 run 最终为 `COMPLETED`。 |
+| 运行中任务恢复复验 | 通过 | 使用 `scripts/agent-live-recovery-drill.ps1` 自动发起真实任务；对 run `f82b0d6a-7eab-4451-908d-635e99a8c6c6` 执行 backend `SIGKILL`，恢复日志出现 `Recovering agent run`，backend、MySQL、Redis 均重新变为 healthy，目标 run 最终为 `COMPLETED`。 |
+| 写事务崩溃窗口 | 通过 | 对 confirmation `17` / idempotency key `crash-drill-20260921-01` 在“业务写入后”暂停期间执行 backend `SIGKILL`；重启后 `agent_write_operations.status=PROCESSING`、`agent_confirmations.status=PENDING`，演练食材未落入 `user_pantry_items`。 |
+
+当前结论：写操作未知结果保护和步骤级 Agent 恢复均已完成真实 Docker 验收。恢复租约增加了恢复实例短期存活标记，旧实例在崩溃后不会把残留的 `recovery:` 租约永久阻塞新实例接管。演练现场和数据记录暂保留，便于复现。
+
 ## 运行时间线
 
 ```text
@@ -45,7 +57,7 @@ Last-Event-ID: 3
 
 ## 观测指标
 
-管理员可通过 Actuator 查看：
+管理员可通过管理后台的“Agent 可观测”面板查看当前指标、历史采样和告警，也可通过 `GET /api/admin/dashboard/agent-observability?range=24h` 查询：
 
 ```text
 agent.runs.started
@@ -57,6 +69,11 @@ agent.events.persisted
 agent.events.replayed
 agent.writes.duplicate
 ```
+
+历史采样写入 MySQL 的 `agent_metric_snapshots`，默认每 5 分钟保存一次并保留 30 天；采样保存的是当前间隔增量，跨容器重启后仍能连续展示趋势。告警写入 `agent_observability_alerts`，默认在至少 5 个运行样本后检查失败率、恢复占比和重复写入拦截率，告警恢复后自动标记为 `RESOLVED`，同一规则不会重复创建告警。
+
+自动评测集写入 `agent_evaluation_runs` 和 `agent_evaluation_case_results`，默认每日执行 6 个脱敏路由边界样例；管理员可通过 `POST /api/admin/dashboard/agent-evaluation/run` 立即执行，并通过 `GET /api/admin/dashboard/agent-evaluation` 查询最近一次的通过率、失败原因和实际暴露工具。
+调度可通过 `AGENT_EVALUATION_ENABLED`、`AGENT_EVALUATION_INTERVAL` 和 `AGENT_EVALUATION_INITIAL_DELAY` 调整。
 
 审计步骤只保存路由元数据、长度、来源和结果摘要；`AgentAuditSanitizer` 会对 Token、密码、API Key、手机号、Authorization 等字段脱敏。
 

@@ -242,6 +242,23 @@ class QwenRecipeClientTest {
     }
 
     @Test
+    void skipsOptionalPlanningRoundWhenDisabled() {
+        QwenProperties properties = new QwenProperties(
+                "test-api-key",
+                "qwen-plus",
+                "https://dashscope.test/compatible-mode/v1/chat/completions"
+        );
+        properties.setPlanningEnabled(false);
+        QwenRecipeClient client = new QwenRecipeClient(
+                new RestTemplateBuilder().build(),
+                new ObjectMapper(),
+                properties
+        );
+
+        assertThat(client.planRecipeSelection("请规划一道菜")).isEmpty();
+    }
+
+    @Test
     void generateWeeklyMenuParsesStructuredSelections() {
         RestTemplate restTemplate = new RestTemplateBuilder().build();
         MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();

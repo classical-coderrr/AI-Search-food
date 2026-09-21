@@ -24,6 +24,7 @@ public class InMemoryAgentRunStore implements AgentRunStore {
     private final Map<String, AgentCheckpoint> checkpoints = new ConcurrentHashMap<>();
     private final Map<String, Map<Long, AgentStep>> steps = new ConcurrentHashMap<>();
     private final Map<String, Lease> leases = new ConcurrentHashMap<>();
+    private final Map<String, Instant> recoveryInstances = new ConcurrentHashMap<>();
 
     @Override
     public void create(AgentRun run, AgentCheckpoint checkpoint) {
@@ -98,11 +99,39 @@ public class InMemoryAgentRunStore implements AgentRunStore {
     }
 
     @Override
+    public synchronized boolean tryTakeoverLease(String runId, String owner, Duration leaseDuration) {
+        Instant now = Instant.now();
+        Lease current = leases.get(runId);
+        if (current != null
+                && current.expiresAt().isAfter(now)
+                && current.owner().startsWith("recovery:")
+                && recoveryInstanceIsAlive(current.owner(), now)) {
+            return false;
+        }
+        leases.put(runId, new Lease(owner, now.plus(leaseDuration)));
+        return true;
+    }
+
+    @Override
+    public synchronized void registerRecoveryInstance(String instanceId, Duration ttl) {
+        recoveryInstances.put(instanceId, Instant.now().plus(ttl));
+    }
+
+    @Override
     public synchronized void releaseLease(String runId, String owner) {
         Lease current = leases.get(runId);
         if (current != null && current.owner().equals(owner)) {
             leases.remove(runId);
         }
+    }
+
+    private boolean recoveryInstanceIsAlive(String owner, Instant now) {
+        String[] parts = owner.split(":", 3);
+        if (parts.length < 3) {
+            return false;
+        }
+        Instant expiresAt = recoveryInstances.get(parts[1]);
+        return expiresAt != null && expiresAt.isAfter(now);
     }
 
     private record Lease(String owner, Instant expiresAt) {

@@ -8,6 +8,17 @@ public record AgentChatRequest(
         String message,
         Long confirmationId,
         @Size(max = 64)
-        String idempotencyKey
+        String idempotencyKey,
+        Long targetRecipeSearchLogId,
+        @Size(max = 200)
+        String previousRecipeTitle
 ) {
+    public AgentChatRequest(
+            Long conversationId,
+            String message,
+            Long confirmationId,
+            String idempotencyKey
+    ) {
+        this(conversationId, message, confirmationId, idempotencyKey, null, null);
+    }
 }

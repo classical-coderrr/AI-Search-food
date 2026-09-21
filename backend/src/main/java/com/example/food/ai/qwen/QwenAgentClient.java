@@ -33,6 +33,8 @@ import java.util.regex.Pattern;
 @Component
 public class QwenAgentClient {
 
+    private static final int AGENT_MAX_TOKENS = 900;
+    private static final int ANTHROPIC_AGENT_MAX_TOKENS = 1200;
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy年M月d日 EEEE HH:mm:ss z", Locale.CHINA);
     private static final Pattern TEXT_TOOL_CALL_PATTERN = Pattern.compile("(?s)<tool_call>\\s*(.*?)\\s*</tool_call>");
@@ -143,6 +145,10 @@ public class QwenAgentClient {
             body.put("parallel_tool_calls", false);
         }
         body.put("temperature", 0.2);
+        body.put("max_tokens", AGENT_MAX_TOKENS);
+        if (isFastQwen3Model(runtimeConfig.modelName())) {
+            body.put("enable_thinking", false);
+        }
         return body;
     }
 
@@ -153,7 +159,7 @@ public class QwenAgentClient {
     ) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", runtimeConfig.modelName());
-        body.put("max_tokens", 4096);
+        body.put("max_tokens", ANTHROPIC_AGENT_MAX_TOKENS);
         body.put("system", systemPrompt());
         body.put("messages", anthropicMessages(conversation));
         if (tools != null && !tools.isEmpty()) {
@@ -263,6 +269,10 @@ public class QwenAgentClient {
 
     private boolean isAnthropic(AiModelRuntimeConfig runtimeConfig) {
         return "anthropic".equalsIgnoreCase(runtimeConfig.protocol());
+    }
+
+    private boolean isFastQwen3Model(String modelName) {
+        return modelName != null && modelName.trim().toLowerCase(Locale.ROOT).contains("qwen3");
     }
 
     private AgentTurn parse(JsonNode root, AiModelRuntimeConfig runtimeConfig) {

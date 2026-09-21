@@ -14,6 +14,16 @@ import java.util.Set;
 public class AgentToolRegistry {
 
     private final Set<Tool> allowedTools = EnumSet.allOf(Tool.class);
+    private static final Set<Tool> FAST_PATH_TOOLS = EnumSet.of(
+            Tool.CURRENT_DATETIME,
+            Tool.PANTRY_LIST,
+            Tool.PANTRY_EXPIRY,
+            Tool.NOTIFICATIONS,
+            Tool.WEEKLY_MENU,
+            Tool.SAVED_RECIPES,
+            Tool.RECIPE_GENERATE,
+            Tool.NUTRITION_PROFILE
+    );
 
     public Tool require(String name) {
         if (name == null) {
@@ -99,7 +109,10 @@ public class AgentToolRegistry {
         }
 
         if (selected.isEmpty()) {
-            return List.of();
+            // Let the main Agent model answer ordinary language and choose a
+            // read-only tool in one request. This avoids a separate semantic
+            // routing request for messages such as “我想吃点清淡的”.
+            selected.addAll(FAST_PATH_TOOLS);
         }
         return selected.stream().map(Tool::functionDefinition).toList();
     }

@@ -39,6 +39,7 @@ class QwenAgentClientTest {
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(header("Authorization", "Bearer test-api-key"))
                 .andExpect(jsonPath("$.model").value("qwen-plus"))
+                .andExpect(jsonPath("$.max_tokens").value(900))
                 .andExpect(jsonPath("$.tool_choice").value("auto"))
                 .andExpect(jsonPath("$.parallel_tool_calls").value(false))
                 .andExpect(jsonPath("$.messages[0].role").value("system"))
@@ -70,6 +71,32 @@ class QwenAgentClientTest {
         assertThat(turn.toolCalls()).containsExactly(
                 new QwenAgentClient.ToolCall("call_inventory_1", "pantry_list", "{}")
         );
+        server.verify();
+    }
+
+    @Test
+    void disablesThinkingForQwen3AgentRequests() {
+        RestTemplate restTemplate = new RestTemplateBuilder().build();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        QwenProperties properties = new QwenProperties(
+                "test-api-key",
+                "qwen3.8-max",
+                "https://dashscope.test/compatible-mode/v1/chat/completions"
+        );
+        QwenAgentClient client = new QwenAgentClient(restTemplate, new ObjectMapper(), properties);
+
+        server.expect(once(), requestTo(properties.endpoint()))
+                .andExpect(jsonPath("$.enable_thinking").value(false))
+                .andExpect(jsonPath("$.max_tokens").value(900))
+                .andRespond(withSuccess(
+                        "{\"choices\":[{\"message\":{\"content\":\"收到\"}}]}",
+                        MediaType.APPLICATION_JSON
+                ));
+
+        assertThat(client.complete(
+                List.of(QwenAgentClient.ConversationMessage.user("你好")),
+                List.of()
+        ).content()).isEqualTo("收到");
         server.verify();
     }
 

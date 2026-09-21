@@ -99,6 +99,9 @@ public class QwenRecipeClient {
      * pairing, while the final recipe call remains a fast non-thinking call.
      */
     public List<RecipePlan> planRecipeSelection(String prompt) {
+        if (!properties.planningEnabled()) {
+            return List.of();
+        }
         AiModelRuntimeConfig runtimeConfig = runtimeConfig();
         requireApiKey(runtimeConfig);
         try {

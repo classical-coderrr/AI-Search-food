@@ -100,7 +100,7 @@
         <el-table-column label="最后登录" min-width="168">
           <template #default="scope">{{ formatLastLogin(scope.row.lastLoginAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" min-width="190" fixed="right">
+        <el-table-column label="操作" min-width="160">
           <template #default="scope">
             <div class="admin-user-actions">
               <el-button

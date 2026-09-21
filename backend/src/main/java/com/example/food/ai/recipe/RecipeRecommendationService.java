@@ -667,9 +667,10 @@ public class RecipeRecommendationService {
 
 
                 【指定食材覆盖校正】
-                上一次生成结果没有完整覆盖本次输入的全部指定食材。
-                本次必须在 ingredients 和 steps 中实际使用以下全部食材：%s。
-                不得只在菜名、简介或 missingIngredients 中提及；请返回完整、真实、可执行的 JSON 菜谱。
+                上一次模型返回的 ingredients 数组没有完整覆盖本次输入的全部指定食材。
+                本次必须逐项检查并在 JSON 的 ingredients 数组中写出以下全部食材：%s。
+                这些食材还必须在 steps 中实际使用；不得只在菜名、简介或 missingIngredients 中提及，
+                不得用其他无关食材替换；请返回完整、真实、可执行的 JSON 菜谱。
                 """.formatted(requested);
     }
 
@@ -806,6 +807,9 @@ public class RecipeRecommendationService {
                 queries.add(requested.get(0) + " 家常做法");
             }
         } else {
+            if (requested.size() == 2) {
+                queries.add(String.join(" ", requested) + " 家常做法");
+            }
             List<List<String>> pairs = ingredientPairsForBatch(request, recommendationCount(request));
             for (int index = 0; index < pairs.size(); index++) {
                 List<String> pair = pairs.get(index);
@@ -883,9 +887,9 @@ public class RecipeRecommendationService {
             return "食材使用要求：本次为多食材组合生成，每一道菜严格只能使用本次输入食材中的一至两种，不得把第三种输入食材混入本道菜的 ingredients 或 steps；可以补充葱、姜、蒜、食用油、盐等常见辅料，但不得用未输入的其他主要食材替换输入食材。每道菜的核心搭配以后续组合规则为准。";
         }
         if (isRecognitionInput(request)) {
-            return "食材使用要求：本次指定食材来自食材识别台，是用户刚刚确认的识别结果，必须严格围绕这些食材生成菜谱。每一种指定食材都必须出现在 ingredients 中并在 steps 中实际使用；不得忽略、替换为无关食材，或只把它放入 missingIngredients。肉类食材必须使用明确名称或明确部位，例如输入猪肉时可写猪肉、五花肉、里脊肉，但不要只写肉丝或肉片。可以补充必要辅料，但菜名、简介、步骤和食材清单必须与识别食材一致。";
+            return "食材使用要求：本次指定食材来自食材识别台，是用户刚刚确认的识别结果，必须严格围绕这些食材生成菜谱。每一种指定食材都必须逐项写入 JSON 的 ingredients 数组，并在 steps 中实际使用；不得忽略、替换为无关食材，或只把它放入 missingIngredients。肉类食材必须使用明确名称或明确部位，例如输入猪肉时可写猪肉、五花肉、里脊肉，但不要只写肉丝或肉片。可以补充必要辅料，但菜名、简介、步骤和食材清单必须与识别食材一致。";
         }
-        return "食材使用要求：本次指定食材是用户明确提供的食材，必须作为菜谱的核心食材使用。每一种指定食材都必须出现在 ingredients 中并在 steps 中实际使用；不得忽略、替换为无关食材，或只把它放入 missingIngredients。肉类食材必须使用明确名称或明确部位，例如输入猪肉时可写猪肉、五花肉、里脊肉，但不要只写肉丝或肉片。可以补充必要辅料，但菜名、简介、步骤和食材清单必须与指定食材一致。";
+        return "食材使用要求：本次指定食材是用户明确提供的食材，必须作为菜谱的核心食材使用。每一种指定食材都必须逐项写入 JSON 的 ingredients 数组，并在 steps 中实际使用；不得忽略、替换为无关食材，或只把它放入 missingIngredients。肉类食材必须使用明确名称或明确部位，例如输入猪肉时可写猪肉、五花肉、里脊肉，但不要只写肉丝或肉片。可以补充必要辅料，但菜名、简介、步骤和食材清单必须与指定食材一致。";
     }
 
     private boolean isRecognitionInput(RecipeGenerateRequest request) {
@@ -909,6 +913,7 @@ public class RecipeRecommendationService {
                 .filter(item -> generated.stream().noneMatch(actual -> ingredientMatches(item, actual)))
                 .toList();
         if (!missing.isEmpty()) {
+            log.warn("菜谱食材覆盖校验失败，requested={}, generated={}, missing={}", requested, generated, missing);
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.BAD_GATEWAY,
                     "AI 返回的菜谱未围绕输入食材生成（缺少：" + String.join("、", missing) + "），请点击重试"

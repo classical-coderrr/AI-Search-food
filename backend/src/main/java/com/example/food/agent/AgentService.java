@@ -85,6 +85,8 @@ public class AgentService {
     private static final int MAX_AGENT_ROUNDS = 5;
     private static final int MAX_TOOL_CALLS = 8;
     private static final int HISTORY_MESSAGE_LIMIT = 12;
+    private static final int MAX_MODEL_HISTORY_MESSAGE_LENGTH = 2400;
+    private static final int MAX_MODEL_TOOL_OUTPUT_LENGTH = 12000;
     private static final Duration RUN_LEASE_DURATION = Duration.ofMinutes(10);
     private static final String ROLE_USER = "USER";
     private static final String ROLE_ASSISTANT = "ASSISTANT";
@@ -332,7 +334,9 @@ public class AgentService {
                 List.of(),
                 0,
                 null,
-                now
+                now,
+                normalizedTargetRecipeSearchLogId(request.targetRecipeSearchLogId()),
+                normalizeRecipeTitle(request.previousRecipeTitle())
         );
         runStore.create(initialRun, new AgentCheckpoint(runId, 0, initialState, now));
         metrics.runStarted();
@@ -558,6 +562,8 @@ public class AgentService {
                     0,
                     AgentNode.MODEL_DECISION
             );
+            execution.targetRecipeSearchLogId = normalizedTargetRecipeSearchLogId(request.targetRecipeSearchLogId());
+            execution.previousRecipeTitle = normalizeRecipeTitle(request.previousRecipeTitle());
             if (execution.messages.isEmpty()) {
                 execution.messages.add(QwenAgentClient.ConversationMessage.user(modelMessage));
             }
@@ -824,12 +830,23 @@ public class AgentService {
                             emitter, cancelled, principal.id(), conversationId, tool, arguments);
                 } else {
                     toolExecution = executeTool(
-                            tool, arguments, emitter, cancelled, principal, conversationId, execution.userMessage, attachment);
+                            tool,
+                            arguments,
+                            emitter,
+                            cancelled,
+                            principal,
+                            conversationId,
+                            execution.userMessage,
+                            execution.previousRecipeTitle,
+                            execution.targetRecipeSearchLogId,
+                            attachment
+                    );
                 }
                 execution.confirmationRequested = execution.confirmationRequested || toolExecution.confirmationRequested();
                 sendToolResult(emitter, cancelled, tool, toolExecution.summary());
                 String output = toolOutput(toolExecution.output());
-                execution.messages.add(QwenAgentClient.ConversationMessage.tool(call.id(), output));
+                String modelOutput = modelToolOutput(toolExecution.output());
+                execution.messages.add(QwenAgentClient.ConversationMessage.tool(call.id(), modelOutput));
                 persistStep(execution, AgentNode.OBSERVE, "tool.result", tool.toolName(),
                         "SUCCESS", requestJson, output, call.id(), null);
                 execution.pendingToolIndex++;
@@ -1037,6 +1054,8 @@ public class AgentService {
             AuthPrincipal principal,
             Long conversationId,
             String userMessage,
+            String previousRecipeTitle,
+            Long targetRecipeSearchLogId,
             AgentAttachment attachment
     ) {
         return switch (tool) {
@@ -1046,8 +1065,10 @@ public class AgentService {
             case WEEKLY_MENU -> menu(emitter, cancelled, principal.id(), conversationId);
             case SAVED_RECIPES -> savedRecipes(emitter, cancelled, principal.id(), conversationId);
             case NUTRITION_PROFILE -> nutrition(emitter, cancelled, principal.id(), conversationId);
-            case RECIPE_GENERATE -> recipe(emitter, cancelled, principal, conversationId, userMessage, arguments);
-            case RECIPE_SAVE -> requestSave(emitter, cancelled, principal.id(), conversationId);
+            case RECIPE_GENERATE -> recipe(
+                    emitter, cancelled, principal, conversationId, userMessage, previousRecipeTitle, arguments);
+            case RECIPE_SAVE -> requestSave(
+                    emitter, cancelled, principal.id(), conversationId, targetRecipeSearchLogId);
             case CURRENT_DATETIME, PANTRY_MANAGE, NOTIFICATION_MANAGE, MEAL_PLAN_MANAGE,
                     RECIPE_LIBRARY_MANAGE, PROFILE_MANAGE, FINISHED_DISH_MANAGE ->
                     kitchenTool(emitter, cancelled, principal, conversationId, tool, arguments, attachment);
@@ -1058,9 +1079,11 @@ public class AgentService {
         List<QwenAgentClient.ConversationMessage> messages = new ArrayList<>();
         for (AgentMessage message : messageMapper.findRecentTextMessages(userId, conversationId, HISTORY_MESSAGE_LIMIT)) {
             if (ROLE_USER.equals(message.getRole())) {
-                messages.add(QwenAgentClient.ConversationMessage.user(message.getContent()));
+                messages.add(QwenAgentClient.ConversationMessage.user(
+                        limit(message.getContent(), MAX_MODEL_HISTORY_MESSAGE_LENGTH)));
             } else if (ROLE_ASSISTANT.equals(message.getRole())) {
-                messages.add(QwenAgentClient.ConversationMessage.assistant(message.getContent()));
+                messages.add(QwenAgentClient.ConversationMessage.assistant(
+                        limit(message.getContent(), MAX_MODEL_HISTORY_MESSAGE_LENGTH)));
             }
         }
         return messages;
@@ -1085,6 +1108,23 @@ public class AgentService {
     private String toolOutput(Object output) {
         try {
             return limit(objectMapper.writeValueAsString(output), 50_000);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("厨房助手工具结果序列化失败", exception);
+        }
+    }
+
+    private String modelToolOutput(Object output) {
+        try {
+            String serialized = objectMapper.writeValueAsString(output);
+            if (serialized.length() <= MAX_MODEL_TOOL_OUTPUT_LENGTH) {
+                return serialized;
+            }
+            int previewLength = MAX_MODEL_TOOL_OUTPUT_LENGTH - 160;
+            return objectMapper.writeValueAsString(Map.of(
+                    "truncated", true,
+                    "message", "工具结果过长，以下仅保留前部内容；如需完整数据请继续调用对应查询工具",
+                    "preview", serialized.substring(0, Math.max(0, previewLength))
+            ));
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("厨房助手工具结果序列化失败", exception);
         }
@@ -1229,9 +1269,12 @@ public class AgentService {
             SseEmitter emitter,
             AtomicBoolean cancelled,
             Long userId,
-            Long conversationId
+            Long conversationId,
+            Long targetRecipeSearchLogId
     ) {
-        RecipeGenerateResponse recipe = latestRecipe(userId, conversationId);
+        RecipeGenerateResponse recipe = targetRecipeSearchLogId == null
+                ? latestRecipe(userId, conversationId)
+                : recipeBySearchLogId(userId, conversationId, targetRecipeSearchLogId);
         if (recipe == null) {
             return new ToolExecution(
                     Map.of("status", "no_recipe", "message", "当前会话还没有可保存的菜谱"),
@@ -1408,6 +1451,7 @@ public class AgentService {
             AuthPrincipal principal,
             Long conversationId,
             String userMessage,
+            String previousRecipeTitle,
             JsonNode arguments
     ) {
         List<PantryItemResponse> pantryItems = pantryService.list(principal.id());
@@ -1435,8 +1479,8 @@ public class AgentService {
                 mealTypeArgument(arguments, requested),
                 goalArgument(arguments, preference.defaultGoal()),
                 "agent",
-                null,
-                null,
+                StringUtils.hasText(previousRecipeTitle) ? "换一种明显不同的家常做法" : null,
+                normalizeRecipeTitle(previousRecipeTitle),
                 dietPreference(preference),
                 true,
                 true
@@ -1486,8 +1530,30 @@ public class AgentService {
         if (messages.isEmpty()) {
             return null;
         }
+        return readRecipeCard(messages.get(0));
+    }
+
+    private RecipeGenerateResponse recipeBySearchLogId(
+            Long userId,
+            Long conversationId,
+            Long targetRecipeSearchLogId
+    ) {
+        List<AgentMessage> messages = messageMapper.findRecentByBlockType(userId, conversationId, "recipe-card", 50);
+        for (AgentMessage message : messages) {
+            RecipeGenerateResponse recipe = readRecipeCard(message);
+            if (recipe != null && Objects.equals(recipe.searchLogId(), targetRecipeSearchLogId)) {
+                return recipe;
+            }
+        }
+        return null;
+    }
+
+    private RecipeGenerateResponse readRecipeCard(AgentMessage message) {
+        if (message == null || !StringUtils.hasText(message.getContent())) {
+            return null;
+        }
         try {
-            return objectMapper.readValue(messages.get(0).getContent(), RecipeGenerateResponse.class);
+            return objectMapper.readValue(message.getContent(), RecipeGenerateResponse.class);
         } catch (JsonProcessingException exception) {
             return null;
         }
@@ -1706,7 +1772,12 @@ public class AgentService {
                     now,
                     state.intentResolutionAttempted(),
                     state.recipeSaveIntent(),
-                    state.intentResolutionSource()
+                    state.intentResolutionSource(),
+                    state.semanticRoutingAttempted(),
+                    state.semanticRoutingFailed(),
+                    state.semanticRoute(),
+                    state.targetRecipeSearchLogId(),
+                    state.previousRecipeTitle()
             );
             runStore.saveCheckpoint(new AgentCheckpoint(runId, checkpoint.version() + 1, failed, now));
         });
@@ -1785,6 +1856,14 @@ public class AgentService {
         if (request.confirmationId() == null && !StringUtils.hasText(request.message()) && attachment == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请先输入想问的内容");
         }
+    }
+
+    private Long normalizedTargetRecipeSearchLogId(Long value) {
+        return value != null && value > 0 ? value : null;
+    }
+
+    private String normalizeRecipeTitle(String value) {
+        return StringUtils.hasText(value) ? limit(value.trim(), 200) : null;
     }
 
     private void requireUser(AuthPrincipal principal) {

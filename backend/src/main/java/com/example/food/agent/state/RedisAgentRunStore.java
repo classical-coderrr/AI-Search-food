@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -23,8 +24,20 @@ public class RedisAgentRunStore implements AgentRunStore {
     private static final String CHECKPOINT_KEY_PREFIX = "agent:checkpoint:";
     private static final String STEPS_KEY_PREFIX = "agent:steps:";
     private static final String LEASE_KEY_PREFIX = "agent:lease:";
+    private static final String RECOVERY_INSTANCE_KEY_PREFIX = "agent:recovery:instance:";
     private static final Duration RUN_TTL = Duration.ofDays(7);
     private static final Duration CHECKPOINT_TTL = Duration.ofDays(7);
+    private static final RedisScript<Long> TAKEOVER_LEASE_SCRIPT = RedisScript.of("""
+            local current = redis.call('get', KEYS[1])
+            if current and string.sub(current, 1, 9) == 'recovery:' then
+                local instanceId = string.match(current, '^recovery:([^:]+):')
+                if instanceId and redis.call('exists', ARGV[3] .. instanceId) == 1 then
+                    return 0
+                end
+            end
+            redis.call('psetex', KEYS[1], ARGV[2], ARGV[1])
+            return 1
+            """, Long.class);
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
@@ -113,6 +126,23 @@ public class RedisAgentRunStore implements AgentRunStore {
                 leaseDuration
         );
         return Boolean.TRUE.equals(acquired);
+    }
+
+    @Override
+    public boolean tryTakeoverLease(String runId, String owner, Duration leaseDuration) {
+        Long acquired = redis.execute(
+                TAKEOVER_LEASE_SCRIPT,
+                List.of(LEASE_KEY_PREFIX + runId),
+                owner,
+                Long.toString(Math.max(1L, leaseDuration.toMillis())),
+                RECOVERY_INSTANCE_KEY_PREFIX
+        );
+        return Long.valueOf(1L).equals(acquired);
+    }
+
+    @Override
+    public void registerRecoveryInstance(String instanceId, Duration ttl) {
+        redis.opsForValue().set(RECOVERY_INSTANCE_KEY_PREFIX + instanceId, "alive", ttl);
     }
 
     @Override

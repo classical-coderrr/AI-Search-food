@@ -156,6 +156,10 @@ Agent 运行状态、步骤和 checkpoint 默认写入 Redis。Docker Compose �
 
 每次流式响应的 `conversation.ready` 事件会返回 `runId`。如果客户端连接中断，可通过 `GET /api/agent/runs/{runId}` 查询运行状态（`RUNNING`、`RECOVERING`、`WAITING_CONFIRMATION`、`COMPLETED` 或 `FAILED`）。
 
+管理员后台的 Agent 可观测面板会将运行指标按 5 分钟采样持久化到 MySQL，默认保留 30 天，并支持查看近 24 小时或近 7 天趋势。失败率、恢复占比和重复写入拦截率达到阈值且样本数足够时，会生成可去重的 Agent 告警；指标恢复后告警自动关闭。
+
+Agent 还提供脱敏自动评测集，默认每日检查保存菜谱、周菜单、库存写入、菜谱查询和普通聊天的工具路由边界；管理员可通过 `/api/admin/dashboard/agent-evaluation/run` 手动执行，并查询最近一次评测结果。
+
 需要确认的 Agent 写操作会在 `agent_confirmations` 中以幂等键登记。确认执行会先原子抢占为 `PROCESSING`，完成后写入 `CONFIRMED` 和结果消息；重复提交会直接返回已完成结果，不会再次执行。客户端或运维侧可通过 `GET /api/agent/confirmations/{confirmationId}` 查询 `PENDING`、`PROCESSING`、`CONFIRMED`、`UNKNOWN_REVIEW` 等状态。`PROCESSING` 超过 20 分钟会转为 `UNKNOWN_REVIEW`，系统不会自动重试可能已经产生副作用的写操作。
 
 小厨灵客户端会在打开时从服务端恢复最近会话；如果发现未完成的运行，会根据 `runId` 轮询 Redis 状态。服务重启或网络中断后，页面会显示恢复提示，并在运行完成后自动拉取最新消息。
