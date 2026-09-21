@@ -30,6 +30,8 @@ public class AgentRecoveryService {
     private final AgentService agentService;
     private final Duration staleAfter;
     private final Duration leaseDuration;
+    private static final Duration RECOVERY_INSTANCE_TTL = Duration.ofSeconds(90);
+    private final String instanceId = UUID.randomUUID().toString();
 
     public AgentRecoveryService(
             AgentRunStore runStore,
@@ -50,10 +52,18 @@ public class AgentRecoveryService {
     @Scheduled(fixedDelayString = "${app.agent.recovery.scan-delay:PT30S}")
     public void recoverStaleRuns() {
         Instant staleBefore = Instant.now().minus(staleAfter);
-        String owner = UUID.randomUUID().toString();
+        String owner = "recovery:" + instanceId + ":" + UUID.randomUUID();
         try {
+            runStore.registerRecoveryInstance(instanceId, RECOVERY_INSTANCE_TTL);
             for (AgentRun run : runStore.findRecoverable(staleBefore)) {
-                if (!runStore.tryAcquireLease(run.runId(), owner, leaseDuration)) {
+                boolean acquired = runStore.tryAcquireLease(run.runId(), owner, leaseDuration);
+                if (!acquired) {
+                    // A SIGKILL cannot release the worker lease. Once the run
+                    // is stale, atomically take over a non-recovery lease so
+                    // recovery is not delayed until the original TTL expires.
+                    acquired = runStore.tryTakeoverLease(run.runId(), owner, leaseDuration);
+                }
+                if (!acquired) {
                     continue;
                 }
                 try {

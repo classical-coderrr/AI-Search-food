@@ -23,6 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class AdminDashboardControllerTest {
 
     private static final String OVERVIEW_URL = "/api/admin/dashboard/overview";
+    private static final String AGENT_OBSERVABILITY_URL = "/api/admin/dashboard/agent-observability";
 
     @Autowired
     private MockMvc mockMvc;
@@ -68,5 +69,22 @@ class AdminDashboardControllerTest {
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    void adminCanReadAgentObservabilityWithoutSensitiveFields() throws Exception {
+        String adminToken = jwtService.generateToken(new AuthPrincipal(1L, "admin", AppRole.ADMIN));
+
+        mockMvc.perform(get(AGENT_OBSERVABILITY_URL)
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.generatedAt").exists())
+                .andExpect(jsonPath("$.data.metrics.runsStarted").isNumber())
+                .andExpect(jsonPath("$.data.metrics.runsRecovered").isNumber())
+                .andExpect(jsonPath("$.data.metrics.averageRunDurationMs").isNumber())
+                .andExpect(jsonPath("$.data.recovery.enabled").isBoolean())
+                .andExpect(content().string(not(containsString("apiKey"))))
+                .andExpect(content().string(not(containsString("password"))));
     }
 }

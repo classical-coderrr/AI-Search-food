@@ -139,7 +139,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import { Bell, CircleAlert, ClipboardList, Flame, Gauge, Home, LogIn, LogOut, MessageSquare, Settings, ShieldCheck, Users, UserCircle } from 'lucide-vue-next'
+import { Activity, Bell, CircleAlert, ClipboardList, Flame, Gauge, Home, LogIn, LogOut, MessageSquare, Settings, ShieldCheck, Users, UserCircle } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import { getUnreadNotificationCount } from './api/notifications'
 import { getMyAccount, loadMyAvatar } from './api/userAccount'
@@ -317,7 +317,8 @@ const adminPanelIcons = {
   'operation-logs': ClipboardList,
   'error-logs': CircleAlert,
   'user-management': Users,
-  'feature-suggestions': MessageSquare
+  'feature-suggestions': MessageSquare,
+  'agent-observability': Activity
 }
 const adminPanelNavigation = ADMIN_PANEL_NAVIGATION.map((item) => ({
   ...item,
