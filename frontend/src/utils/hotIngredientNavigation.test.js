@@ -25,7 +25,8 @@ test('管理员侧边栏按固定顺序显示全部面板', () => {
     'error-logs',
     'user-management',
     'feature-suggestions',
-    'agent-observability'
+    'agent-observability',
+    'agent-evaluation'
   ])
 })
 
@@ -45,6 +46,7 @@ test('管理员面板默认值、非法值和当前项匹配正确', () => {
   assert.equal(resolveAdminPanel('error-logs'), 'error-logs')
   assert.equal(resolveAdminPanel('user-management'), 'user-management')
   assert.equal(resolveAdminPanel('agent-observability'), 'agent-observability')
+  assert.equal(resolveAdminPanel('agent-evaluation'), 'agent-evaluation')
   assert.equal(resolveAdminPanel(undefined), 'overview')
   assert.equal(resolveAdminPanel('unknown'), 'overview')
   assert.equal(isAdminPanelActive('settings', 'settings'), true)

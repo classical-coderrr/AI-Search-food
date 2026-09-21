@@ -374,6 +374,12 @@ Agent SSE 事件现在同时写入 Redis（内存模式保留测试实现），�
 `agent.runs.duration`、`agent.events.persisted`、`agent.events.replayed` 和
 `agent.writes.duplicate`。事件与审计数据继续遵守脱敏边界，不写入 API Key、密码或完整用户原文。
 
+自动评测集由 `AgentEvaluationService` 提供，使用固定脱敏样例检查保存菜谱、周菜单、库存写入、菜谱查询和普通聊天的工具路由边界，不调用真实模型。管理员可通过
+`POST /api/admin/dashboard/agent-evaluation/run` 手动执行，并通过
+`GET /api/admin/dashboard/agent-evaluation` 查看最近一次结果；服务默认每日自动执行并将运行摘要和每个用例结果写入 MySQL。
+可通过 `AGENT_EVALUATION_ENABLED`、`AGENT_EVALUATION_INTERVAL` 和
+`AGENT_EVALUATION_INITIAL_DELAY` 控制调度。
+
 ## 8. 总验收标准
 
 以下条件全部满足后，才算完成本方案：

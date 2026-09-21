@@ -13,6 +13,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -24,6 +25,7 @@ class AdminDashboardControllerTest {
 
     private static final String OVERVIEW_URL = "/api/admin/dashboard/overview";
     private static final String AGENT_OBSERVABILITY_URL = "/api/admin/dashboard/agent-observability";
+    private static final String AGENT_EVALUATION_URL = "/api/admin/dashboard/agent-evaluation";
 
     @Autowired
     private MockMvc mockMvc;
@@ -90,5 +92,28 @@ class AdminDashboardControllerTest {
                 .andExpect(jsonPath("$.data.alerts").isArray())
                 .andExpect(content().string(not(containsString("apiKey"))))
                 .andExpect(content().string(not(containsString("password"))));
+    }
+
+    @Test
+    void adminCanRunAndReadAgentEvaluationSet() throws Exception {
+        String adminToken = jwtService.generateToken(new AuthPrincipal(1L, "admin", AppRole.ADMIN));
+
+        mockMvc.perform(post(AGENT_EVALUATION_URL + "/run")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.status").value("PASSED"))
+                .andExpect(jsonPath("$.data.totalCases").value(6))
+                .andExpect(jsonPath("$.data.passedCases").value(6))
+                .andExpect(jsonPath("$.data.failedCases").value(0))
+                .andExpect(jsonPath("$.data.cases.length()").value(6))
+                .andExpect(content().string(not(containsString("apiKey"))))
+                .andExpect(content().string(not(containsString("password"))));
+
+        mockMvc.perform(get(AGENT_EVALUATION_URL)
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PASSED"))
+                .andExpect(jsonPath("$.data.cases[0].inputMessage").exists());
     }
 }

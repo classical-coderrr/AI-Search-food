@@ -6,6 +6,7 @@ const ERROR_LOGS_PANEL = 'error-logs'
 const USER_MANAGEMENT_PANEL = 'user-management'
 const FEATURE_SUGGESTIONS_PANEL = 'feature-suggestions'
 const AGENT_OBSERVABILITY_PANEL = 'agent-observability'
+const AGENT_EVALUATION_PANEL = 'agent-evaluation'
 
 export const ADMIN_PANEL_NAVIGATION = Object.freeze([
   { panel: OVERVIEW_PANEL, label: '运营概览' },
@@ -15,7 +16,8 @@ export const ADMIN_PANEL_NAVIGATION = Object.freeze([
   { panel: ERROR_LOGS_PANEL, label: '异常日志' },
   { panel: USER_MANAGEMENT_PANEL, label: '用户管理' },
   { panel: FEATURE_SUGGESTIONS_PANEL, label: '功能建议' },
-  { panel: AGENT_OBSERVABILITY_PANEL, label: 'Agent 可观测' }
+  { panel: AGENT_OBSERVABILITY_PANEL, label: 'Agent 可观测' },
+  { panel: AGENT_EVALUATION_PANEL, label: 'Agent 评测' }
 ])
 
 const ADMIN_PANEL_VALUES = ADMIN_PANEL_NAVIGATION.map(({ panel }) => panel)

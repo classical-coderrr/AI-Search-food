@@ -124,6 +124,7 @@
       <AdminUserManagement v-else-if="activePanel === 'user-management'" />
       <AdminFeatureSuggestions v-else-if="activePanel === 'feature-suggestions'" />
       <AdminAgentObservabilityPanel v-else-if="activePanel === 'agent-observability'" />
+      <AdminAgentEvaluationPanel v-else-if="activePanel === 'agent-evaluation'" />
       <AdminOperationLogs v-else />
     </section>
   </main>
@@ -146,6 +147,7 @@ import AdminOperationsOverview from '../components/AdminOperationsOverview.vue'
 import AdminUserManagement from '../components/AdminUserManagement.vue'
 import AdminFeatureSuggestions from '../components/AdminFeatureSuggestions.vue'
 import AdminAgentObservabilityPanel from '../components/AdminAgentObservabilityPanel.vue'
+import AdminAgentEvaluationPanel from '../components/AdminAgentEvaluationPanel.vue'
 import { useAuthStore } from '../stores/auth'
 import { resolveAdminPanel } from '../utils/hotIngredientNavigation'
 import { defaultAiEndpoint, isAiPresetEndpoint } from '../utils/adminAiConfig'

@@ -53,6 +53,10 @@ app:
         failure-rate-threshold: ${AGENT_METRICS_ALERT_FAILURE_RATE:0.20}
         recovery-rate-threshold: ${AGENT_METRICS_ALERT_RECOVERY_RATE:0.20}
         duplicate-write-rate-threshold: ${AGENT_METRICS_ALERT_DUPLICATE_WRITE_RATE:0.10}
+    evaluation:
+      enabled: ${AGENT_EVALUATION_ENABLED:true}
+      interval: ${AGENT_EVALUATION_INTERVAL:P1D}
+      initial-delay: ${AGENT_EVALUATION_INITIAL_DELAY:PT2M}
     write-drill:
       enabled: ${AGENT_WRITE_DRILL_ENABLED:false}
       pause-before-business-write: ${AGENT_WRITE_DRILL_PAUSE_BEFORE:PT0S}

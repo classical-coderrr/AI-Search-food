@@ -71,6 +71,9 @@ agent.writes.duplicate
 
 历史采样写入 MySQL 的 `agent_metric_snapshots`，默认每 5 分钟保存一次并保留 30 天；采样保存的是当前间隔增量，跨容器重启后仍能连续展示趋势。告警写入 `agent_observability_alerts`，默认在至少 5 个运行样本后检查失败率、恢复占比和重复写入拦截率，告警恢复后自动标记为 `RESOLVED`，同一规则不会重复创建告警。
 
+自动评测集写入 `agent_evaluation_runs` 和 `agent_evaluation_case_results`，默认每日执行 6 个脱敏路由边界样例；管理员可通过 `POST /api/admin/dashboard/agent-evaluation/run` 立即执行，并通过 `GET /api/admin/dashboard/agent-evaluation` 查询最近一次的通过率、失败原因和实际暴露工具。
+调度可通过 `AGENT_EVALUATION_ENABLED`、`AGENT_EVALUATION_INTERVAL` 和 `AGENT_EVALUATION_INITIAL_DELAY` 调整。
+
 审计步骤只保存路由元数据、长度、来源和结果摘要；`AgentAuditSanitizer` 会对 Token、密码、API Key、手机号、Authorization 等字段脱敏。
 
 ## 面试展示重点
