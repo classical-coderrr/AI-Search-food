@@ -1,5 +1,7 @@
 package com.example.food.pantry;
 
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.pantry.dto.PantryItemRequest;
 import com.example.food.pantry.dto.PantryItemResponse;
 import com.example.food.pantry.dto.PantryExpirySummaryResponse;
@@ -18,7 +20,10 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 @Service
 public class UserPantryService {
@@ -29,14 +34,23 @@ public class UserPantryService {
     private final IngredientNormalizer ingredientNormalizer;
     private final IngredientAmountParser amountParser;
     private final Clock clock;
+    private final MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
 
     @Autowired
+    public UserPantryService(
+            UserPantryItemMapper mapper,
+            IngredientNormalizer ingredientNormalizer,
+            MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder
+    ) {
+        this(mapper, ingredientNormalizer, memoryEpisodeRecorder, new IngredientAmountParser(), Clock.systemDefaultZone());
+    }
+
     public UserPantryService(UserPantryItemMapper mapper, IngredientNormalizer ingredientNormalizer) {
-        this(mapper, ingredientNormalizer, new IngredientAmountParser(), Clock.systemDefaultZone());
+        this(mapper, ingredientNormalizer, null, new IngredientAmountParser(), Clock.systemDefaultZone());
     }
 
     UserPantryService(UserPantryItemMapper mapper, IngredientNormalizer ingredientNormalizer, Clock clock) {
-        this(mapper, ingredientNormalizer, new IngredientAmountParser(), clock);
+        this(mapper, ingredientNormalizer, null, new IngredientAmountParser(), clock);
     }
 
     UserPantryService(
@@ -45,10 +59,21 @@ public class UserPantryService {
             IngredientAmountParser amountParser,
             Clock clock
     ) {
+        this(mapper, ingredientNormalizer, null, amountParser, clock);
+    }
+
+    UserPantryService(
+            UserPantryItemMapper mapper,
+            IngredientNormalizer ingredientNormalizer,
+            MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder,
+            IngredientAmountParser amountParser,
+            Clock clock
+    ) {
         this.mapper = mapper;
         this.ingredientNormalizer = ingredientNormalizer;
         this.amountParser = amountParser;
         this.clock = clock;
+        this.memoryEpisodeRecorder = memoryEpisodeRecorder;
     }
 
     public List<PantryItemResponse> list(Long userId) {
@@ -213,7 +238,7 @@ public class UserPantryService {
 
     @Transactional
     public PantryItemResponse create(Long userId, PantryItemRequest request) {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(clock);
         UserPantryItem item = new UserPantryItem();
         item.setUserId(userId);
         applyRequest(item, request);
@@ -224,14 +249,38 @@ public class UserPantryService {
                 item.getExpireDate()
         );
         if (existing != null) {
+            BigDecimal beforeQuantity = existing.getQuantity();
+            String incomingUnit = item.getUnit();
             mergeQuantity(existing, item.getQuantity(), item.getUnit());
             existing.setUpdatedAt(now);
             mapper.updateById(existing);
+            recordDirectPantryEpisode(
+                    userId,
+                    "PANTRY_STOCK_IN",
+                    existing,
+                    item.getQuantity(),
+                    incomingUnit,
+                    beforeQuantity,
+                    existing.getQuantity(),
+                    now,
+                    new BigDecimal("0.3500")
+            );
             return toResponse(existing);
         }
         item.setCreatedAt(now);
         item.setUpdatedAt(now);
         mapper.insert(item);
+        recordDirectPantryEpisode(
+                userId,
+                "PANTRY_STOCK_IN",
+                item,
+                item.getQuantity(),
+                item.getUnit(),
+                null,
+                item.getQuantity(),
+                now,
+                new BigDecimal("0.3500")
+        );
         return toResponse(item);
     }
 
@@ -252,11 +301,67 @@ public class UserPantryService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前库存数量为空，无法消耗");
         }
 
+        BigDecimal beforeQuantity = item.getQuantity();
+        String unit = item.getUnit();
+        LocalDateTime now = LocalDateTime.now(clock);
         int updatedRows = mapper.consumeByUserIdAndId(userId, itemId, quantity);
         if (updatedRows == 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "库存数量不足");
         }
-        return toResponse(mapper.selectById(itemId));
+        UserPantryItem updated = mapper.selectById(itemId);
+        PantryItemResponse response = toResponse(updated);
+        recordDirectPantryEpisode(
+                userId,
+                "PANTRY_CONSUMED",
+                updated,
+                quantity,
+                unit,
+                beforeQuantity,
+                updated.getQuantity(),
+                now,
+                new BigDecimal("0.7000")
+        );
+        return response;
+    }
+
+    private void recordDirectPantryEpisode(
+            Long userId,
+            String episodeType,
+            UserPantryItem item,
+            BigDecimal quantity,
+            String unit,
+            BigDecimal beforeQuantity,
+            BigDecimal afterQuantity,
+            LocalDateTime occurredAt,
+            BigDecimal importance
+    ) {
+        if (memoryEpisodeRecorder == null || item == null) {
+            return;
+        }
+        String eventKey = "pantry-direct:" + episodeType + ":" + UUID.randomUUID();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("pantryItemId", item.getId());
+        payload.put("ingredientName", item.getIngredientName());
+        payload.put("category", item.getCategory());
+        payload.put("quantity", quantity);
+        payload.put("unit", unit);
+        payload.put("beforeQuantity", beforeQuantity);
+        payload.put("afterQuantity", afterQuantity);
+        payload.put("expireDate", item.getExpireDate());
+        memoryEpisodeRecorder.record(new MemoryBehaviorEpisodeEvent(
+                userId,
+                null,
+                null,
+                episodeType,
+                "PANTRY_DIRECT",
+                item.getId() == null ? null : String.valueOf(item.getId()),
+                eventKey,
+                eventKey,
+                episodeType + ": " + item.getIngredientName(),
+                payload,
+                occurredAt,
+                importance
+        ));
     }
 
     @Transactional

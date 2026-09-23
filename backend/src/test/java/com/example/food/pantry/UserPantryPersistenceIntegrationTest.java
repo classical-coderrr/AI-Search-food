@@ -85,6 +85,28 @@ class UserPantryPersistenceIntegrationTest {
     }
 
     @Test
+    void directPantryActionsPersistMemoryEpisodes() {
+        PantryItemResponse created = service.create(userId, new com.example.food.pantry.dto.PantryItemRequest(
+                "potato", "vegetable", new BigDecimal("2"), "piece", null
+        ));
+
+        service.consume(userId, created.id(), new BigDecimal("1"));
+
+        assertThat(jdbcTemplate.queryForList(
+                "SELECT episode_type FROM memory_episodes WHERE user_id = ? AND source_type = ? ORDER BY id",
+                String.class,
+                userId,
+                "PANTRY_DIRECT"
+        )).containsExactly("PANTRY_STOCK_IN", "PANTRY_CONSUMED");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_episodes WHERE user_id = ? AND source_type = ?",
+                Integer.class,
+                userId,
+                "PANTRY_DIRECT"
+        )).isEqualTo(2);
+    }
+
+    @Test
     void expirySummaryOnlyReturnsItemsWithStockWithinWarningWindow() {
         LocalDate today = LocalDate.now();
         jdbcTemplate.update(

@@ -1,5 +1,7 @@
 package com.example.food.pantry;
 
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.pantry.dto.PantryItemRequest;
 import com.example.food.pantry.dto.PantryItemResponse;
 import com.example.food.pantry.dto.PantryReadinessRequest;
@@ -30,11 +32,20 @@ class UserPantryServiceTest {
     @Mock
     private UserPantryItemMapper mapper;
 
+    @Mock
+    private MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
+
     private UserPantryService service;
 
     @BeforeEach
     void setUp() {
-        service = new UserPantryService(mapper, new IngredientNormalizer());
+        service = new UserPantryService(
+                mapper,
+                new IngredientNormalizer(),
+                memoryEpisodeRecorder,
+                new IngredientAmountParser(),
+                Clock.systemDefaultZone()
+        );
     }
 
     @Test
@@ -105,6 +116,25 @@ class UserPantryServiceTest {
     }
 
     @Test
+    void recordsEpisodeWhenDirectPantryItemIsCreated() {
+        PantryItemRequest request = new PantryItemRequest(
+                "tomato", "vegetable", new BigDecimal("2"), "piece", null
+        );
+
+        service.create(7L, request);
+
+        ArgumentCaptor<MemoryBehaviorEpisodeEvent> captor =
+                ArgumentCaptor.forClass(MemoryBehaviorEpisodeEvent.class);
+        verify(memoryEpisodeRecorder).record(captor.capture());
+        MemoryBehaviorEpisodeEvent event = captor.getValue();
+        assertThat(event.userId()).isEqualTo(7L);
+        assertThat(event.episodeType()).isEqualTo("PANTRY_STOCK_IN");
+        assertThat(event.sourceType()).isEqualTo("PANTRY_DIRECT");
+        assertThat(event.payload()).containsEntry("quantity", new BigDecimal("2"));
+        assertThat(event.payload()).containsEntry("ingredientName", "tomato");
+    }
+
+    @Test
     void mergesPantryItemsWithSameNameCategoryAndExpiryDate() {
         LocalDate expireDate = LocalDate.of(2026, 8, 31);
         UserPantryItem existing = item(5L, 7L, "番茄");
@@ -167,6 +197,29 @@ class UserPantryServiceTest {
 
         verify(mapper).consumeByUserIdAndId(7L, 5L, new BigDecimal("1.25"));
         assertThat(response.quantity()).isEqualByComparingTo("1.25");
+    }
+
+    @Test
+    void recordsEpisodeWhenDirectPantryItemIsConsumed() {
+        UserPantryItem existing = item(5L, 7L, "楦¤泲");
+        existing.setQuantity(new BigDecimal("2.50"));
+        existing.setUnit("piece");
+        UserPantryItem updated = item(5L, 7L, "楦¤泲");
+        updated.setQuantity(new BigDecimal("1.25"));
+        updated.setUnit("piece");
+        when(mapper.selectById(5L)).thenReturn(existing, updated);
+        when(mapper.consumeByUserIdAndId(7L, 5L, new BigDecimal("1.25"))).thenReturn(1);
+
+        service.consume(7L, 5L, new BigDecimal("1.25"));
+
+        ArgumentCaptor<MemoryBehaviorEpisodeEvent> captor =
+                ArgumentCaptor.forClass(MemoryBehaviorEpisodeEvent.class);
+        verify(memoryEpisodeRecorder).record(captor.capture());
+        MemoryBehaviorEpisodeEvent event = captor.getValue();
+        assertThat(event.episodeType()).isEqualTo("PANTRY_CONSUMED");
+        assertThat(event.sourceType()).isEqualTo("PANTRY_DIRECT");
+        assertThat(event.payload()).containsEntry("beforeQuantity", new BigDecimal("2.50"));
+        assertThat(event.payload()).containsEntry("afterQuantity", new BigDecimal("1.25"));
     }
 
     @Test
