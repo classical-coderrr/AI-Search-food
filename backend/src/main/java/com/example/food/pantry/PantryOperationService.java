@@ -5,6 +5,8 @@ import com.example.food.pantry.dto.CookingConsumptionRequest;
 import com.example.food.pantry.dto.CookingPreviewResponse;
 import com.example.food.pantry.dto.PantryOperationResponse;
 import com.example.food.pantry.dto.StockInRequest;
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.recipe.RecipeIngredient;
 import com.example.food.recipe.RecipeIngredientMapper;
 import com.example.food.recipe.RecipeRecord;
@@ -56,6 +58,7 @@ public class PantryOperationService {
     private final WeeklyMenuShoppingCheckMapper weeklyCheckMapper;
     private final ShoppingItemCheckMapper shoppingCheckMapper;
     private final IngredientNormalizer ingredientNormalizer;
+    private final MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
     private final IngredientAmountParser amountParser;
     private final Clock clock;
 
@@ -70,11 +73,12 @@ public class PantryOperationService {
             WeeklyMenuItemMapper weeklyItemMapper,
             WeeklyMenuShoppingCheckMapper weeklyCheckMapper,
             ShoppingItemCheckMapper shoppingCheckMapper,
-            IngredientNormalizer ingredientNormalizer
+            IngredientNormalizer ingredientNormalizer,
+            MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder
     ) {
         this(operationMapper, operationItemMapper, pantryMapper, recipeMapper, ingredientMapper,
                 weeklyPlanMapper, weeklyItemMapper, weeklyCheckMapper, shoppingCheckMapper,
-                ingredientNormalizer, new IngredientAmountParser(), Clock.systemDefaultZone());
+                ingredientNormalizer, memoryEpisodeRecorder, new IngredientAmountParser(), Clock.systemDefaultZone());
     }
 
     PantryOperationService(
@@ -91,6 +95,26 @@ public class PantryOperationService {
             IngredientAmountParser amountParser,
             Clock clock
     ) {
+        this(operationMapper, operationItemMapper, pantryMapper, recipeMapper, ingredientMapper,
+                weeklyPlanMapper, weeklyItemMapper, weeklyCheckMapper, shoppingCheckMapper,
+                ingredientNormalizer, null, amountParser, clock);
+    }
+
+    PantryOperationService(
+            PantryOperationMapper operationMapper,
+            PantryOperationItemMapper operationItemMapper,
+            UserPantryItemMapper pantryMapper,
+            RecipeRecordMapper recipeMapper,
+            RecipeIngredientMapper ingredientMapper,
+            WeeklyMenuPlanMapper weeklyPlanMapper,
+            WeeklyMenuItemMapper weeklyItemMapper,
+            WeeklyMenuShoppingCheckMapper weeklyCheckMapper,
+            ShoppingItemCheckMapper shoppingCheckMapper,
+            IngredientNormalizer ingredientNormalizer,
+            MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder,
+            IngredientAmountParser amountParser,
+            Clock clock
+    ) {
         this.operationMapper = operationMapper;
         this.operationItemMapper = operationItemMapper;
         this.pantryMapper = pantryMapper;
@@ -101,6 +125,7 @@ public class PantryOperationService {
         this.weeklyCheckMapper = weeklyCheckMapper;
         this.shoppingCheckMapper = shoppingCheckMapper;
         this.ingredientNormalizer = ingredientNormalizer;
+        this.memoryEpisodeRecorder = memoryEpisodeRecorder;
         this.amountParser = amountParser;
         this.clock = clock;
     }
@@ -210,7 +235,28 @@ public class PantryOperationService {
         }
         insertOperationItem(operation.getId(), item, stockInQuantity, unit, beforeQuantity, item.getQuantity(), request.ingredientName());
         markSourceReady(userId, request.sourceType(), request.sourceId(), name);
-        return toResponse(userId, operationMapper.selectById(operation.getId()));
+        PantryOperationResponse response = toResponse(userId, operationMapper.selectById(operation.getId()));
+        Map<String, Object> stockPayload = new LinkedHashMap<>();
+        stockPayload.put("operationId", operation.getId());
+        stockPayload.put("ingredientName", name);
+        stockPayload.put("quantity", stockInQuantity);
+        stockPayload.put("unit", unit);
+        stockPayload.put("beforeQuantity", beforeQuantity);
+        stockPayload.put("afterQuantity", item.getQuantity());
+        stockPayload.put("expireDate", request.expireDate());
+        stockPayload.put("sourceType", request.sourceType());
+        stockPayload.put("sourceId", request.sourceId());
+        recordPantryEpisode(
+                userId,
+                "PANTRY_STOCK_IN",
+                operation.getId(),
+                "pantry:stock-in:" + operation.getId(),
+                "冰箱入库：" + name,
+                stockPayload,
+                operation.getCreatedAt(),
+                new BigDecimal("0.3500")
+        );
+        return response;
     }
 
     @Transactional
@@ -248,7 +294,24 @@ public class PantryOperationService {
             }
             consumeIngredient(userId, operation, previewItem.ingredientName(), quantity, unit, previewItem.rawAmount());
         }
-        return toResponse(userId, operationMapper.selectById(operation.getId()));
+        PantryOperationResponse response = toResponse(userId, operationMapper.selectById(operation.getId()));
+        Map<String, Object> consumePayload = new LinkedHashMap<>();
+        consumePayload.put("operationId", operation.getId());
+        consumePayload.put("recipeId", request.recipeId());
+        consumePayload.put("recipeTitle", recipe.getTitle());
+        consumePayload.put("actualServings", actualServings);
+        consumePayload.put("items", response.items());
+        recordPantryEpisode(
+                userId,
+                "PANTRY_CONSUMED",
+                operation.getId(),
+                "pantry:consume:" + operation.getId(),
+                "烹饪消耗库存：" + recipe.getTitle(),
+                consumePayload,
+                operation.getCreatedAt(),
+                new BigDecimal("0.7000")
+        );
+        return response;
     }
 
     public List<PantryOperationResponse> recent(Long userId, int limit) {
@@ -297,7 +360,23 @@ public class PantryOperationService {
         if (operationMapper.markReversed(operationId, userId, PantryOperationStatus.REVERSED.name(), reversal.getId()) != 1) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "该库存变动已被其他操作撤销，请刷新后重试");
         }
-        return toResponse(userId, operationMapper.selectById(reversal.getId()));
+        PantryOperationResponse response = toResponse(userId, operationMapper.selectById(reversal.getId()));
+        recordPantryEpisode(
+                userId,
+                "PANTRY_OPERATION_REVERSED",
+                reversal.getId(),
+                "pantry:reversal:" + reversal.getId(),
+                "撤销冰箱变动：" + operationId,
+                Map.of(
+                        "operationId", operationId,
+                        "reversalOperationId", reversal.getId(),
+                        "operationType", operation.getOperationType(),
+                        "items", response.items()
+                ),
+                reversal.getCreatedAt(),
+                new BigDecimal("0.3000")
+        );
+        return response;
     }
 
     private void consumeIngredient(Long userId, PantryOperation operation, String name, BigDecimal requestedQuantity, String requestedUnit, String rawAmount) {
@@ -453,6 +532,35 @@ public class PantryOperationService {
                 && !operation.getCreatedAt().plusMinutes(UNDO_WINDOW_MINUTES).isBefore(LocalDateTime.now(clock))
                 && noLaterOperation;
         return new PantryOperationResponse(operation.getId(), operation.getOperationType(), operation.getSourceType(), operation.getSourceId(), operation.getStatus(), operation.getActualServings(), operation.getCreatedAt(), operation.getReversedAt(), items, undoable);
+    }
+
+    private void recordPantryEpisode(
+            Long userId,
+            String episodeType,
+            Long sourceId,
+            String eventKey,
+            String summary,
+            Map<String, Object> payload,
+            LocalDateTime occurredAt,
+            BigDecimal importance
+    ) {
+        if (memoryEpisodeRecorder == null) {
+            return;
+        }
+        memoryEpisodeRecorder.record(new MemoryBehaviorEpisodeEvent(
+                userId,
+                null,
+                null,
+                episodeType,
+                "PANTRY_OPERATION",
+                String.valueOf(sourceId),
+                eventKey,
+                eventKey,
+                summary,
+                payload,
+                occurredAt,
+                importance
+        ));
     }
 
     private String canonicalRequired(String value) { String name = canonicalName(value); if (!StringUtils.hasText(name)) throw badRequest("食材名称无效"); return name; }

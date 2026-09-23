@@ -2,6 +2,8 @@ package com.example.food.recipe;
 
 import com.example.food.ai.recipe.dto.RecipeGenerateRequest;
 import com.example.food.ai.recipe.dto.RecipeGenerateResponse;
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.security.AppRole;
 import com.example.food.security.AuthPrincipal;
 import com.example.food.stats.IngredientNormalizer;
@@ -15,7 +17,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class SearchLogService {
@@ -27,6 +32,24 @@ public class SearchLogService {
     private final IngredientNormalizer ingredientNormalizer;
     private final ObjectMapper objectMapper;
     private final IngredientImageService ingredientImageService;
+    private final MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SearchLogService(
+            SearchLogMapper searchLogMapper,
+            SearchLogIngredientMapper searchLogIngredientMapper,
+            IngredientNormalizer ingredientNormalizer,
+            ObjectMapper objectMapper,
+            IngredientImageService ingredientImageService,
+            MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder
+    ) {
+        this.searchLogMapper = searchLogMapper;
+        this.searchLogIngredientMapper = searchLogIngredientMapper;
+        this.ingredientNormalizer = ingredientNormalizer;
+        this.objectMapper = objectMapper;
+        this.ingredientImageService = ingredientImageService;
+        this.memoryEpisodeRecorder = memoryEpisodeRecorder;
+    }
 
     public SearchLogService(
             SearchLogMapper searchLogMapper,
@@ -35,11 +58,8 @@ public class SearchLogService {
             ObjectMapper objectMapper,
             IngredientImageService ingredientImageService
     ) {
-        this.searchLogMapper = searchLogMapper;
-        this.searchLogIngredientMapper = searchLogIngredientMapper;
-        this.ingredientNormalizer = ingredientNormalizer;
-        this.objectMapper = objectMapper;
-        this.ingredientImageService = ingredientImageService;
+        this(searchLogMapper, searchLogIngredientMapper, ingredientNormalizer, objectMapper,
+                ingredientImageService, null);
     }
 
     @Transactional
@@ -75,7 +95,41 @@ public class SearchLogService {
                     .map(IngredientNormalizer.NormalizedIngredient::canonicalName)
                     .toList());
         }
+        recordSearchEpisode(searchLog, ingredients);
         return searchLog.getId();
+    }
+
+    private void recordSearchEpisode(
+            SearchLog searchLog,
+            List<IngredientNormalizer.NormalizedIngredient> ingredients
+    ) {
+        if (memoryEpisodeRecorder == null || searchLog.getUserId() == null) {
+            return;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("queryText", searchLog.getQueryText());
+        payload.put("inputType", searchLog.getInputType());
+        payload.put("ingredients", ingredients.stream()
+                .map(IngredientNormalizer.NormalizedIngredient::canonicalName)
+                .toList());
+        payload.put("resultTitle", searchLog.getResultTitle());
+        payload.put("resultIngredients", searchLog.getResultIngredients());
+        payload.put("mealType", searchLog.getMealType());
+        payload.put("goal", searchLog.getGoal());
+        memoryEpisodeRecorder.record(new MemoryBehaviorEpisodeEvent(
+                searchLog.getUserId(),
+                null,
+                null,
+                "RECIPE_SEARCH",
+                "SEARCH_LOG",
+                String.valueOf(searchLog.getId()),
+                "search:" + searchLog.getId(),
+                "search:" + searchLog.getId(),
+                "搜索菜谱：" + (searchLog.getQueryText() == null ? "未填写食材" : searchLog.getQueryText()),
+                payload,
+                searchLog.getCreatedAt(),
+                new BigDecimal("0.2000")
+        ));
     }
 
     private SearchLogIngredient toIngredient(

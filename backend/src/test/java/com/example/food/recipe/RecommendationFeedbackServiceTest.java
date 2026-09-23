@@ -1,5 +1,7 @@
 package com.example.food.recipe;
 
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.recipe.dto.RecommendationFeedbackResponse;
 import com.example.food.recipe.dto.RecommendationReactionRequest;
 import com.example.food.security.AppRole;
@@ -20,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -35,6 +38,9 @@ class RecommendationFeedbackServiceTest {
     @Mock
     private RecipeRecordMapper recipeRecordMapper;
 
+    @Mock
+    private MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
+
     private RecommendationFeedbackService service;
     private final AuthPrincipal principal = new AuthPrincipal(7L, "13800138000", AppRole.USER);
 
@@ -44,7 +50,9 @@ class RecommendationFeedbackServiceTest {
                 feedbackMapper,
                 searchLogMapper,
                 recipeRecordMapper,
-                new ObjectMapper()
+                null,
+                new ObjectMapper(),
+                memoryEpisodeRecorder
         );
     }
 
@@ -80,6 +88,7 @@ class RecommendationFeedbackServiceTest {
         RecommendationFeedbackResponse cleared = service.clearReaction(11L, principal, null);
         assertThat(cleared.reaction()).isNull();
         verify(feedbackMapper).deleteById(99L);
+        verify(memoryEpisodeRecorder, times(3)).record(any(MemoryBehaviorEpisodeEvent.class));
     }
 
     @Test

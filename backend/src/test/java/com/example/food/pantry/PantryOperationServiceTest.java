@@ -1,5 +1,7 @@
 package com.example.food.pantry;
 
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.food.recipe.RecipeIngredient;
 import com.example.food.recipe.RecipeIngredientMapper;
@@ -41,6 +43,7 @@ class PantryOperationServiceTest {
     @Mock private WeeklyMenuItemMapper weeklyItemMapper;
     @Mock private WeeklyMenuShoppingCheckMapper weeklyCheckMapper;
     @Mock private ShoppingItemCheckMapper shoppingCheckMapper;
+    @Mock private MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
 
     private PantryOperationService service;
 
@@ -49,7 +52,7 @@ class PantryOperationServiceTest {
         Clock clock = Clock.fixed(LocalDate.of(2026, 9, 1).atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant(), ZoneId.of("Asia/Shanghai"));
         service = new PantryOperationService(operationMapper, operationItemMapper, pantryMapper, recipeMapper,
                 ingredientMapper, weeklyPlanMapper, weeklyItemMapper, weeklyCheckMapper, shoppingCheckMapper,
-                new IngredientNormalizer(), new IngredientAmountParser(), clock);
+                new IngredientNormalizer(), memoryEpisodeRecorder, new IngredientAmountParser(), clock);
     }
 
     @Test
@@ -134,6 +137,7 @@ class PantryOperationServiceTest {
 
         assertThat(legacyBatch.getQuantity()).isEqualByComparingTo("0.00");
         verify(pantryMapper).updateById(legacyBatch);
+        verify(memoryEpisodeRecorder).record(any(MemoryBehaviorEpisodeEvent.class));
     }
 
     private UserPantryItem pantry(Long id, String name, String quantity, String unit, LocalDate expireDate) {

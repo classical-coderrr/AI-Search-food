@@ -1,6 +1,8 @@
 package com.example.food.review;
 
 import com.example.food.ai.qwen.QwenVisionClient;
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.recipe.RecipeRecord;
 import com.example.food.recipe.RecipeRecordMapper;
 import com.example.food.review.dto.FinishedDishReviewRequest;
@@ -49,6 +51,9 @@ class FinishedDishReviewServiceTest {
     @Mock
     private QwenVisionClient qwenVisionClient;
 
+    @Mock
+    private MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
+
     private FinishedDishReviewService service;
 
     @BeforeEach
@@ -59,7 +64,8 @@ class FinishedDishReviewServiceTest {
                 recipeRecordMapper,
                 fileStorage,
                 qwenVisionClient,
-                new ObjectMapper()
+                new ObjectMapper(),
+                memoryEpisodeRecorder
         );
     }
 
@@ -115,6 +121,7 @@ class FinishedDishReviewServiceTest {
         verify(reviewMapper).insert(reviewCaptor.capture());
         assertThat(reviewCaptor.getValue().getUploadedFileId()).isEqualTo(41L);
         assertThat(reviewCaptor.getValue().getReviewResult()).contains("番茄炒蛋");
+        verify(memoryEpisodeRecorder).record(any(MemoryBehaviorEpisodeEvent.class));
     }
 
     @Test

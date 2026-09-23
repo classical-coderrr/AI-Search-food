@@ -1,6 +1,8 @@
 package com.example.food.recipe.collection;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.recipe.RecipeRecord;
 import com.example.food.recipe.RecipeRecordMapper;
 import com.example.food.recipe.collection.dto.BatchOperationFailure;
@@ -24,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -52,6 +55,7 @@ public class SavedRecipeCollectionService {
     private final RecipeTagMapper tagMapper;
     private final RecipeRecordTagMapper recordTagMapper;
     private final UserSecurityLogService securityLogService;
+    private final MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
     private final Clock clock;
 
     @Autowired
@@ -62,7 +66,8 @@ public class SavedRecipeCollectionService {
             RecipeRecordMapper recipeRecordMapper,
             RecipeTagMapper tagMapper,
             RecipeRecordTagMapper recordTagMapper,
-            UserSecurityLogService securityLogService
+            UserSecurityLogService securityLogService,
+            MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder
     ) {
         this(
                 collectionMapper,
@@ -72,6 +77,7 @@ public class SavedRecipeCollectionService {
                 tagMapper,
                 recordTagMapper,
                 securityLogService,
+                memoryEpisodeRecorder,
                 Clock.systemDefaultZone()
         );
     }
@@ -86,6 +92,21 @@ public class SavedRecipeCollectionService {
             UserSecurityLogService securityLogService,
             Clock clock
     ) {
+        this(collectionMapper, collectionItemMapper, savedRecipeMapper, recipeRecordMapper, tagMapper,
+                recordTagMapper, securityLogService, null, clock);
+    }
+
+    SavedRecipeCollectionService(
+            RecipeCollectionMapper collectionMapper,
+            RecipeCollectionItemMapper collectionItemMapper,
+            SavedRecipeCollectionMapper savedRecipeMapper,
+            RecipeRecordMapper recipeRecordMapper,
+            RecipeTagMapper tagMapper,
+            RecipeRecordTagMapper recordTagMapper,
+            UserSecurityLogService securityLogService,
+            MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder,
+            Clock clock
+    ) {
         this.collectionMapper = collectionMapper;
         this.collectionItemMapper = collectionItemMapper;
         this.savedRecipeMapper = savedRecipeMapper;
@@ -93,6 +114,7 @@ public class SavedRecipeCollectionService {
         this.tagMapper = tagMapper;
         this.recordTagMapper = recordTagMapper;
         this.securityLogService = securityLogService;
+        this.memoryEpisodeRecorder = memoryEpisodeRecorder;
         this.clock = clock;
     }
 
@@ -321,9 +343,11 @@ public class SavedRecipeCollectionService {
         int success = 0;
         for (Long recipeId : recipeIds) {
             try {
+                RecipeRecord recipe = recipeRecordMapper.selectById(recipeId);
                 if (recipeRecordMapper.deleteOwnedRecipe(recipeId, userId) == 0) {
                     throw new ResponseStatusException(HttpStatus.NOT_FOUND, "菜谱不存在");
                 }
+                recordRecipeUnsaved(userId, recipeId, recipe);
                 success++;
             } catch (RuntimeException exception) {
                 failures.add(new BatchOperationFailure(recipeId, reasonOf(exception)));
@@ -332,6 +356,30 @@ public class SavedRecipeCollectionService {
         securityLogService.record(userId, UserSecurityLogService.BATCH_SAVED_RECIPE_CHANGE,
                 "/api/users/me/saved-recipes/batch", "success=" + success + "; failure=" + failures.size());
         return new BatchOperationResponse(success, failures.size(), failures);
+    }
+
+    private void recordRecipeUnsaved(Long userId, Long recipeId, RecipeRecord recipe) {
+        if (memoryEpisodeRecorder == null) {
+            return;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("recipeId", recipeId);
+        payload.put("title", recipe == null ? null : recipe.getTitle());
+        payload.put("searchLogId", recipe == null ? null : recipe.getSearchLogId());
+        memoryEpisodeRecorder.record(new MemoryBehaviorEpisodeEvent(
+                userId,
+                null,
+                null,
+                "RECIPE_UNSAVED",
+                "RECIPE_RECORD",
+                String.valueOf(recipeId),
+                "recipe-unsaved:" + recipeId,
+                "recipe-unsaved:" + recipeId,
+                "取消收藏菜谱：" + (recipe == null ? recipeId : recipe.getTitle()),
+                payload,
+                now(),
+                new BigDecimal("0.6500")
+        ));
     }
 
     RecipeCollection ensureDefaultCollection(Long userId) {

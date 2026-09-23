@@ -2,6 +2,8 @@ package com.example.food.recipe;
 
 import com.example.food.ai.recipe.dto.RecipeGenerateRequest;
 import com.example.food.ai.recipe.dto.RecipeGenerateResponse;
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.security.AppRole;
 import com.example.food.security.AuthPrincipal;
 import com.example.food.stats.IngredientNormalizer;
@@ -34,6 +36,9 @@ class SearchLogServiceTest {
     @Mock
     private IngredientImageService ingredientImageService;
 
+    @Mock
+    private MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
+
     private SearchLogService searchLogService;
 
     @BeforeEach
@@ -43,7 +48,8 @@ class SearchLogServiceTest {
                 searchLogIngredientMapper,
                 new IngredientNormalizer(),
                 new ObjectMapper(),
-                ingredientImageService
+                ingredientImageService,
+                memoryEpisodeRecorder
         );
         doAnswer(invocation -> {
             SearchLog searchLog = invocation.getArgument(0);
@@ -78,6 +84,8 @@ class SearchLogServiceTest {
         assertThat(saved.getAiModel()).isEqualTo("qwen:qwen-plus");
         org.mockito.Mockito.verify(ingredientImageService)
                 .ensureQueuedAfterSearch(List.of("番茄", "鸡蛋"));
+        org.mockito.Mockito.verify(memoryEpisodeRecorder)
+                .record(org.mockito.ArgumentMatchers.any(MemoryBehaviorEpisodeEvent.class));
     }
 
     @Test

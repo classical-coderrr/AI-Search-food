@@ -1,6 +1,8 @@
 package com.example.food.recipe;
 
 import com.example.food.ai.recipe.dto.RecipeGenerateResponse;
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.recipe.dto.RecipeHistoryDetailResponse;
 import com.example.food.recipe.dto.SaveRecipeRequest;
 import com.example.food.security.AppRole;
@@ -40,6 +42,9 @@ class SavedRecipeServiceTest {
     @Mock
     private RecipeStepMapper recipeStepMapper;
 
+    @Mock
+    private MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
+
     private SavedRecipeService savedRecipeService;
 
     @BeforeEach
@@ -49,7 +54,8 @@ class SavedRecipeServiceTest {
                 recipeRecordMapper,
                 recipeIngredientMapper,
                 recipeStepMapper,
-                new ObjectMapper()
+                new ObjectMapper(),
+                memoryEpisodeRecorder
         );
     }
 
@@ -86,6 +92,7 @@ class SavedRecipeServiceTest {
         assertThat(ingredientCaptor.getValue().getRecipeId()).isEqualTo(99L);
         assertThat(stepCaptor.getValue().getRecipeId()).isEqualTo(99L);
         assertThat(result.id()).isEqualTo(99L);
+        verify(memoryEpisodeRecorder).record(any(MemoryBehaviorEpisodeEvent.class));
     }
 
     @Test

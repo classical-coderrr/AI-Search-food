@@ -2,6 +2,8 @@ package com.example.food.recipe;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.food.ai.recipe.dto.RecipeGenerateResponse;
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.recipe.dto.RecipeHistoryDetailResponse;
 import com.example.food.recipe.dto.RecipeHistorySummaryResponse;
 import com.example.food.recipe.dto.SaveRecipeRequest;
@@ -18,7 +20,10 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
+import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class SavedRecipeService {
@@ -28,6 +33,24 @@ public class SavedRecipeService {
     private final RecipeIngredientMapper recipeIngredientMapper;
     private final RecipeStepMapper recipeStepMapper;
     private final ObjectMapper objectMapper;
+    private final MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SavedRecipeService(
+            SearchLogMapper searchLogMapper,
+            RecipeRecordMapper recipeRecordMapper,
+            RecipeIngredientMapper recipeIngredientMapper,
+            RecipeStepMapper recipeStepMapper,
+            ObjectMapper objectMapper,
+            MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder
+    ) {
+        this.searchLogMapper = searchLogMapper;
+        this.recipeRecordMapper = recipeRecordMapper;
+        this.recipeIngredientMapper = recipeIngredientMapper;
+        this.recipeStepMapper = recipeStepMapper;
+        this.objectMapper = objectMapper;
+        this.memoryEpisodeRecorder = memoryEpisodeRecorder;
+    }
 
     public SavedRecipeService(
             SearchLogMapper searchLogMapper,
@@ -36,11 +59,8 @@ public class SavedRecipeService {
             RecipeStepMapper recipeStepMapper,
             ObjectMapper objectMapper
     ) {
-        this.searchLogMapper = searchLogMapper;
-        this.recipeRecordMapper = recipeRecordMapper;
-        this.recipeIngredientMapper = recipeIngredientMapper;
-        this.recipeStepMapper = recipeStepMapper;
-        this.objectMapper = objectMapper;
+        this(searchLogMapper, recipeRecordMapper, recipeIngredientMapper, recipeStepMapper,
+                objectMapper, null);
     }
 
     @Transactional
@@ -122,6 +142,7 @@ public class SavedRecipeService {
 
         insertIngredients(record.getId(), request.ingredients());
         insertSteps(record.getId(), request.steps());
+        recordRecipeSaved(record, searchLog, recipe);
         return detailResponse(record, searchLog, recipe);
     }
 
@@ -151,9 +172,65 @@ public class SavedRecipeService {
 
     @Transactional
     public void delete(Long userId, Long recipeId) {
+        RecipeRecord existing = recipeRecordMapper.selectById(recipeId);
         if (recipeRecordMapper.deleteOwnedRecipe(recipeId, userId) == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "菜谱不存在");
         }
+        if (memoryEpisodeRecorder != null) {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("recipeId", recipeId);
+            payload.put("title", existing == null ? null : existing.getTitle());
+            payload.put("searchLogId", existing == null ? null : existing.getSearchLogId());
+            memoryEpisodeRecorder.record(new MemoryBehaviorEpisodeEvent(
+                    userId,
+                    null,
+                    null,
+                    "RECIPE_UNSAVED",
+                    "RECIPE_RECORD",
+                    String.valueOf(recipeId),
+                    "recipe-unsaved:" + recipeId,
+                    "recipe-unsaved:" + recipeId,
+                    "取消收藏菜谱：" + (existing == null ? recipeId : existing.getTitle()),
+                    payload,
+                    LocalDateTime.now(),
+                    new BigDecimal("0.6500")
+            ));
+        }
+    }
+
+    private void recordRecipeSaved(
+            RecipeRecord record,
+            SearchLog searchLog,
+            RecipeGenerateResponse recipe
+    ) {
+        if (memoryEpisodeRecorder == null || record.getUserId() == null) {
+            return;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("recipeId", record.getId());
+        payload.put("searchLogId", record.getSearchLogId());
+        payload.put("title", record.getTitle());
+        payload.put("queryText", searchLog == null ? null : searchLog.getQueryText());
+        payload.put("mealType", searchLog == null ? null : searchLog.getMealType());
+        payload.put("goal", searchLog == null ? null : searchLog.getGoal());
+        payload.put("ingredients", recipe.ingredients() == null ? List.of() : recipe.ingredients().stream()
+                .map(RecipeGenerateResponse.Ingredient::name)
+                .filter(StringUtils::hasText)
+                .toList());
+        memoryEpisodeRecorder.record(new MemoryBehaviorEpisodeEvent(
+                record.getUserId(),
+                null,
+                null,
+                "RECIPE_SAVED",
+                "RECIPE_RECORD",
+                String.valueOf(record.getId()),
+                "recipe-saved:" + record.getId(),
+                "recipe-saved:" + record.getId(),
+                "收藏菜谱：" + record.getTitle(),
+                payload,
+                record.getCreatedAt(),
+                new BigDecimal("0.6500")
+        ));
     }
 
     public RecipeHistoryDetailResponse detail(Long userId, Long recipeId) {

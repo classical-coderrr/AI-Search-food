@@ -2,6 +2,8 @@ package com.example.food.review;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.food.ai.qwen.QwenVisionClient;
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.recipe.RecipeRecord;
 import com.example.food.recipe.RecipeRecordMapper;
 import com.example.food.review.dto.FinishedDishReviewRequest;
@@ -19,7 +21,10 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
+import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class FinishedDishReviewService {
@@ -33,6 +38,26 @@ public class FinishedDishReviewService {
     private final FinishedDishReviewFileStorage fileStorage;
     private final QwenVisionClient qwenVisionClient;
     private final ObjectMapper objectMapper;
+    private final MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public FinishedDishReviewService(
+            FinishedDishReviewMapper reviewMapper,
+            UploadedFileMapper uploadedFileMapper,
+            RecipeRecordMapper recipeRecordMapper,
+            FinishedDishReviewFileStorage fileStorage,
+            QwenVisionClient qwenVisionClient,
+            ObjectMapper objectMapper,
+            MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder
+    ) {
+        this.reviewMapper = reviewMapper;
+        this.uploadedFileMapper = uploadedFileMapper;
+        this.recipeRecordMapper = recipeRecordMapper;
+        this.fileStorage = fileStorage;
+        this.qwenVisionClient = qwenVisionClient;
+        this.objectMapper = objectMapper;
+        this.memoryEpisodeRecorder = memoryEpisodeRecorder;
+    }
 
     public FinishedDishReviewService(
             FinishedDishReviewMapper reviewMapper,
@@ -42,12 +67,8 @@ public class FinishedDishReviewService {
             QwenVisionClient qwenVisionClient,
             ObjectMapper objectMapper
     ) {
-        this.reviewMapper = reviewMapper;
-        this.uploadedFileMapper = uploadedFileMapper;
-        this.recipeRecordMapper = recipeRecordMapper;
-        this.fileStorage = fileStorage;
-        this.qwenVisionClient = qwenVisionClient;
-        this.objectMapper = objectMapper;
+        this(reviewMapper, uploadedFileMapper, recipeRecordMapper, fileStorage, qwenVisionClient,
+                objectMapper, null);
     }
 
     @Transactional
@@ -98,12 +119,47 @@ public class FinishedDishReviewService {
             record.setAiModel(result.provider() + ":" + result.model());
             record.setCreatedAt(LocalDateTime.now());
             reviewMapper.insert(record);
+            recordFinishedDishReview(userId, record, request, result);
 
             return new FinishedDishReviewResponse(record.getId(), recipeId, result, true, record.getCreatedAt());
         } catch (RuntimeException exception) {
             fileStorage.deleteQuietly(storedFile.storedName());
             throw exception;
         }
+    }
+
+    private void recordFinishedDishReview(
+            Long userId,
+            FinishedDishReviewRecord record,
+            FinishedDishReviewRequest request,
+            FinishedDishReviewResult result
+    ) {
+        if (memoryEpisodeRecorder == null) {
+            return;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reviewId", record.getId());
+        payload.put("recipeId", record.getRecipeId());
+        payload.put("recipeTitle", result.recipeTitle());
+        payload.put("overallScore", result.overallScore());
+        payload.put("summary", result.summary());
+        payload.put("ingredients", request.ingredients());
+        payload.put("provider", result.provider());
+        payload.put("model", result.model());
+        memoryEpisodeRecorder.record(new MemoryBehaviorEpisodeEvent(
+                userId,
+                null,
+                null,
+                "FINISHED_DISH_REVIEW",
+                "FINISHED_DISH_REVIEW",
+                String.valueOf(record.getId()),
+                "finished-review:" + record.getId(),
+                "finished-review:" + record.getId(),
+                "成品菜评价：" + result.recipeTitle(),
+                payload,
+                record.getCreatedAt(),
+                new BigDecimal("0.8000")
+        ));
     }
 
     public List<FinishedDishReviewResponse> list(Long userId, Long recipeId, int limit) {

@@ -1,6 +1,8 @@
 package com.example.food.recipe;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.recipe.dto.RecommendationFeedbackResponse;
 import com.example.food.recipe.dto.RecommendationReactionRequest;
 import com.example.food.security.AppRole;
@@ -17,10 +19,13 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 @Service
 public class RecommendationFeedbackService {
@@ -37,6 +42,7 @@ public class RecommendationFeedbackService {
     private final RecipeRecordMapper recipeRecordMapper;
     private final RecipeIngredientMapper recipeIngredientMapper;
     private final ObjectMapper objectMapper;
+    private final MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
 
     @Autowired
     public RecommendationFeedbackService(
@@ -44,13 +50,15 @@ public class RecommendationFeedbackService {
             SearchLogMapper searchLogMapper,
             RecipeRecordMapper recipeRecordMapper,
             RecipeIngredientMapper recipeIngredientMapper,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder
     ) {
         this.feedbackMapper = feedbackMapper;
         this.searchLogMapper = searchLogMapper;
         this.recipeRecordMapper = recipeRecordMapper;
         this.recipeIngredientMapper = recipeIngredientMapper;
         this.objectMapper = objectMapper;
+        this.memoryEpisodeRecorder = memoryEpisodeRecorder;
     }
 
     public RecommendationFeedbackService(
@@ -59,7 +67,7 @@ public class RecommendationFeedbackService {
             RecipeRecordMapper recipeRecordMapper,
             ObjectMapper objectMapper
     ) {
-        this(feedbackMapper, searchLogMapper, recipeRecordMapper, null, objectMapper);
+        this(feedbackMapper, searchLogMapper, recipeRecordMapper, null, objectMapper, null);
     }
 
     public RecommendationFeedbackResponse get(
@@ -81,7 +89,7 @@ public class RecommendationFeedbackService {
             String anonymousId
     ) {
         requireUser(principal);
-        requireOwnedSearchLog(searchLogId, principal, anonymousId, true);
+        SearchLog searchLog = requireOwnedSearchLog(searchLogId, principal, anonymousId, true);
         String reaction = normalizeReaction(request == null ? null : request.reaction());
         RecommendationFeedback feedback = find(principal.id(), searchLogId);
         LocalDateTime now = LocalDateTime.now();
@@ -95,6 +103,7 @@ public class RecommendationFeedbackService {
             feedback.setReaction(reaction);
             feedback.setReactedAt(now);
             feedbackMapper.insert(feedback);
+            recordFeedbackEpisode(principal.id(), searchLog, feedback, "REACTION", reaction, now, new BigDecimal("0.7500"));
             return toResponse(feedback);
         }
         if (!reaction.equals(feedback.getReaction())) {
@@ -102,6 +111,7 @@ public class RecommendationFeedbackService {
             feedback.setReactedAt(now);
             feedback.setUpdatedAt(now);
             feedbackMapper.updateById(feedback);
+            recordFeedbackEpisode(principal.id(), searchLog, feedback, "REACTION", reaction, now, new BigDecimal("0.7500"));
         }
         return toResponse(feedback);
     }
@@ -113,19 +123,29 @@ public class RecommendationFeedbackService {
             String anonymousId
     ) {
         requireUser(principal);
-        requireOwnedSearchLog(searchLogId, principal, anonymousId, true);
+        SearchLog searchLog = requireOwnedSearchLog(searchLogId, principal, anonymousId, true);
         RecommendationFeedback feedback = find(principal.id(), searchLogId);
         if (feedback == null) {
             return RecommendationFeedbackResponse.empty(searchLogId);
         }
+        String previousReaction = feedback.getReaction();
         feedback.setReaction(null);
         feedback.setReactedAt(null);
         if (!Boolean.TRUE.equals(feedback.getCooked())) {
             feedbackMapper.deleteById(feedback.getId());
+            if (previousReaction != null) {
+                recordFeedbackEpisode(principal.id(), searchLog, feedback, "REACTION_CLEARED", previousReaction,
+                        LocalDateTime.now(), new BigDecimal("0.5500"));
+            }
             return RecommendationFeedbackResponse.empty(searchLogId);
         }
-        feedback.setUpdatedAt(LocalDateTime.now());
+        LocalDateTime now = LocalDateTime.now();
+        feedback.setUpdatedAt(now);
         feedbackMapper.updateById(feedback);
+        if (previousReaction != null) {
+            recordFeedbackEpisode(principal.id(), searchLog, feedback, "REACTION_CLEARED", previousReaction,
+                    now, new BigDecimal("0.5500"));
+        }
         return toResponse(feedback);
     }
 
@@ -136,7 +156,7 @@ public class RecommendationFeedbackService {
             String anonymousId
     ) {
         requireUser(principal);
-        requireOwnedSearchLog(searchLogId, principal, anonymousId, true);
+        SearchLog searchLog = requireOwnedSearchLog(searchLogId, principal, anonymousId, true);
         RecommendationFeedback feedback = find(principal.id(), searchLogId);
         LocalDateTime now = LocalDateTime.now();
         if (feedback == null) {
@@ -148,6 +168,7 @@ public class RecommendationFeedbackService {
             feedback.setCreatedAt(now);
             feedback.setUpdatedAt(now);
             feedbackMapper.insert(feedback);
+            recordFeedbackEpisode(principal.id(), searchLog, feedback, "COOKED", null, now, new BigDecimal("0.8500"));
             return toResponse(feedback);
         }
         if (!Boolean.TRUE.equals(feedback.getCooked())) {
@@ -155,6 +176,7 @@ public class RecommendationFeedbackService {
             feedback.setCookedAt(now);
             feedback.setUpdatedAt(now);
             feedbackMapper.updateById(feedback);
+            recordFeedbackEpisode(principal.id(), searchLog, feedback, "COOKED", null, now, new BigDecimal("0.8500"));
         }
         return toResponse(feedback);
     }
@@ -268,6 +290,43 @@ public class RecommendationFeedbackService {
                 feedback.getReactedAt(),
                 feedback.getCookedAt()
         );
+    }
+
+    private void recordFeedbackEpisode(
+            Long userId,
+            SearchLog searchLog,
+            RecommendationFeedback feedback,
+            String action,
+            String reaction,
+            LocalDateTime occurredAt,
+            BigDecimal importance
+    ) {
+        if (memoryEpisodeRecorder == null || searchLog == null || feedback == null) {
+            return;
+        }
+        String feedbackId = String.valueOf(feedback.getId());
+        String eventKey = "feedback:" + feedbackId + ":" + action + ":" + occurredAt;
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("action", action);
+        payload.put("reaction", reaction);
+        payload.put("cooked", Boolean.TRUE.equals(feedback.getCooked()));
+        payload.put("searchLogId", searchLog.getId());
+        payload.put("recipeTitle", searchLog.getResultTitle());
+        payload.put("ingredients", descriptors(searchLog, userId));
+        memoryEpisodeRecorder.record(new MemoryBehaviorEpisodeEvent(
+                userId,
+                null,
+                null,
+                "RECIPE_FEEDBACK",
+                "RECOMMENDATION_FEEDBACK",
+                feedbackId,
+                eventKey,
+                eventKey,
+                action + "：" + (searchLog.getResultTitle() == null ? searchLog.getId() : searchLog.getResultTitle()),
+                payload,
+                occurredAt,
+                importance
+        ));
     }
 
     private List<String> descriptors(SearchLog searchLog, Long userId) {
