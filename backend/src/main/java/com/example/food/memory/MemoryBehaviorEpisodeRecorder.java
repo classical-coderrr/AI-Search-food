@@ -6,6 +6,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 /**
@@ -20,11 +22,21 @@ public class MemoryBehaviorEpisodeRecorder {
 
     private final MemoryEpisodeService episodeService;
     private final ObjectMapper objectMapper;
+    private final MemoryCandidateService candidateService;
+
+    public MemoryBehaviorEpisodeRecorder(MemoryEpisodeService episodeService, ObjectMapper objectMapper) {
+        this(episodeService, objectMapper, (MemoryCandidateService) null);
+    }
 
     @Autowired
-    public MemoryBehaviorEpisodeRecorder(MemoryEpisodeService episodeService, ObjectMapper objectMapper) {
+    MemoryBehaviorEpisodeRecorder(
+            MemoryEpisodeService episodeService,
+            ObjectMapper objectMapper,
+            MemoryCandidateService candidateService
+    ) {
         this.episodeService = episodeService;
         this.objectMapper = objectMapper;
+        this.candidateService = candidateService;
     }
 
     public void record(MemoryBehaviorEpisodeEvent event) {
@@ -40,7 +52,7 @@ public class MemoryBehaviorEpisodeRecorder {
         }
 
         try {
-            episodeService.record(event.userId(), new MemoryEpisodeCommand(
+            MemoryEpisodeService.RecordResult result = episodeService.record(event.userId(), new MemoryEpisodeCommand(
                     event.sessionId(),
                     event.conversationId(),
                     event.episodeType(),
@@ -53,6 +65,7 @@ public class MemoryBehaviorEpisodeRecorder {
                     event.occurredAt(),
                     event.importance()
             ));
+            scheduleCandidateExtraction(event.userId(), result);
         } catch (JsonProcessingException exception) {
             log.error("记忆行为事件序列化失败 userId={}, episodeType={}, sourceId={}",
                     event.userId(), event.episodeType(), event.sourceId(), exception);
@@ -60,5 +73,30 @@ public class MemoryBehaviorEpisodeRecorder {
             log.error("记忆行为事件保存失败 userId={}, episodeType={}, sourceId={}",
                     event.userId(), event.episodeType(), event.sourceId(), exception);
         }
+    }
+
+    private void scheduleCandidateExtraction(Long userId, MemoryEpisodeService.RecordResult result) {
+        if (candidateService == null || result == null || result.episode() == null
+                || result.episode().getId() == null) {
+            return;
+        }
+        Runnable extraction = () -> {
+            try {
+                candidateService.extractAndPersistAfterCommit(userId, result.episode().getId());
+            } catch (RuntimeException exception) {
+                log.error("记忆候选提取失败 userId={}, episodeId={}", userId,
+                        result.episode().getId(), exception);
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            extraction.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                extraction.run();
+            }
+        });
     }
 }

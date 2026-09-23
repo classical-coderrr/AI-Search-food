@@ -16,12 +16,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class MemoryBehaviorEpisodeRecorderTest {
 
     @Mock
     private MemoryEpisodeService episodeService;
+
+    @Mock
+    private MemoryCandidateService candidateService;
 
     @Test
     void convertsBusinessEventToTraceableEpisodeCommand() {
@@ -66,5 +70,23 @@ class MemoryBehaviorEpisodeRecorderTest {
 
         verify(episodeService, never()).record(org.mockito.ArgumentMatchers.anyLong(),
                 org.mockito.ArgumentMatchers.any(MemoryEpisodeCommand.class));
+    }
+
+    @Test
+    void extractsCandidateAfterEpisodeRecordWhenNoOuterTransactionExists() {
+        MemoryEpisode episode = new MemoryEpisode();
+        episode.setId(31L);
+        when(episodeService.record(eq(7L), org.mockito.ArgumentMatchers.any(MemoryEpisodeCommand.class)))
+                .thenReturn(new MemoryEpisodeService.RecordResult(episode, false));
+        MemoryBehaviorEpisodeRecorder recorder = new MemoryBehaviorEpisodeRecorder(
+                episodeService, new ObjectMapper(), candidateService);
+
+        recorder.record(new MemoryBehaviorEpisodeEvent(
+                7L, null, null, "RECIPE_FEEDBACK", "RECOMMENDATION_FEEDBACK", "feedback-1",
+                "event-1", "key-1", "喜欢番茄炒蛋", Map.of("action", "REACTION", "reaction", "LIKE"),
+                LocalDateTime.of(2026, 9, 22, 10, 0), new BigDecimal("0.7500")
+        ));
+
+        verify(candidateService).extractAndPersistAfterCommit(7L, 31L);
     }
 }
