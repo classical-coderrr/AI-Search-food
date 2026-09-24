@@ -75,6 +75,33 @@ class QwenAgentClientTest {
     }
 
     @Test
+    void mergesPerRequestMemoryContextIntoSystemPrompt() {
+        RestTemplate restTemplate = new RestTemplateBuilder().build();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        QwenProperties properties = properties("test-api-key");
+        QwenAgentClient client = new QwenAgentClient(restTemplate, new ObjectMapper(), properties);
+
+        server.expect(once(), requestTo(properties.endpoint()))
+                .andExpect(jsonPath("$.messages[0].role").value("system"))
+                .andExpect(jsonPath("$.messages[0].content")
+                        .value(org.hamcrest.Matchers.containsString("用户明确不吃香菜")))
+                .andExpect(jsonPath("$.messages[1].role").value("user"))
+                .andExpect(jsonPath("$.messages[1].content").value("推荐今晚晚餐"))
+                .andExpect(jsonPath("$.messages.length()").value(2))
+                .andRespond(withSuccess(
+                        "{\"choices\":[{\"message\":{\"content\":\"收到\"}}]}",
+                        MediaType.APPLICATION_JSON));
+
+        QwenAgentClient.AgentTurn turn = client.complete(List.of(
+                QwenAgentClient.ConversationMessage.system("[PERSONAL_MEMORY] 用户明确不吃香菜"),
+                QwenAgentClient.ConversationMessage.user("推荐今晚晚餐")
+        ), List.of());
+
+        assertThat(turn.content()).isEqualTo("收到");
+        server.verify();
+    }
+
+    @Test
     void disablesThinkingForQwen3AgentRequests() {
         RestTemplate restTemplate = new RestTemplateBuilder().build();
         MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
@@ -401,6 +428,7 @@ class QwenAgentClientTest {
                 .andExpect(header("x-api-key", "anthropic-api-key"))
                 .andExpect(header("anthropic-version", "2023-06-01"))
                 .andExpect(jsonPath("$.system").value(org.hamcrest.Matchers.containsString("当前服务器时间")))
+                .andExpect(jsonPath("$.system").value(org.hamcrest.Matchers.containsString("用户明确不吃香菜")))
                 .andExpect(jsonPath("$.messages[0].role").value("user"))
                 .andExpect(jsonPath("$.messages[0].content").value("我的库存有什么？"))
                 .andExpect(jsonPath("$.tools[0].name").value("pantry_list"))
@@ -415,7 +443,10 @@ class QwenAgentClientTest {
                         """, MediaType.APPLICATION_JSON));
 
         QwenAgentClient.AgentTurn turn = client.complete(
-                List.of(QwenAgentClient.ConversationMessage.user("我的库存有什么？")),
+                List.of(
+                        QwenAgentClient.ConversationMessage.system("[PERSONAL_MEMORY] 用户明确不吃香菜"),
+                        QwenAgentClient.ConversationMessage.user("我的库存有什么？")
+                ),
                 tools
         );
 

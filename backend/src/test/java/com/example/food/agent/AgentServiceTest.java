@@ -3,10 +3,12 @@ package com.example.food.agent;
 import com.example.food.ai.qwen.QwenAgentClient;
 import com.example.food.ai.recipe.dto.RecipeGenerateResponse;
 import com.example.food.agent.dto.AgentChatRequest;
+import com.example.food.agent.state.AgentEvent;
 import com.example.food.agent.state.AgentNode;
 import com.example.food.agent.state.AgentState;
 import com.example.food.agent.state.AgentStatus;
 import com.example.food.agent.state.AgentStep;
+import com.example.food.agent.state.InMemoryAgentEventStore;
 import com.example.food.agent.state.InMemoryAgentRunStore;
 import com.example.food.security.AppRole;
 import com.example.food.security.AuthPrincipal;
@@ -16,10 +18,13 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -160,6 +165,89 @@ class AgentServiceTest {
         assertThat(intentStep.status()).isEqualTo("SUCCESS");
         assertThat(objectMapper.readTree(intentStep.responseJson()).path("confidence").asDouble())
                 .isEqualTo(0.96d);
+    }
+
+    @Test
+    void injectsRetrievedMemoryIntoModelContextAndPersistsTheUsedMemoryTrace() throws Exception {
+        String query = "今晚推荐一道清淡的鸡肉晚餐";
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConversation conversation = new AgentConversation();
+        conversation.setId(42L);
+        conversation.setUserId(7L);
+        conversation.setTitle("厨房助手对话");
+        when(conversationMapper.findOwned(7L, 42L)).thenReturn(conversation);
+        when(conversationMapper.selectById(42L)).thenReturn(conversation);
+        when(messageMapper.findRecentTextMessages(7L, 42L, 12)).thenReturn(List.of());
+
+        QwenAgentClient qwenAgentClient = mock(QwenAgentClient.class);
+        when(qwenAgentClient.complete(anyList(), anyList())).thenReturn(new QwenAgentClient.AgentTurn(
+                "我会避开香菜，并按你过去明确表达的偏好推荐。", List.of(), "qwen", "qwen-plus"));
+        AgentIntentRecognizer intentRecognizer = mock(AgentIntentRecognizer.class);
+        when(intentRecognizer.recognize(eq(query), anyList())).thenReturn(
+                new AgentIntentRecognizer.RecognitionResult(false, false, "OTHER", 0.99d,
+                        "NONE", "not_candidate"));
+
+        RecordingRunStore runStore = new RecordingRunStore();
+        RecordingEventStore eventStore = new RecordingEventStore(objectMapper);
+        AgentMemoryContextProvider memoryContextProvider = mock(AgentMemoryContextProvider.class);
+        when(memoryContextProvider.prepare(eq(7L), eq(42L), anyString(), eq(query))).thenReturn(
+                new AgentMemoryContextProvider.PreparedContext(
+                        55L, "[PERSONAL_MEMORY]\n用户明确不吃香菜", "SUCCESS", null,
+                        "DINNER_MEMORY_RECALL", 1, 2, List.of(31L), List.of(44L, 45L),
+                        List.of(31L), List.of(44L), List.of(), List.of("PERSONAL_MEMORY"),
+                        List.of("长期偏好：不喜欢香菜", "历史行为：收藏过清淡鸡肉晚餐"),
+                        38, 1800, false));
+
+        AgentService service = new AgentService(
+                conversationMapper, messageMapper, null, new AgentToolRegistry(),
+                mock(AgentKitchenToolService.class), null, null, null, null, null, null,
+                null, null, null, null, null, qwenAgentClient, intentRecognizer,
+                new AgentIntentAuditService(runStore, objectMapper), objectMapper, runStore,
+                new com.example.food.agent.state.AgentFaultInjector(),
+                eventStore,
+                AgentMetrics.disabled(), memoryContextProvider);
+
+        service.stream(new AgentChatRequest(42L, query, null, null),
+                new AuthPrincipal(7L, "13800138000", AppRole.USER));
+
+        long deadline = System.currentTimeMillis() + 3000L;
+        while (!(runStore.steps.stream().anyMatch(step -> "memory.context".equals(step.action()))
+                && runStore.steps.stream().anyMatch(step -> "model.result".equals(step.action())))
+                && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+
+        org.mockito.ArgumentCaptor<List<QwenAgentClient.ConversationMessage>> messages =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(qwenAgentClient).complete(messages.capture(), anyList());
+        assertThat(messages.getValue()).anyMatch(message -> "system".equals(message.role())
+                && message.content().contains("用户明确不吃香菜"));
+        verify(memoryContextProvider).prepare(eq(7L), eq(42L), anyString(), eq(query));
+        assertThat(runStore.steps).filteredOn(step -> "memory.context".equals(step.action()))
+                .singleElement().satisfies(step -> {
+            assertThat(step.status()).isEqualTo("SUCCESS");
+            assertThat(step.responseJson()).contains("31", "44", "DINNER_MEMORY_RECALL");
+        });
+        assertThat(eventStore.captured).anySatisfy(event -> {
+            assertThat(event.event()).isEqualTo("tool.result");
+            assertThat(event.dataJson()).contains("长期偏好：不喜欢香菜");
+        });
+    }
+
+    private static final class RecordingEventStore extends InMemoryAgentEventStore {
+        private final List<AgentEvent> captured = new CopyOnWriteArrayList<>();
+
+        private RecordingEventStore(ObjectMapper objectMapper) {
+            super(objectMapper);
+        }
+
+        @Override
+        public AgentEvent append(String runId, String event, Object data) {
+            AgentEvent saved = super.append(runId, event, data);
+            captured.add(saved);
+            return saved;
+        }
     }
 
     private static final class RecordingRunStore extends InMemoryAgentRunStore {

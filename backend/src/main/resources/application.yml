@@ -31,6 +31,21 @@ mybatis-plus:
       id-type: auto
 
 app:
+  memory:
+    ranking:
+      semantic-weight: ${MEMORY_RANKING_SEMANTIC_WEIGHT:0.35}
+      recency-weight: ${MEMORY_RANKING_RECENCY_WEIGHT:0.20}
+      importance-weight: ${MEMORY_RANKING_IMPORTANCE_WEIGHT:0.15}
+      confidence-weight: ${MEMORY_RANKING_CONFIDENCE_WEIGHT:0.15}
+      feedback-weight: ${MEMORY_RANKING_FEEDBACK_WEIGHT:0.10}
+      context-weight: ${MEMORY_RANKING_CONTEXT_WEIGHT:0.05}
+      explicit-preference-half-life-days: ${MEMORY_EXPLICIT_HALF_LIFE_DAYS:3650}
+      implicit-preference-half-life-days: ${MEMORY_IMPLICIT_HALF_LIFE_DAYS:180}
+      short-term-trend-half-life-days: ${MEMORY_SHORT_TERM_HALF_LIFE_DAYS:30}
+      behavior-pattern-half-life-days: ${MEMORY_BEHAVIOR_HALF_LIFE_DAYS:365}
+      temporary-context-half-life-days: ${MEMORY_TEMPORARY_HALF_LIFE_DAYS:7}
+      candidate-limit: ${MEMORY_RETRIEVAL_CANDIDATE_LIMIT:200}
+      default-token-budget: ${MEMORY_CONTEXT_TOKEN_BUDGET:1800}
   agent:
     state-store: ${AGENT_STATE_STORE:redis}
     intent-recognition:

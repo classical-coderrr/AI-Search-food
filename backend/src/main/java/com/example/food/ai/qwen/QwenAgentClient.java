@@ -131,9 +131,11 @@ public class QwenAgentClient {
         }
 
         List<Map<String, Object>> messages = new ArrayList<>();
-        messages.add(Map.of("role", "system", "content", systemPrompt()));
+        messages.add(Map.of("role", "system", "content", systemPrompt(conversation)));
         if (conversation != null) {
-            conversation.forEach(message -> messages.add(message.toPayload()));
+            conversation.stream()
+                    .filter(message -> !"system".equalsIgnoreCase(message.role()))
+                    .forEach(message -> messages.add(message.toPayload()));
         }
 
         Map<String, Object> body = new LinkedHashMap<>();
@@ -160,7 +162,7 @@ public class QwenAgentClient {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", runtimeConfig.modelName());
         body.put("max_tokens", ANTHROPIC_AGENT_MAX_TOKENS);
-        body.put("system", systemPrompt());
+        body.put("system", systemPrompt(conversation));
         body.put("messages", anthropicMessages(conversation));
         if (tools != null && !tools.isEmpty()) {
             body.put("tools", tools.stream().map(this::anthropicTool).toList());
@@ -175,7 +177,9 @@ public class QwenAgentClient {
         }
         List<Map<String, Object>> messages = new ArrayList<>();
         for (ConversationMessage message : conversation) {
-            if ("tool".equals(message.role())) {
+            if ("system".equalsIgnoreCase(message.role())) {
+                continue;
+            } else if ("tool".equals(message.role())) {
                 messages.add(Map.of(
                         "role", "user",
                         "content", List.of(Map.of(
@@ -244,6 +248,18 @@ public class QwenAgentClient {
 
     private String systemPrompt() {
         return SYSTEM_PROMPT.formatted(ZonedDateTime.now(BUSINESS_ZONE).format(TIME_FORMATTER));
+    }
+
+    private String systemPrompt(List<ConversationMessage> conversation) {
+        String basePrompt = systemPrompt();
+        if (conversation == null) return basePrompt;
+        String additionalContext = conversation.stream()
+                .filter(message -> message != null && "system".equalsIgnoreCase(message.role()))
+                .map(ConversationMessage::content)
+                .filter(content -> content != null && !content.isBlank())
+                .map(String::trim)
+                .collect(java.util.stream.Collectors.joining("\n\n"));
+        return additionalContext.isBlank() ? basePrompt : basePrompt + "\n\n" + additionalContext;
     }
 
     private HttpHeaders headers(AiModelRuntimeConfig runtimeConfig) {
@@ -624,6 +640,10 @@ public class QwenAgentClient {
     ) {
         public static ConversationMessage user(String content) {
             return new ConversationMessage("user", content, List.of(), null);
+        }
+
+        public static ConversationMessage system(String content) {
+            return new ConversationMessage("system", content, List.of(), null);
         }
 
         public static ConversationMessage assistant(String content) {

@@ -23,20 +23,31 @@ public class MemoryBehaviorEpisodeRecorder {
     private final MemoryEpisodeService episodeService;
     private final ObjectMapper objectMapper;
     private final MemoryCandidateService candidateService;
+    private final MemoryConsolidationService consolidationService;
 
     public MemoryBehaviorEpisodeRecorder(MemoryEpisodeService episodeService, ObjectMapper objectMapper) {
-        this(episodeService, objectMapper, (MemoryCandidateService) null);
+        this(episodeService, objectMapper, null, null);
+    }
+
+    MemoryBehaviorEpisodeRecorder(
+            MemoryEpisodeService episodeService,
+            ObjectMapper objectMapper,
+            MemoryCandidateService candidateService
+    ) {
+        this(episodeService, objectMapper, candidateService, null);
     }
 
     @Autowired
     MemoryBehaviorEpisodeRecorder(
             MemoryEpisodeService episodeService,
             ObjectMapper objectMapper,
-            MemoryCandidateService candidateService
+            MemoryCandidateService candidateService,
+            MemoryConsolidationService consolidationService
     ) {
         this.episodeService = episodeService;
         this.objectMapper = objectMapper;
         this.candidateService = candidateService;
+        this.consolidationService = consolidationService;
     }
 
     public void record(MemoryBehaviorEpisodeEvent event) {
@@ -86,6 +97,15 @@ public class MemoryBehaviorEpisodeRecorder {
             } catch (RuntimeException exception) {
                 log.error("记忆候选提取失败 userId={}, episodeId={}", userId,
                         result.episode().getId(), exception);
+                return;
+            }
+            if (consolidationService != null) {
+                try {
+                    consolidationService.consolidateAfterCommit(userId);
+                } catch (RuntimeException exception) {
+                    log.error("记忆合并或画像重建失败 userId={}, episodeId={}", userId,
+                            result.episode().getId(), exception);
+                }
             }
         };
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {

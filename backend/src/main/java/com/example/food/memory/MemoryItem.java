@@ -7,34 +7,32 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
-@TableName("memory_candidates")
-public class MemoryCandidate {
+@TableName("memory_items")
+public class MemoryItem {
 
     @TableId(type = IdType.AUTO)
     private Long id;
     private Long userId;
-    private Long episodeId;
-    private Long sessionId;
-    private String candidateType;
-    private String entity;
+    private String memoryType;
+    private String canonicalEntity;
     private Long canonicalTagId;
     private String canonicalId;
-    private String canonicalEntity;
     private String canonicalCategory;
     private String canonicalGroupId;
-    private BigDecimal normalizationConfidence;
-    private String normalizationSource;
     private String preference;
-    private BigDecimal strength;
-    private BigDecimal confidence;
-    private String sourceType;
     private String scope;
     private String temporalType;
+    private BigDecimal strength;
+    private BigDecimal confidence;
+    private BigDecimal importance;
     private Integer evidenceCount;
-    private String extractionKey;
-    private String extractionModel;
-    private String promptVersion;
-    private LocalDateTime extractedAt;
+    private Integer occurrenceCount;
+    private Integer sourceCount;
+    private String sourceCandidateIdsJson;
+    private String sourceEpisodeIdsJson;
+    private LocalDateTime firstSeenAt;
+    private LocalDateTime lastSeenAt;
+    private String consolidationKey;
     private String status;
     private Integer version;
     private LocalDateTime deletedAt;
@@ -45,50 +43,46 @@ public class MemoryCandidate {
     public void setId(Long id) { this.id = id; }
     public Long getUserId() { return userId; }
     public void setUserId(Long userId) { this.userId = userId; }
-    public Long getEpisodeId() { return episodeId; }
-    public void setEpisodeId(Long episodeId) { this.episodeId = episodeId; }
-    public Long getSessionId() { return sessionId; }
-    public void setSessionId(Long sessionId) { this.sessionId = sessionId; }
-    public String getCandidateType() { return candidateType; }
-    public void setCandidateType(String candidateType) { this.candidateType = candidateType; }
-    public String getEntity() { return entity; }
-    public void setEntity(String entity) { this.entity = entity; }
+    public String getMemoryType() { return memoryType; }
+    public void setMemoryType(String memoryType) { this.memoryType = memoryType; }
+    public String getCanonicalEntity() { return canonicalEntity; }
+    public void setCanonicalEntity(String canonicalEntity) { this.canonicalEntity = canonicalEntity; }
     public Long getCanonicalTagId() { return canonicalTagId; }
     public void setCanonicalTagId(Long canonicalTagId) { this.canonicalTagId = canonicalTagId; }
     public String getCanonicalId() { return canonicalId; }
     public void setCanonicalId(String canonicalId) { this.canonicalId = canonicalId; }
-    public String getCanonicalEntity() { return canonicalEntity; }
-    public void setCanonicalEntity(String canonicalEntity) { this.canonicalEntity = canonicalEntity; }
     public String getCanonicalCategory() { return canonicalCategory; }
     public void setCanonicalCategory(String canonicalCategory) { this.canonicalCategory = canonicalCategory; }
     public String getCanonicalGroupId() { return canonicalGroupId; }
     public void setCanonicalGroupId(String canonicalGroupId) { this.canonicalGroupId = canonicalGroupId; }
-    public BigDecimal getNormalizationConfidence() { return normalizationConfidence; }
-    public void setNormalizationConfidence(BigDecimal normalizationConfidence) { this.normalizationConfidence = normalizationConfidence; }
-    public String getNormalizationSource() { return normalizationSource; }
-    public void setNormalizationSource(String normalizationSource) { this.normalizationSource = normalizationSource; }
     public String getPreference() { return preference; }
     public void setPreference(String preference) { this.preference = preference; }
-    public BigDecimal getStrength() { return strength; }
-    public void setStrength(BigDecimal strength) { this.strength = strength; }
-    public BigDecimal getConfidence() { return confidence; }
-    public void setConfidence(BigDecimal confidence) { this.confidence = confidence; }
-    public String getSourceType() { return sourceType; }
-    public void setSourceType(String sourceType) { this.sourceType = sourceType; }
     public String getScope() { return scope; }
     public void setScope(String scope) { this.scope = scope; }
     public String getTemporalType() { return temporalType; }
     public void setTemporalType(String temporalType) { this.temporalType = temporalType; }
+    public BigDecimal getStrength() { return strength; }
+    public void setStrength(BigDecimal strength) { this.strength = strength; }
+    public BigDecimal getConfidence() { return confidence; }
+    public void setConfidence(BigDecimal confidence) { this.confidence = confidence; }
+    public BigDecimal getImportance() { return importance; }
+    public void setImportance(BigDecimal importance) { this.importance = importance; }
     public Integer getEvidenceCount() { return evidenceCount; }
     public void setEvidenceCount(Integer evidenceCount) { this.evidenceCount = evidenceCount; }
-    public String getExtractionKey() { return extractionKey; }
-    public void setExtractionKey(String extractionKey) { this.extractionKey = extractionKey; }
-    public String getExtractionModel() { return extractionModel; }
-    public void setExtractionModel(String extractionModel) { this.extractionModel = extractionModel; }
-    public String getPromptVersion() { return promptVersion; }
-    public void setPromptVersion(String promptVersion) { this.promptVersion = promptVersion; }
-    public LocalDateTime getExtractedAt() { return extractedAt; }
-    public void setExtractedAt(LocalDateTime extractedAt) { this.extractedAt = extractedAt; }
+    public Integer getOccurrenceCount() { return occurrenceCount; }
+    public void setOccurrenceCount(Integer occurrenceCount) { this.occurrenceCount = occurrenceCount; }
+    public Integer getSourceCount() { return sourceCount; }
+    public void setSourceCount(Integer sourceCount) { this.sourceCount = sourceCount; }
+    public String getSourceCandidateIdsJson() { return sourceCandidateIdsJson; }
+    public void setSourceCandidateIdsJson(String sourceCandidateIdsJson) { this.sourceCandidateIdsJson = sourceCandidateIdsJson; }
+    public String getSourceEpisodeIdsJson() { return sourceEpisodeIdsJson; }
+    public void setSourceEpisodeIdsJson(String sourceEpisodeIdsJson) { this.sourceEpisodeIdsJson = sourceEpisodeIdsJson; }
+    public LocalDateTime getFirstSeenAt() { return firstSeenAt; }
+    public void setFirstSeenAt(LocalDateTime firstSeenAt) { this.firstSeenAt = firstSeenAt; }
+    public LocalDateTime getLastSeenAt() { return lastSeenAt; }
+    public void setLastSeenAt(LocalDateTime lastSeenAt) { this.lastSeenAt = lastSeenAt; }
+    public String getConsolidationKey() { return consolidationKey; }
+    public void setConsolidationKey(String consolidationKey) { this.consolidationKey = consolidationKey; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
     public Integer getVersion() { return version; }

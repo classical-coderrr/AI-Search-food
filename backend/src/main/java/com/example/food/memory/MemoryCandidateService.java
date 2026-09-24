@@ -30,6 +30,7 @@ public class MemoryCandidateService {
     private final MemoryEvidenceMapper evidenceMapper;
     private final MemoryEpisodeService episodeService;
     private final MemoryExtractor extractor;
+    private final TagNormalizationService tagNormalizationService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
@@ -39,9 +40,11 @@ public class MemoryCandidateService {
             MemoryEvidenceMapper evidenceMapper,
             MemoryEpisodeService episodeService,
             MemoryExtractor extractor,
+            TagNormalizationService tagNormalizationService,
             ObjectMapper objectMapper
     ) {
-        this(candidateMapper, evidenceMapper, episodeService, extractor, objectMapper, Clock.systemDefaultZone());
+        this(candidateMapper, evidenceMapper, episodeService, extractor, tagNormalizationService,
+                objectMapper, Clock.systemDefaultZone());
     }
 
     MemoryCandidateService(
@@ -49,6 +52,7 @@ public class MemoryCandidateService {
             MemoryEvidenceMapper evidenceMapper,
             MemoryEpisodeService episodeService,
             MemoryExtractor extractor,
+            TagNormalizationService tagNormalizationService,
             ObjectMapper objectMapper,
             Clock clock
     ) {
@@ -56,6 +60,7 @@ public class MemoryCandidateService {
         this.evidenceMapper = evidenceMapper;
         this.episodeService = episodeService;
         this.extractor = extractor;
+        this.tagNormalizationService = tagNormalizationService;
         this.objectMapper = objectMapper;
         this.clock = clock;
     }
@@ -86,11 +91,13 @@ public class MemoryCandidateService {
         int duplicateCount = 0;
         List<MemoryCandidate> candidates = new java.util.ArrayList<>();
         for (MemoryCandidateDraft draft : drafts) {
-            String extractionKey = extractionKey(episode, draft, prompt);
+            TagNormalizationResult normalization = tagNormalizationService.normalize(
+                    draft.candidateType(), draft.entity());
+            String extractionKey = extractionKey(episode, draft, normalization, prompt);
             MemoryCandidate candidate = candidateMapper.findOwnedByExtractionKey(userId, extractionKey);
             boolean duplicate = candidate != null;
             if (!duplicate) {
-                candidate = newCandidate(userId, episode, draft, extractionKey, model, prompt);
+                candidate = newCandidate(userId, episode, draft, normalization, extractionKey, model, prompt);
                 try {
                     candidateMapper.insert(candidate);
                 } catch (DuplicateKeyException exception) {
@@ -134,6 +141,7 @@ public class MemoryCandidateService {
             Long userId,
             MemoryEpisode episode,
             MemoryCandidateDraft draft,
+            TagNormalizationResult normalization,
             String extractionKey,
             String extractionModel,
             String promptVersion
@@ -144,6 +152,13 @@ public class MemoryCandidateService {
         candidate.setSessionId(episode.getSessionId());
         candidate.setCandidateType(draft.candidateType());
         candidate.setEntity(draft.entity());
+        candidate.setCanonicalTagId(normalization.canonicalTagId());
+        candidate.setCanonicalId(normalization.canonicalId());
+        candidate.setCanonicalEntity(normalization.canonicalName());
+        candidate.setCanonicalCategory(normalization.category());
+        candidate.setCanonicalGroupId(normalization.canonicalGroupId());
+        candidate.setNormalizationConfidence(normalization.confidence());
+        candidate.setNormalizationSource(normalization.source());
         candidate.setPreference(draft.preference());
         candidate.setStrength(draft.strength());
         candidate.setConfidence(draft.confidence());
@@ -196,9 +211,17 @@ public class MemoryCandidateService {
         }
     }
 
-    private String extractionKey(MemoryEpisode episode, MemoryCandidateDraft draft, String promptVersion) {
+    private String extractionKey(
+            MemoryEpisode episode,
+            MemoryCandidateDraft draft,
+            TagNormalizationResult normalization,
+            String promptVersion
+    ) {
+        String normalizedEntity = normalization.mapped()
+                ? normalization.canonicalId()
+                : tagNormalizationService.normalizeText(draft.entity());
         String raw = episode.getId() + "|" + promptVersion + "|"
-                + draft.candidateType() + "|" + draft.entity() + "|" + draft.preference();
+                + draft.candidateType() + "|" + normalizedEntity + "|" + draft.preference();
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(raw.getBytes(StandardCharsets.UTF_8));

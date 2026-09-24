@@ -27,6 +27,9 @@ class MemoryBehaviorEpisodeRecorderTest {
     @Mock
     private MemoryCandidateService candidateService;
 
+    @Mock
+    private MemoryConsolidationService consolidationService;
+
     @Test
     void convertsBusinessEventToTraceableEpisodeCommand() {
         MemoryBehaviorEpisodeRecorder recorder = new MemoryBehaviorEpisodeRecorder(episodeService, new ObjectMapper());
@@ -79,7 +82,7 @@ class MemoryBehaviorEpisodeRecorderTest {
         when(episodeService.record(eq(7L), org.mockito.ArgumentMatchers.any(MemoryEpisodeCommand.class)))
                 .thenReturn(new MemoryEpisodeService.RecordResult(episode, false));
         MemoryBehaviorEpisodeRecorder recorder = new MemoryBehaviorEpisodeRecorder(
-                episodeService, new ObjectMapper(), candidateService);
+                episodeService, new ObjectMapper(), candidateService, consolidationService);
 
         recorder.record(new MemoryBehaviorEpisodeEvent(
                 7L, null, null, "RECIPE_FEEDBACK", "RECOMMENDATION_FEEDBACK", "feedback-1",
@@ -88,5 +91,6 @@ class MemoryBehaviorEpisodeRecorderTest {
         ));
 
         verify(candidateService).extractAndPersistAfterCommit(7L, 31L);
+        verify(consolidationService).consolidateAfterCommit(7L);
     }
 }

@@ -45,6 +45,56 @@ public interface MemoryEpisodeMapper extends BaseMapper<MemoryEpisode> {
             @Param("limit") int limit
     );
 
+    @Select("""
+            <script>
+            SELECT * FROM memory_episodes
+            WHERE user_id = #{userId}
+              AND deleted_at IS NULL
+              AND status != 'REJECTED'
+            <if test='episodeTypes != null and !episodeTypes.isEmpty()'>
+              AND episode_type IN
+              <foreach collection='episodeTypes' item='type' open='(' separator=',' close=')'>#{type}</foreach>
+            </if>
+            <if test='scenes != null and !scenes.isEmpty()'>
+              AND (<foreach collection='scenes' item='scene' separator=' OR '>
+                   LOWER(payload_json) LIKE LOWER(CONCAT('%', #{scene}, '%'))
+              </foreach>)
+            </if>
+            <if test='mealTypes != null and !mealTypes.isEmpty()'>
+              AND (<foreach collection='mealTypes' item='mealType' separator=' OR '>
+                   LOWER(payload_json) LIKE LOWER(CONCAT('%', #{mealType}, '%'))
+              </foreach>)
+            </if>
+            <if test='ingredients != null and !ingredients.isEmpty()'>
+              AND (<foreach collection='ingredients' item='ingredient' separator=' OR '>
+                   LOWER(payload_json) LIKE LOWER(CONCAT('%', #{ingredient}, '%'))
+              </foreach>)
+            </if>
+            <if test='dietGoals != null and !dietGoals.isEmpty()'>
+              AND (<foreach collection='dietGoals' item='goal' separator=' OR '>
+                   LOWER(payload_json) LIKE LOWER(CONCAT('%', #{goal}, '%'))
+              </foreach>)
+            </if>
+            <if test='timeFrom != null'>AND occurred_at &gt;= #{timeFrom}</if>
+            <if test='timeTo != null'>AND occurred_at &lt;= #{timeTo}</if>
+            <if test='minImportance != null'>AND importance &gt;= #{minImportance}</if>
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT #{limit}
+            </script>
+            """)
+    List<MemoryEpisode> searchOwnedForRetrieval(
+            @Param("userId") Long userId,
+            @Param("episodeTypes") List<String> episodeTypes,
+            @Param("scenes") List<String> scenes,
+            @Param("mealTypes") List<String> mealTypes,
+            @Param("ingredients") List<String> ingredients,
+            @Param("dietGoals") List<String> dietGoals,
+            @Param("timeFrom") java.time.LocalDateTime timeFrom,
+            @Param("timeTo") java.time.LocalDateTime timeTo,
+            @Param("minImportance") java.math.BigDecimal minImportance,
+            @Param("limit") int limit
+    );
+
     @Update("""
             UPDATE memory_episodes
             SET deleted_at = CURRENT_TIMESTAMP,

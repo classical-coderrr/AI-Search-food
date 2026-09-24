@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 
@@ -44,5 +45,35 @@ public interface MemoryCandidateMapper extends BaseMapper<MemoryCandidate> {
             @Param("episodeId") Long episodeId,
             @Param("candidateType") String candidateType,
             @Param("limit") int limit
+    );
+
+    @Select("""
+            SELECT * FROM memory_candidates
+            WHERE user_id = #{userId}
+              AND deleted_at IS NULL
+              AND status IN ('PENDING', 'ACCEPTED')
+            ORDER BY extracted_at ASC, id ASC
+            LIMIT #{limit}
+            """)
+    List<MemoryCandidate> listForConsolidation(
+            @Param("userId") Long userId,
+            @Param("limit") int limit
+    );
+
+    @Update("""
+            UPDATE memory_candidates
+            SET status = 'CONSOLIDATED',
+                version = version + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = #{candidateId}
+              AND user_id = #{userId}
+              AND version = #{version}
+              AND deleted_at IS NULL
+              AND status IN ('PENDING', 'ACCEPTED')
+            """)
+    int markConsolidated(
+            @Param("userId") Long userId,
+            @Param("candidateId") Long candidateId,
+            @Param("version") Integer version
     );
 }
