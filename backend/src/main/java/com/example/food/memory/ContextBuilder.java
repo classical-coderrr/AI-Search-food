@@ -3,6 +3,7 @@ package com.example.food.memory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -19,17 +20,30 @@ public class ContextBuilder {
     private final MemoryRankingProperties properties;
     private final ContextBudgetManager budgetManager;
     private final ObjectMapper objectMapper;
+    private final PersonalizedSkillService personalizedSkillService;
+
+    @Autowired
+    public ContextBuilder(MemoryConsolidationService consolidationService,
+                          MemorySessionService sessionService,
+                          MemoryRankingProperties properties,
+                          ContextBudgetManager budgetManager,
+                          ObjectMapper objectMapper,
+                          PersonalizedSkillService personalizedSkillService) {
+        this.consolidationService = consolidationService;
+        this.sessionService = sessionService;
+        this.properties = properties;
+        this.budgetManager = budgetManager;
+        this.objectMapper = objectMapper;
+        this.personalizedSkillService = personalizedSkillService;
+    }
 
     public ContextBuilder(MemoryConsolidationService consolidationService,
                           MemorySessionService sessionService,
                           MemoryRankingProperties properties,
                           ContextBudgetManager budgetManager,
                           ObjectMapper objectMapper) {
-        this.consolidationService = consolidationService;
-        this.sessionService = sessionService;
-        this.properties = properties;
-        this.budgetManager = budgetManager;
-        this.objectMapper = objectMapper;
+        this(consolidationService, sessionService, properties, budgetManager, objectMapper,
+                new PersonalizedSkillService(objectMapper));
     }
 
     public ContextBuildResult build(Long userId, Long sessionId,
@@ -71,6 +85,14 @@ public class ContextBuilder {
         }
 
         MemoryProfile profile = consolidationService.getOwnedProfile(userId);
+        String query = retrieval == null || retrieval.queryPlan() == null
+                ? null : retrieval.queryPlan().originalQuery();
+        PersonalizedSkillService.SkillContext skill = personalizedSkillService.resolve(
+                query, profile == null ? null : profile.getProfileJson());
+        if (skill != null) {
+            entries.add(new ContextBudgetManager.ContextEntry("PERSONALIZED_SKILL",
+                    "SKILL:" + skill.skillName(), null, skill.promptContext(), 88, order++));
+        }
         if (profile != null && StringUtils.hasText(profile.getProfileJson())) {
             String relevantProfile = relevantProfile(profile.getProfileJson(),
                     retrieval == null ? null : retrieval.queryPlan());
