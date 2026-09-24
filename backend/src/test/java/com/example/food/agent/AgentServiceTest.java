@@ -34,7 +34,35 @@ class AgentServiceTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
+    void extractsExplicitIngredientsFromUsePhraseAndIgnoresRecipeInstructions() {
+        assertThat(AgentService.explicitRecipeIngredients("请用鸡胸肉和西兰花推荐一道适合晚餐的菜"))
+                .isEqualTo("鸡胸肉、西兰花");
+    }
+
+    @Test
+    void doesNotTreatMemoryBasedNaturalLanguageRecommendationAsIngredients() {
+        assertThat(AgentService.explicitRecipeIngredients(
+                "结合我对番茄黄瓜炒鸡丁的历史反馈，推荐一道适合我的晚餐，并简短说明依据"))
+                .isEmpty();
+    }
+
+    @Test
+    void extractsBareIngredientListButNotTastePreferenceText() {
+        assertThat(AgentService.explicitRecipeIngredients("番茄和鸡蛋"))
+                .isEqualTo("番茄、鸡蛋");
+        assertThat(AgentService.explicitRecipeIngredients("我想吃清淡一点的晚餐"))
+                .isEmpty();
+    }
+
+    @Test
+    void enablesAiIngredientRecommendationWhenUserDidNotProvideIngredients() {
+        assertThat(AgentService.shouldUseAiIngredientRecommendation("")).isTrue();
+        assertThat(AgentService.shouldUseAiIngredientRecommendation("鸡蛋、西兰花")).isFalse();
+    }
+
+    @Test
     void prefersIngredientArrayWhenRecipeToolProvidesIt() throws Exception {
+
         JsonNode arguments = objectMapper.readTree("""
                 {
                   "ingredients": ["番茄", "茄子", "鸡肉", "牛肉", "螃蟹"],
