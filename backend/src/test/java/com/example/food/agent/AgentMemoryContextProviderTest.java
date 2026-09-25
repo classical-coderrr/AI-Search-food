@@ -39,9 +39,11 @@ class AgentMemoryContextProviderTest {
         MemoryRetrievalResult retrieval = retrieval(55L);
         when(retriever.search(eq(7L), any(MemorySearchCommand.class))).thenReturn(retrieval);
         ContextBuilder.ContextBuildResult built = new ContextBuilder.ContextBuildResult(
-                "[PERSONAL_MEMORY]\n用户明确不吃香菜", Map.of(
+                "[PERSONAL_MEMORY]\n用户明确不吃香菜\n\n[PERSONALIZED_SKILL: RECOMMEND_RECIPE]\n避开香菜",
+                Map.of(
                         "PERSONAL_MEMORY", List.of("用户明确不吃香菜"),
-                        "STRUCTURED_PROFILE", List.of("{\"ingredientPreferences\":{"
+                        "PERSONALIZED_SKILL", List.of("[PERSONALIZED_SKILL: RECOMMEND_RECIPE]\n避开香菜"),
+                        "STRUCTURED_PROFILE", List.of("{\"ingredientPreferences\":{" 
                                 + "\"liked\":[{\"entity\":\"鸡胸肉\",\"preference\":\"LIKE\","
                                 + "\"temporalType\":\"RECENT\"}],"
                                 + "\"disliked\":[{\"entity\":\"香菜\",\"preference\":\"DISLIKE\","
@@ -59,8 +61,9 @@ class AgentMemoryContextProviderTest {
         assertThat(result.promptContext()).contains("用户明确不吃香菜");
         assertThat(result.usedMemoryItemIds()).containsExactly(31L, 32L);
         assertThat(result.usedEpisodeIds()).containsExactly(44L);
-        assertThat(result.contextSections()).contains("PERSONAL_MEMORY", "STRUCTURED_PROFILE");
+        assertThat(result.contextSections()).contains("PERSONAL_MEMORY", "STRUCTURED_PROFILE", "PERSONALIZED_SKILL");
         assertThat(result.traceSummaries()).containsExactly(
+                "已加载本轮任务对应的个性化执行策略",
                 "长期偏好：不喜欢香菜",
                 "近期行为推断：喜欢鸡胸肉",
                 "历史行为：收藏过清淡鸡肉晚餐",

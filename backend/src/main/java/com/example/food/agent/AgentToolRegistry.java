@@ -203,7 +203,7 @@ public class AgentToolRegistry {
                 properties.put("ingredients", Map.of(
                         "type", "array",
                         "items", Map.of("type", "string"),
-                        "description", "本次要使用的主要食材名称数组，不包含葱姜蒜、油盐等常见辅料"
+                        "description", "仅列出用户本轮明确提供的具体主食材；未提供时省略或返回空数组。不得把餐次、口味、偏好、解释性句子或从记忆推断的食材放入列表"
                 ));
                 properties.put("meal_type", Map.of("type", "string", "enum", List.of("breakfast", "lunch", "dinner")));
                 properties.put("goal", Map.of("type", "string", "enum", List.of("balanced", "fat_loss", "muscle_gain", "low_sugar")));

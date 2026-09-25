@@ -95,6 +95,7 @@ public class ContextBudgetManager {
             case "SESSION" -> 0.30;
             case "TOOL_RESULTS" -> 0.25;
             case "PERSONAL_MEMORY" -> 0.35;
+            case "PERSONALIZED_SKILL" -> 0.15;
             case "STRUCTURED_PROFILE" -> 0.20;
             case "KNOWLEDGE_RAG" -> 0.30;
             default -> 0.20;

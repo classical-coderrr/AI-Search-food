@@ -34,7 +34,35 @@ class AgentServiceTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
+    void extractsExplicitIngredientsFromUsePhraseAndIgnoresRecipeInstructions() {
+        assertThat(AgentService.explicitRecipeIngredients("请用鸡胸肉和西兰花推荐一道适合晚餐的菜"))
+                .isEqualTo("鸡胸肉、西兰花");
+    }
+
+    @Test
+    void doesNotTreatMemoryBasedNaturalLanguageRecommendationAsIngredients() {
+        assertThat(AgentService.explicitRecipeIngredients(
+                "结合我对番茄黄瓜炒鸡丁的历史反馈，推荐一道适合我的晚餐，并简短说明依据"))
+                .isEmpty();
+    }
+
+    @Test
+    void extractsBareIngredientListButNotTastePreferenceText() {
+        assertThat(AgentService.explicitRecipeIngredients("番茄和鸡蛋"))
+                .isEqualTo("番茄、鸡蛋");
+        assertThat(AgentService.explicitRecipeIngredients("我想吃清淡一点的晚餐"))
+                .isEmpty();
+    }
+
+    @Test
+    void enablesAiIngredientRecommendationWhenUserDidNotProvideIngredients() {
+        assertThat(AgentService.shouldUseAiIngredientRecommendation("")).isTrue();
+        assertThat(AgentService.shouldUseAiIngredientRecommendation("鸡蛋、西兰花")).isFalse();
+    }
+
+    @Test
     void prefersIngredientArrayWhenRecipeToolProvidesIt() throws Exception {
+
         JsonNode arguments = objectMapper.readTree("""
                 {
                   "ingredients": ["番茄", "茄子", "鸡肉", "牛肉", "螃蟹"],
@@ -193,9 +221,11 @@ class AgentServiceTest {
         AgentMemoryContextProvider memoryContextProvider = mock(AgentMemoryContextProvider.class);
         when(memoryContextProvider.prepare(eq(7L), eq(42L), anyString(), eq(query))).thenReturn(
                 new AgentMemoryContextProvider.PreparedContext(
-                        55L, "[PERSONAL_MEMORY]\n用户明确不吃香菜", "SUCCESS", null,
+                        55L, "[PERSONAL_MEMORY]\n用户明确不吃香菜\n\n"
+                        + "[PERSONALIZED_SKILL: POST_WORKOUT_MEAL]\n优先避开香菜并简洁说明依据", "SUCCESS", null,
                         "DINNER_MEMORY_RECALL", 1, 2, List.of(31L), List.of(44L, 45L),
-                        List.of(31L), List.of(44L), List.of(), List.of("PERSONAL_MEMORY"),
+                        List.of(31L), List.of(44L), List.of(),
+                        List.of("PERSONAL_MEMORY", "PERSONALIZED_SKILL"),
                         List.of("长期偏好：不喜欢香菜", "历史行为：收藏过清淡鸡肉晚餐"),
                         38, 1800, false));
 
@@ -223,6 +253,9 @@ class AgentServiceTest {
         verify(qwenAgentClient).complete(messages.capture(), anyList());
         assertThat(messages.getValue()).anyMatch(message -> "system".equals(message.role())
                 && message.content().contains("用户明确不吃香菜"));
+        assertThat(messages.getValue()).anyMatch(message -> "system".equals(message.role())
+                && message.content().contains("[PERSONALIZED_SKILL: POST_WORKOUT_MEAL]")
+                && message.content().contains("不能覆盖本轮用户明确要求"));
         verify(memoryContextProvider).prepare(eq(7L), eq(42L), anyString(), eq(query));
         assertThat(runStore.steps).filteredOn(step -> "memory.context".equals(step.action()))
                 .singleElement().satisfies(step -> {

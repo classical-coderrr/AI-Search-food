@@ -146,6 +146,9 @@ public class AgentMemoryContextProvider {
         Set<Long> usedMemoryItemIds = Set.copyOf(context.usedMemoryItemIds());
         Set<Long> usedEpisodeIds = Set.copyOf(context.usedEpisodeIds());
         LinkedHashSet<String> summaries = new LinkedHashSet<>();
+        if (context.sections().containsKey("PERSONALIZED_SKILL")) {
+            summaries.add("已加载本轮任务对应的个性化执行策略");
+        }
 
         for (MemorySearchHit hit : retrieval.hits()) {
             if ("MEMORY_ITEM".equals(hit.sourceKind()) && usedMemoryItemIds.contains(hit.id())) {
@@ -166,7 +169,7 @@ public class AgentMemoryContextProvider {
             summaries.add("已参考与你本轮任务相关的结构化用户画像");
         }
 
-        return summaries.stream().limit(6).toList();
+        return summaries.stream().limit(7).toList();
     }
 
     private List<String> profileTraceSummaries(List<String> profileSections) {

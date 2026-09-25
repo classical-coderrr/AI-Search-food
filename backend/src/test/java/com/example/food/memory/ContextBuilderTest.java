@@ -21,7 +21,11 @@ class ContextBuilderTest {
         ContextBudgetManager budgetManager = new ContextBudgetManager();
         MemoryProfile profile = new MemoryProfile();
         profile.setUserId(9L);
-        profile.setProfileJson("{\"ingredientPreferences\":{\"liked\":[\"鸡胸肉\"]}}");
+        profile.setProfileJson("{\"ingredientPreferences\":{"
+                + "\"liked\":[{\"entity\":\"鸡胸肉\",\"scope\":\"USER\","
+                + "\"temporalType\":\"LONG_TERM\",\"confidence\":0.91,\"evidenceCount\":3}],"
+                + "\"disliked\":[{\"entity\":\"香菜\",\"scope\":\"USER\","
+                + "\"temporalType\":\"LONG_TERM\",\"confidence\":0.96,\"evidenceCount\":2}]}}");
         when(consolidation.getOwnedProfile(9L)).thenReturn(profile);
         MemorySession session = new MemorySession();
         session.setId(20L);
@@ -46,10 +50,11 @@ class ContextBuilderTest {
                 List.of(new ContextBuilder.ExternalContext("RECIPE_TOOL", 5L, "可选鸡胸肉饭")), null);
 
         assertThat(result.sections()).containsKeys("SESSION", "PERSONAL_MEMORY", "STRUCTURED_PROFILE",
-                "KNOWLEDGE_RAG", "TOOL_RESULTS");
+                "PERSONALIZED_SKILL", "KNOWLEDGE_RAG", "TOOL_RESULTS");
         assertThat(result.usedEpisodeIds()).containsExactly(31L);
         assertThat(result.knowledgeIds()).containsExactly(91L);
-        assertThat(result.promptContext()).contains("[PERSONAL_MEMORY]", "[KNOWLEDGE_RAG]");
+        assertThat(result.promptContext()).contains("[PERSONAL_MEMORY]", "[PERSONALIZED_SKILL: RECOMMEND_RECIPE]",
+                "香菜", "鸡胸肉", "[KNOWLEDGE_RAG]");
         assertThat(result.estimatedTokens()).isLessThanOrEqualTo(result.tokenBudget());
     }
 
@@ -75,5 +80,6 @@ class ContextBuilderTest {
                 List.of(), List.of(), 200);
 
         assertThat(result.sections()).doesNotContainKey("STRUCTURED_PROFILE");
+        assertThat(result.sections()).doesNotContainKey("PERSONALIZED_SKILL");
     }
 }
