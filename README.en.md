@@ -1,10 +1,16 @@
-# Little Kitchen Spirit | Multimodal AI Cooking Assistant
+<h1 align="center">Little Kitchen Spirit | Multimodal AI Cooking Assistant</h1>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Java-17-orange" alt="Java 17">
   <img src="https://img.shields.io/badge/Spring%20Boot-3.x-green" alt="Spring Boot 3.x">
   <img src="https://img.shields.io/badge/Vue-3-brightgreen" alt="Vue 3">
   <img src="https://img.shields.io/badge/Docker-Compose-blue" alt="Docker Compose">
+  <img src="https://img.shields.io/badge/Vite-6-646CFF" alt="Vite 6">
+  <img src="https://img.shields.io/badge/MyBatis--Plus-3.5.7-007ACC" alt="MyBatis Plus 3.5.7">
+  <img src="https://img.shields.io/badge/MySQL-8.4-4479A1" alt="MySQL 8.4">
+  <img src="https://img.shields.io/badge/Redis-7.4-DC382D" alt="Redis 7.4">
+  <img src="https://img.shields.io/badge/Flyway-11-CC0200" alt="Flyway 11">
+  <img src="https://img.shields.io/badge/Nginx-1.27-009639" alt="Nginx 1.27">
 </p>
 
 <p align="center">
@@ -101,10 +107,11 @@ Open `http://localhost`. If port 80 is unavailable, set `FRONTEND_PORT=8080` in 
 
 | Area | Stack |
 | --- | --- |
-| Frontend | Vue 3, Vite, Element Plus, Pinia |
-| Backend | Java 17, Spring Boot 3, Maven |
-| Data | H2 locally; MySQL 8, Flyway, and Redis with Docker Compose |
-| AI and SMS | DashScope/Qwen-compatible API; mock SMS locally or Aliyun PNVS |
+| Frontend | Vue 3, Vite 6, Element Plus, Pinia, Vue Router, Axios, ECharts, PixiJS |
+| Backend | Java 17, Spring Boot 3.3, Spring Security, JWT, MyBatis-Plus 3.5.7, Maven |
+| Data | H2, MySQL 8.4, Redis 7.4, Flyway 11 |
+| AI and messaging | DashScope/Qwen-compatible API, SSE streaming, Aliyun PNVS |
+| Deployment and testing | Docker Compose, Nginx, JUnit 5, Mockito, Spring Boot Test |
 
 ## Documentation
 

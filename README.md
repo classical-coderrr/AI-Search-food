@@ -1,10 +1,16 @@
-# 小厨灵｜多模态 AI 厨房助手
+<h1 align="center">小厨灵｜多模态 AI 厨房助手</h1>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Java-17-orange" alt="Java 17">
   <img src="https://img.shields.io/badge/Spring%20Boot-3.x-green" alt="Spring Boot 3.x">
   <img src="https://img.shields.io/badge/Vue-3-brightgreen" alt="Vue 3">
   <img src="https://img.shields.io/badge/Docker-Compose-blue" alt="Docker Compose">
+  <img src="https://img.shields.io/badge/Vite-6-646CFF" alt="Vite 6">
+  <img src="https://img.shields.io/badge/MyBatis--Plus-3.5.7-007ACC" alt="MyBatis Plus 3.5.7">
+  <img src="https://img.shields.io/badge/MySQL-8.4-4479A1" alt="MySQL 8.4">
+  <img src="https://img.shields.io/badge/Redis-7.4-DC382D" alt="Redis 7.4">
+  <img src="https://img.shields.io/badge/Flyway-11-CC0200" alt="Flyway 11">
+  <img src="https://img.shields.io/badge/Nginx-1.27-009639" alt="Nginx 1.27">
 </p>
 
 <p align="center">
@@ -97,10 +103,11 @@ docker compose ps
 
 | 部分 | 技术 |
 | --- | --- |
-| 前端 | Vue 3、Vite、Element Plus、Pinia |
-| 后端 | Java 17、Spring Boot 3、Maven |
-| 数据 | 本地 H2；Docker 部署使用 MySQL 8、Flyway 和 Redis |
-| AI 与短信 | DashScope/Qwen 兼容接口；本地 mock 短信或阿里云 PNVS |
+| 前端 | Vue 3、Vite 6、Element Plus、Pinia、Vue Router、Axios、ECharts、PixiJS |
+| 后端 | Java 17、Spring Boot 3.3、Spring Security、JWT、MyBatis-Plus 3.5.7、Maven |
+| 数据 | H2、MySQL 8.4、Redis 7.4、Flyway 11 |
+| AI 与消息 | DashScope/Qwen 兼容接口、SSE 流式响应、阿里云 PNVS |
+| 部署与测试 | Docker Compose、Nginx、JUnit 5、Mockito、Spring Boot Test |
 
 ## 相关文档
 
