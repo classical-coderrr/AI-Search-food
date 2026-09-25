@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+import org.apache.ibatis.annotations.Delete;
 
 @Mapper
 public interface MemoryProfileMapper extends BaseMapper<MemoryProfile> {
@@ -33,4 +34,7 @@ public interface MemoryProfileMapper extends BaseMapper<MemoryProfile> {
             @Param("profile") MemoryProfile profile,
             @Param("version") Integer version
     );
+
+    @Delete("DELETE FROM memory_profiles WHERE user_id = #{userId}")
+    int deleteOwned(@Param("userId") Long userId);
 }

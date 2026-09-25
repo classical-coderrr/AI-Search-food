@@ -47,8 +47,8 @@ public class MemoryConsolidationService {
     private final MemoryProfileMapper profileMapper;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final MemoryPersonalizationService personalizationService;
 
-    @Autowired
     public MemoryConsolidationService(
             MemoryCandidateMapper candidateMapper,
             MemoryItemMapper itemMapper,
@@ -57,7 +57,20 @@ public class MemoryConsolidationService {
             ObjectMapper objectMapper
     ) {
         this(candidateMapper, itemMapper, itemCandidateMapper, profileMapper,
-                objectMapper, Clock.systemDefaultZone());
+                objectMapper, Clock.systemDefaultZone(), null);
+    }
+
+    @Autowired
+    public MemoryConsolidationService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryItemMapper itemMapper,
+            MemoryItemCandidateMapper itemCandidateMapper,
+            MemoryProfileMapper profileMapper,
+            ObjectMapper objectMapper,
+            MemoryPersonalizationService personalizationService
+    ) {
+        this(candidateMapper, itemMapper, itemCandidateMapper, profileMapper,
+                objectMapper, Clock.systemDefaultZone(), personalizationService);
     }
 
     MemoryConsolidationService(
@@ -68,17 +81,34 @@ public class MemoryConsolidationService {
             ObjectMapper objectMapper,
             Clock clock
     ) {
+        this(candidateMapper, itemMapper, itemCandidateMapper, profileMapper,
+                objectMapper, clock, null);
+    }
+
+    MemoryConsolidationService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryItemMapper itemMapper,
+            MemoryItemCandidateMapper itemCandidateMapper,
+            MemoryProfileMapper profileMapper,
+            ObjectMapper objectMapper,
+            Clock clock,
+            MemoryPersonalizationService personalizationService
+    ) {
         this.candidateMapper = candidateMapper;
         this.itemMapper = itemMapper;
         this.itemCandidateMapper = itemCandidateMapper;
         this.profileMapper = profileMapper;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.personalizationService = personalizationService;
     }
 
     @Transactional
     public ConsolidationResult consolidate(Long userId) {
         requireUser(userId);
+        if (personalizationService != null && !personalizationService.isEnabled(userId)) {
+            return new ConsolidationResult(0, 0, null, null);
+        }
         List<MemoryCandidate> candidates = candidateMapper.listForConsolidation(userId, MAX_CANDIDATES);
         Map<String, List<MemoryCandidate>> groups = candidates.stream()
                 .collect(Collectors.groupingBy(
@@ -118,6 +148,11 @@ public class MemoryConsolidationService {
     public MemoryProfile getOwnedProfile(Long userId) {
         requireUser(userId);
         return profileMapper.findOwned(userId);
+    }
+
+    public void refreshProfileForManagement(Long userId) {
+        requireUser(userId);
+        rebuildProfile(userId);
     }
 
     private ConsolidatedGroupResult consolidateGroup(Long userId, List<MemoryCandidate> group) {
@@ -216,7 +251,8 @@ public class MemoryConsolidationService {
 
     private void mergeIntoExisting(Long userId, MemoryItem item, List<MemoryCandidate> candidates) {
         BigDecimal oldConfidence = safe(item.getConfidence());
-        BigDecimal newConfidence = combinedConfidence(oldConfidence, candidates);
+        boolean userModified = Boolean.TRUE.equals(item.getUserModified());
+        BigDecimal newConfidence = userModified ? oldConfidence : combinedConfidence(oldConfidence, candidates);
         int evidenceCount = safeInt(item.getEvidenceCount()) + sumEvidence(candidates);
         int occurrenceCount = safeInt(item.getOccurrenceCount()) + candidates.size();
         Set<Long> sourceCandidateIds = new LinkedHashSet<>(readIds(item.getSourceCandidateIdsJson()));
@@ -224,9 +260,12 @@ public class MemoryConsolidationService {
         Set<Long> sourceEpisodeIds = new LinkedHashSet<>(readIds(item.getSourceEpisodeIdsJson()));
         sourceEpisodeIds.addAll(candidates.stream().map(MemoryCandidate::getEpisodeId).toList());
 
-        item.setStrength(weightedAverage(item.getStrength(), safeInt(item.getOccurrenceCount()),
-                weightedAverageStrength(candidates), candidates.size()));
-        item.setConfidence(newConfidence);
+        if (!userModified) {
+            item.setStrength(weightedAverage(item.getStrength(), safeInt(item.getOccurrenceCount()),
+                    weightedAverageStrength(candidates), candidates.size()));
+            item.setConfidence(newConfidence);
+            item.setImportance(importance(newConfidence, evidenceCount));
+        }
         item.setEvidenceCount(evidenceCount);
         item.setOccurrenceCount(occurrenceCount);
         item.setSourceCandidateIdsJson(writeIds(sourceCandidateIds));
@@ -234,8 +273,6 @@ public class MemoryConsolidationService {
         item.setSourceCount(sourceEpisodeIds.size());
         item.setFirstSeenAt(min(item.getFirstSeenAt(), firstSeen(candidates)));
         item.setLastSeenAt(max(item.getLastSeenAt(), lastSeen(candidates)));
-        item.setImportance(importance(newConfidence, evidenceCount));
-
         if (itemMapper.updateConsolidated(userId, item, item.getVersion()) != 1) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "记忆合并版本已变化，请稍后重试");

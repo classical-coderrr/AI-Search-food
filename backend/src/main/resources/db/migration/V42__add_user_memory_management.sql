@@ -1,0 +1,12 @@
+CREATE TABLE user_memory_settings (
+    user_id BIGINT PRIMARY KEY,
+    personalization_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    version INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_user_memory_settings_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+ALTER TABLE memory_items
+    ADD COLUMN user_modified BOOLEAN NOT NULL DEFAULT FALSE;

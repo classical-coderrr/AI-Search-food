@@ -24,9 +24,10 @@ public class MemoryBehaviorEpisodeRecorder {
     private final ObjectMapper objectMapper;
     private final MemoryCandidateService candidateService;
     private final MemoryConsolidationService consolidationService;
+    private final MemoryPersonalizationService personalizationService;
 
     public MemoryBehaviorEpisodeRecorder(MemoryEpisodeService episodeService, ObjectMapper objectMapper) {
-        this(episodeService, objectMapper, null, null);
+        this(episodeService, objectMapper, null, null, null);
     }
 
     MemoryBehaviorEpisodeRecorder(
@@ -34,7 +35,16 @@ public class MemoryBehaviorEpisodeRecorder {
             ObjectMapper objectMapper,
             MemoryCandidateService candidateService
     ) {
-        this(episodeService, objectMapper, candidateService, null);
+        this(episodeService, objectMapper, candidateService, null, null);
+    }
+
+    MemoryBehaviorEpisodeRecorder(
+            MemoryEpisodeService episodeService,
+            ObjectMapper objectMapper,
+            MemoryCandidateService candidateService,
+            MemoryConsolidationService consolidationService
+    ) {
+        this(episodeService, objectMapper, candidateService, consolidationService, null);
     }
 
     @Autowired
@@ -42,12 +52,14 @@ public class MemoryBehaviorEpisodeRecorder {
             MemoryEpisodeService episodeService,
             ObjectMapper objectMapper,
             MemoryCandidateService candidateService,
-            MemoryConsolidationService consolidationService
+            MemoryConsolidationService consolidationService,
+            MemoryPersonalizationService personalizationService
     ) {
         this.episodeService = episodeService;
         this.objectMapper = objectMapper;
         this.candidateService = candidateService;
         this.consolidationService = consolidationService;
+        this.personalizationService = personalizationService;
     }
 
     public void record(MemoryBehaviorEpisodeEvent event) {
@@ -63,6 +75,9 @@ public class MemoryBehaviorEpisodeRecorder {
         }
 
         try {
+            if (personalizationService != null && !personalizationService.isEnabled(event.userId())) {
+                return;
+            }
             MemoryEpisodeService.RecordResult result = episodeService.record(event.userId(), new MemoryEpisodeCommand(
                     event.sessionId(),
                     event.conversationId(),

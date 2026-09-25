@@ -9,6 +9,7 @@ import com.example.food.memory.MemorySession;
 import com.example.food.memory.MemorySessionOpenCommand;
 import com.example.food.memory.MemorySessionService;
 import com.example.food.memory.MemorySessionUpdate;
+import com.example.food.memory.MemoryPersonalizationService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -33,20 +34,34 @@ public class AgentMemoryContextProvider {
     private final ContextBuilder contextBuilder;
     private final MemorySessionService sessionService;
     private final ObjectMapper objectMapper;
+    private final MemoryPersonalizationService personalizationService;
 
     public AgentMemoryContextProvider(MemoryRetriever memoryRetriever,
                                       ContextBuilder contextBuilder,
                                       MemorySessionService sessionService,
                                       ObjectMapper objectMapper) {
+        this(memoryRetriever, contextBuilder, sessionService, objectMapper, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentMemoryContextProvider(MemoryRetriever memoryRetriever,
+                                      ContextBuilder contextBuilder,
+                                      MemorySessionService sessionService,
+                                      ObjectMapper objectMapper,
+                                      MemoryPersonalizationService personalizationService) {
         this.memoryRetriever = memoryRetriever;
         this.contextBuilder = contextBuilder;
         this.sessionService = sessionService;
         this.objectMapper = objectMapper;
+        this.personalizationService = personalizationService;
     }
 
     public PreparedContext prepare(Long userId, Long conversationId, String runId, String query) {
         MemorySession session = null;
         try {
+            if (personalizationService != null && !personalizationService.isEnabled(userId)) {
+                return PreparedContext.disabled();
+            }
             LocalDateTime expiresAt = LocalDateTime.now().plusHours(2);
             session = sessionService.open(userId, new MemorySessionOpenCommand(
                     conversationId,
@@ -251,6 +266,12 @@ public class AgentMemoryContextProvider {
             int tokenBudget,
             boolean truncated
     ) {
+        public static PreparedContext disabled() {
+            return new PreparedContext(null, "", "DISABLED", null, null,
+                    0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+                    List.of("个性化已关闭，本轮未读取个人记忆"), 0, 0, false);
+        }
+
         public static PreparedContext degraded(Long sessionId, String errorType) {
             return new PreparedContext(sessionId, "", "DEGRADED", errorType, null,
                     0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),

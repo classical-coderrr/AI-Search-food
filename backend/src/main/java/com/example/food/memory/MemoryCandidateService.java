@@ -34,8 +34,8 @@ public class MemoryCandidateService {
     private final TagNormalizationService tagNormalizationService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final MemoryPersonalizationService personalizationService;
 
-    @Autowired
     public MemoryCandidateService(
             MemoryCandidateMapper candidateMapper,
             MemoryEvidenceMapper evidenceMapper,
@@ -45,7 +45,21 @@ public class MemoryCandidateService {
             ObjectMapper objectMapper
     ) {
         this(candidateMapper, evidenceMapper, episodeService, extractor, tagNormalizationService,
-                objectMapper, Clock.systemDefaultZone());
+                objectMapper, Clock.systemDefaultZone(), null);
+    }
+
+    @Autowired
+    public MemoryCandidateService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryEvidenceMapper evidenceMapper,
+            MemoryEpisodeService episodeService,
+            MemoryExtractor extractor,
+            TagNormalizationService tagNormalizationService,
+            ObjectMapper objectMapper,
+            MemoryPersonalizationService personalizationService
+    ) {
+        this(candidateMapper, evidenceMapper, episodeService, extractor, tagNormalizationService,
+                objectMapper, Clock.systemDefaultZone(), personalizationService);
     }
 
     MemoryCandidateService(
@@ -57,6 +71,20 @@ public class MemoryCandidateService {
             ObjectMapper objectMapper,
             Clock clock
     ) {
+        this(candidateMapper, evidenceMapper, episodeService, extractor, tagNormalizationService,
+                objectMapper, clock, null);
+    }
+
+    MemoryCandidateService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryEvidenceMapper evidenceMapper,
+            MemoryEpisodeService episodeService,
+            MemoryExtractor extractor,
+            TagNormalizationService tagNormalizationService,
+            ObjectMapper objectMapper,
+            Clock clock,
+            MemoryPersonalizationService personalizationService
+    ) {
         this.candidateMapper = candidateMapper;
         this.evidenceMapper = evidenceMapper;
         this.episodeService = episodeService;
@@ -64,6 +92,7 @@ public class MemoryCandidateService {
         this.tagNormalizationService = tagNormalizationService;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.personalizationService = personalizationService;
     }
 
     @Transactional
@@ -86,6 +115,9 @@ public class MemoryCandidateService {
         requireUser(userId);
         String model = requireText(extractionModel, "提取模型不能为空", 128);
         String prompt = requireText(promptVersion, "提取提示词版本不能为空", 64);
+        if (personalizationService != null && !personalizationService.isEnabled(userId)) {
+            return new ExtractionResult(List.of(), 0, 0);
+        }
         MemoryEpisode episode = episodeService.findOwned(userId, episodeId);
         List<MemoryCandidateDraft> drafts = extractor.extract(episode);
 

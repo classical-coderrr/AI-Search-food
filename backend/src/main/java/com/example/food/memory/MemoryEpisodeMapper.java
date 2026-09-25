@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+import org.apache.ibatis.annotations.Delete;
 
 import java.util.List;
 
@@ -110,4 +111,7 @@ public interface MemoryEpisodeMapper extends BaseMapper<MemoryEpisode> {
             @Param("episodeId") Long episodeId,
             @Param("version") Integer version
     );
+
+    @Delete("DELETE FROM memory_episodes WHERE user_id = #{userId}")
+    int deleteAllOwned(@Param("userId") Long userId);
 }

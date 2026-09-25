@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+import org.apache.ibatis.annotations.Delete;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -183,4 +184,26 @@ public interface MemoryCandidateMapper extends BaseMapper<MemoryCandidate> {
             @Param("candidateId") Long candidateId,
             @Param("version") Integer version
     );
+
+    @Update("""
+            UPDATE memory_candidates
+            SET status = 'REJECTED',
+                user_decision = 'REJECT',
+                decided_at = CURRENT_TIMESTAMP,
+                version = version + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = #{userId}
+              AND status != 'REJECTED'
+              AND id IN (
+                  SELECT candidate_id FROM memory_item_candidates
+                  WHERE user_id = #{userId} AND memory_item_id = #{memoryItemId}
+              )
+            """)
+    int rejectCandidatesForMemory(
+            @Param("userId") Long userId,
+            @Param("memoryItemId") Long memoryItemId
+    );
+
+    @Delete("DELETE FROM memory_candidates WHERE user_id = #{userId}")
+    int deleteAllOwned(@Param("userId") Long userId);
 }

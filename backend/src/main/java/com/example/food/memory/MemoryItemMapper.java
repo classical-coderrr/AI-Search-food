@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+import org.apache.ibatis.annotations.Delete;
 
 import java.util.List;
 
@@ -15,12 +16,28 @@ public interface MemoryItemMapper extends BaseMapper<MemoryItem> {
             SELECT * FROM memory_items
             WHERE user_id = #{userId}
               AND consolidation_key = #{consolidationKey}
-              AND deleted_at IS NULL
             """)
     MemoryItem findOwnedByKey(
             @Param("userId") Long userId,
             @Param("consolidationKey") String consolidationKey
     );
+
+    @Select("""
+            SELECT * FROM memory_items
+            WHERE id = #{memoryId}
+              AND user_id = #{userId}
+              AND status = 'ACTIVE'
+              AND deleted_at IS NULL
+            """)
+    MemoryItem findActiveOwned(@Param("userId") Long userId, @Param("memoryId") Long memoryId);
+
+    @Select("""
+            SELECT COUNT(*) FROM memory_items
+            WHERE user_id = #{userId}
+              AND status = 'ACTIVE'
+              AND deleted_at IS NULL
+            """)
+    long countActiveOwned(@Param("userId") Long userId);
 
     @Select("""
             SELECT * FROM memory_items
@@ -88,17 +105,62 @@ public interface MemoryItemMapper extends BaseMapper<MemoryItem> {
                 source_episode_ids_json = #{item.sourceEpisodeIdsJson},
                 first_seen_at = #{item.firstSeenAt},
                 last_seen_at = #{item.lastSeenAt},
-                status = #{item.status},
+                status = 'ACTIVE',
+                deleted_at = NULL,
                 version = version + 1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = #{item.id}
               AND user_id = #{userId}
               AND version = #{version}
-              AND deleted_at IS NULL
+              AND status IN ('ACTIVE', 'DELETED')
             """)
     int updateConsolidated(
             @Param("userId") Long userId,
             @Param("item") MemoryItem item,
             @Param("version") Integer version
     );
+
+    @Update("""
+            UPDATE memory_items
+            SET preference = #{preference},
+                strength = #{strength},
+                confidence = 0.9900,
+                importance = 0.9900,
+                user_modified = TRUE,
+                version = version + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = #{memoryId}
+              AND user_id = #{userId}
+              AND version = #{version}
+              AND status = 'ACTIVE'
+              AND deleted_at IS NULL
+            """)
+    int updateUserManaged(
+            @Param("userId") Long userId,
+            @Param("memoryId") Long memoryId,
+            @Param("version") Integer version,
+            @Param("preference") String preference,
+            @Param("strength") java.math.BigDecimal strength
+    );
+
+    @Update("""
+            UPDATE memory_items
+            SET status = 'DELETED',
+                deleted_at = CURRENT_TIMESTAMP,
+                version = version + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = #{memoryId}
+              AND user_id = #{userId}
+              AND version = #{version}
+              AND status = 'ACTIVE'
+              AND deleted_at IS NULL
+            """)
+    int softDeleteOwned(
+            @Param("userId") Long userId,
+            @Param("memoryId") Long memoryId,
+            @Param("version") Integer version
+    );
+
+    @Delete("DELETE FROM memory_items WHERE user_id = #{userId}")
+    int deleteAllOwned(@Param("userId") Long userId);
 }

@@ -34,6 +34,7 @@ public class MemoryItem {
     private LocalDateTime lastSeenAt;
     private String consolidationKey;
     private String status;
+    private Boolean userModified;
     private Integer version;
     private LocalDateTime deletedAt;
     private LocalDateTime createdAt;
@@ -85,6 +86,8 @@ public class MemoryItem {
     public void setConsolidationKey(String consolidationKey) { this.consolidationKey = consolidationKey; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+    public Boolean getUserModified() { return userModified; }
+    public void setUserModified(Boolean userModified) { this.userModified = userModified; }
     public Integer getVersion() { return version; }
     public void setVersion(Integer version) { this.version = version; }
     public LocalDateTime getDeletedAt() { return deletedAt; }

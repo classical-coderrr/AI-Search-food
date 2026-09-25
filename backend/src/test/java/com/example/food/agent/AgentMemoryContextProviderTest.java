@@ -10,6 +10,7 @@ import com.example.food.memory.MemorySession;
 import com.example.food.memory.MemorySessionOpenCommand;
 import com.example.food.memory.MemorySessionService;
 import com.example.food.memory.MemorySessionUpdate;
+import com.example.food.memory.MemoryPersonalizationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -21,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -96,6 +98,27 @@ class AgentMemoryContextProviderTest {
         assertThat(result.status()).isEqualTo("DEGRADED");
         assertThat(result.promptContext()).isEmpty();
         assertThat(result.errorType()).isEqualTo("IllegalStateException");
+    }
+
+    @Test
+    void skipsAllMemoryAccessWhenUserHasDisabledPersonalization() {
+        MemoryRetriever retriever = mock(MemoryRetriever.class);
+        ContextBuilder contextBuilder = mock(ContextBuilder.class);
+        MemorySessionService sessionService = mock(MemorySessionService.class);
+        MemoryPersonalizationService personalizationService = mock(MemoryPersonalizationService.class);
+        when(personalizationService.isEnabled(7L)).thenReturn(false);
+
+        AgentMemoryContextProvider provider = new AgentMemoryContextProvider(
+                retriever, contextBuilder, sessionService, new ObjectMapper(), personalizationService);
+        AgentMemoryContextProvider.PreparedContext result = provider.prepare(
+                7L, 42L, "run-disabled", "给我推荐晚餐");
+
+        assertThat(result.status()).isEqualTo("DISABLED");
+        assertThat(result.promptContext()).isEmpty();
+        assertThat(result.traceSummaries()).contains("个性化已关闭，本轮未读取个人记忆");
+        verify(sessionService, never()).open(eq(7L), any(MemorySessionOpenCommand.class));
+        verify(retriever, never()).search(eq(7L), any(MemorySearchCommand.class));
+        verify(contextBuilder, never()).build(any(), any(), any(), any(), any(), any());
     }
 
     private MemoryRetrievalResult retrieval(Long sessionId) {

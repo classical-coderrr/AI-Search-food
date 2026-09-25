@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+import org.apache.ibatis.annotations.Delete;
 
 @Mapper
 public interface MemorySessionMapper extends BaseMapper<MemorySession> {
@@ -90,4 +91,7 @@ public interface MemorySessionMapper extends BaseMapper<MemorySession> {
             @Param("sessionId") Long sessionId,
             @Param("version") Integer version
     );
+
+    @Delete("DELETE FROM agent_sessions WHERE user_id = #{userId}")
+    int deleteAllOwned(@Param("userId") Long userId);
 }

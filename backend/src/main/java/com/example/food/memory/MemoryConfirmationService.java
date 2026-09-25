@@ -31,6 +31,7 @@ public class MemoryConfirmationService {
     private final MemoryConsolidationService consolidationService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final MemoryPersonalizationService personalizationService;
 
     @Autowired
     public MemoryConfirmationService(
@@ -41,7 +42,19 @@ public class MemoryConfirmationService {
             ObjectMapper objectMapper
     ) {
         this(candidateMapper, episodeService, evidenceMapper, consolidationService,
-                objectMapper, Clock.systemDefaultZone());
+                objectMapper, Clock.systemDefaultZone(), null);
+    }
+
+    public MemoryConfirmationService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryEpisodeService episodeService,
+            MemoryEvidenceMapper evidenceMapper,
+            MemoryConsolidationService consolidationService,
+            ObjectMapper objectMapper,
+            MemoryPersonalizationService personalizationService
+    ) {
+        this(candidateMapper, episodeService, evidenceMapper, consolidationService,
+                objectMapper, Clock.systemDefaultZone(), personalizationService);
     }
 
     MemoryConfirmationService(
@@ -52,16 +65,33 @@ public class MemoryConfirmationService {
             ObjectMapper objectMapper,
             Clock clock
     ) {
+        this(candidateMapper, episodeService, evidenceMapper, consolidationService,
+                objectMapper, clock, null);
+    }
+
+    MemoryConfirmationService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryEpisodeService episodeService,
+            MemoryEvidenceMapper evidenceMapper,
+            MemoryConsolidationService consolidationService,
+            ObjectMapper objectMapper,
+            Clock clock,
+            MemoryPersonalizationService personalizationService
+    ) {
         this.candidateMapper = candidateMapper;
         this.episodeService = episodeService;
         this.evidenceMapper = evidenceMapper;
         this.consolidationService = consolidationService;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.personalizationService = personalizationService;
     }
 
     public List<MemoryConfirmationResponse> listPending(Long userId, int limit) {
         requireUser(userId);
+        if (personalizationService != null && !personalizationService.isEnabled(userId)) {
+            return List.of();
+        }
         int safeLimit = Math.max(1, Math.min(limit <= 0 ? DEFAULT_LIMIT : limit, MAX_LIMIT));
         LocalDateTime since = LocalDateTime.now(clock).minus(90, ChronoUnit.DAYS);
         return candidateMapper.listPendingConfirmations(userId, safeLimit).stream()
@@ -76,6 +106,9 @@ public class MemoryConfirmationService {
             MemoryConfirmationDecisionRequest request
     ) {
         requireUser(userId);
+        if (personalizationService != null && !personalizationService.isEnabled(userId)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "个性化已关闭，无法确认新记忆");
+        }
         if (candidateId == null || candidateId <= 0 || request == null
                 || request.decision() == null || request.version() == null || request.version() < 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "记忆确认请求无效");
