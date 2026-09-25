@@ -1,7 +1,10 @@
-# AI Smart Recipe Recommendation System
+# Little Kitchen Spirit | Multimodal AI Cooking Assistant
 
 <p align="center">
-  <strong>A multimodal AI workspace for ingredient recognition and personalized recipes</strong>
+  <img src="https://img.shields.io/badge/Java-17-orange" alt="Java 17">
+  <img src="https://img.shields.io/badge/Spring%20Boot-3.x-green" alt="Spring Boot 3.x">
+  <img src="https://img.shields.io/badge/Vue-3-brightgreen" alt="Vue 3">
+  <img src="https://img.shields.io/badge/Docker-Compose-blue" alt="Docker Compose">
 </p>
 
 <p align="center">
@@ -10,292 +13,106 @@
   <a href="README.en.md"><strong>English</strong></a>
 </p>
 
-This project connects ingredient input, image recognition, AI recipe generation, pantry management, shopping preparation, cooking, and feedback into one practical workflow for home users. It also provides an admin workspace for operations, model configuration, audit logs, and system error logs.
+A multimodal AI cooking assistant for home kitchens. Enter or photograph ingredients to get recipes tailored to dietary preferences, or chat with Little Kitchen Spirit to manage recipes, pantry stock, and weekly menus.
 
-> A graduation project built with Java 17, Spring Boot 3, Vue 3, and Docker Compose. It supports local development, MySQL persistence, and containerized deployment.
+A graduation project built with Java 17, Spring Boot 3, and Vue 3. It supports local development and Docker Compose deployment.
 
-## Features
+## Product Preview
 
-| Area | Implemented capabilities |
-| --- | --- |
-| Smart input | Text input, ingredient image upload, and camera capture |
-| AI recipes | Personalized recommendations, streaming generation, nutrition estimates, cooking steps, and video keywords |
-| Ingredient planning | Required ingredients, pantry matching, shortage analysis, shopping lists, and expiry alerts |
-| User workspace | Saved recipes, search history, recommendation feedback, health profiles, and diet preferences |
-| Pantry and menus | Stock-in, cooking consumption, undoable operations, weekly menus, and AI-generated 21-meal plans |
-| Finished-dish review | AI evaluation of an uploaded finished-dish image with persisted review history |
-| Authentication | SMS registration/login, phone-password login, password reset, and failed-login lockout |
-| Admin workspace | Operations dashboard, popular ingredients, AI configuration, operation logs, and error logs |
+![Little Kitchen Spirit workspace](docs/images/readme/main-scene.png)
 
-## Highlights
+| Little Kitchen Spirit Agent | Ingredient input and recognition | Generated recipe |
+| --- | --- | --- |
+| ![Agent chat](docs/images/readme/kitchen-agent.png) | ![Ingredient input](docs/images/readme/ingredient-input.png) | ![Generated recipe](docs/images/readme/recipe-result.png) |
 
-- Recipe generation uses Server-Sent Events so returned fields are progressively rendered in the existing result view.
-- The result-first interaction is preserved: the result page takes over after generation starts, without a full-screen loading layer hiding streamed text.
-- Recommendations can incorporate ingredients, meal type, diet preferences, health profile, and pantry state.
-- User passwords are stored as BCrypt hashes and can be used alongside SMS authentication.
-- Admin operations and system errors are recorded separately, with sensitive values sanitized before persistence and display.
+The screenshots show the Chinese-language interface.
 
-## Architecture
+## Quick Start
 
-```text
-┌──────────────────────────────────────────────────────────────┐
-│                         Vue 3 frontend                       │
-│ Element Plus · Pinia · Vue Router · Nginx · SSE consumer       │
-└──────────────────────────────┬───────────────────────────────┘
-                               │ /api reverse proxy
-┌──────────────────────────────▼───────────────────────────────┐
-│                     Spring Boot 3 backend                    │
-│ Auth · AI orchestration · recipes · pantry · menus · admin    │
-└───────────────┬───────────────────────────┬───────────────────┘
-                │                           │
-        ┌───────▼────────┐          ┌───────▼────────────────┐
-        │ MySQL / H2     │          │ Qwen-compatible API     │
-        │ Flyway          │          │ Aliyun SMS / PNVS       │
-        └────────────────┘          └────────────────────────┘
-```
+Use the local setup for a first run: it uses an in-memory H2 database and mock SMS, so MySQL and real SMS credentials are not required. Docker Compose runs the full container setup in production mode and requires Aliyun PNVS credentials.
 
-## Project structure
+### Run Locally
 
-```text
-AI-Search-food/
-├─ backend/
-│  ├─ src/main/java/com/example/food/
-│  │  ├─ ai/             # Recipe generation, streaming, vision, AI config
-│  │  ├─ auth/           # User/admin auth, verification codes, password policy
-│  │  ├─ admin/          # Dashboard, operation logs, error logs
-│  │  ├─ recipe/         # Saved recipes, search history, feedback
-│  │  ├─ pantry/         # Pantry, stock-in, consumption, readiness
-│  │  ├─ weekly/         # Weekly menus and shopping status
-│  │  ├─ user/           # Health profiles and diet preferences
-│  │  ├─ review/         # Finished-dish reviews
-│  │  └─ security/       # JWT, roles, and Spring Security
-│  ├─ src/main/resources/db/migration/  # Flyway migrations
-│  ├─ src/test/                         # Unit, controller, integration tests
-│  ├─ Dockerfile
-│  └─ pom.xml
-├─ frontend/
-│  ├─ src/
-│  │  ├─ api/            # API clients
-│  │  ├─ components/     # Reusable business components
-│  │  ├─ stores/         # Pinia stores
-│  │  ├─ utils/          # Stream parsing and business utilities
-│  │  └─ views/          # User and admin views
-│  ├─ nginx/             # Local and container Nginx configuration
-│  ├─ scripts/           # Nginx lifecycle scripts
-│  ├─ Dockerfile
-│  └─ package.json
-├─ docs/                 # Design docs, plans, and setup notes
-├─ docker-compose.yml
-├─ docker-compose.debug.yml
-├─ .env.example
-├─ README.md
-└─ README.en.md
-```
+Requirements: Java 17, Maven 3.8+, and Node.js 20+. Open two terminals in the project root.
 
-## Requirements
+Terminal 1: start the backend with H2. Agent state is stored in memory for this local demo.
 
-- Java 17+
-- Maven 3.8+
-- Node.js 20+
-- MySQL 8+ (H2 is available for local development)
-- Docker Desktop for Compose deployment
-
-## Quick start
-
-### Start the backend
-
-The default profile uses an in-memory H2 database:
+PowerShell:
 
 ```powershell
-mvn "-Dmaven.repo.local=D:\AI-Search-food\.m2" -f backend/pom.xml spring-boot:run
+$env:AGENT_STATE_STORE = 'memory'
+$env:AGENT_RECOVERY_ENABLED = 'false'
+mvn -f backend/pom.xml spring-boot:run
 ```
 
-The backend listens on `http://localhost:7068` by default.
+macOS/Linux:
 
-### Start the frontend
+```bash
+AGENT_STATE_STORE=memory AGENT_RECOVERY_ENABLED=false mvn -f backend/pom.xml spring-boot:run
+```
 
-The standard local demo uses Nginx to serve the built frontend and proxy `/api` requests:
+Terminal 2: start the frontend.
 
-```powershell
+```bash
 cd frontend
 npm install
-npm start
+npm run dev
 ```
 
-Open `http://localhost:5173`. Use `npm run dev` for Vite hot reload. Stop the Nginx process started by this project with:
+Open `http://localhost:5173`. The backend listens on `http://localhost:7068`; the Vite development server proxies `/api` requests to it.
 
-```powershell
-npm run stop
-```
+The local H2 database is temporary, and mock SMS is for development only. Configure a compatible model API key before using recipe generation, ingredient recognition, or the Agent. Set `DASHSCOPE_API_KEY` or configure the model in the admin workspace; saved admin settings take precedence.
 
-On Windows, install Nginx with `winget install -e --id nginxinc.nginx` if needed.
+### Run with Docker Compose
 
-## Configuration
-
-### AI and local development
-
-```env
-JWT_SECRET=change-this-secret-change-this-secret-32
-SMS_PROVIDER=mock
-DASHSCOPE_API_KEY=your-qwen-api-key
-DASHSCOPE_MODEL=qwen-plus
-DASHSCOPE_VISION_MODEL=qwen-vl-plus
-```
-
-The `DASHSCOPE_API_KEY` environment variable is a fallback. AI settings saved from the admin workspace take precedence. Replace `JWT_SECRET` in shared or production environments with a random value of at least 32 bytes.
-
-### H2 and MySQL
-
-For persistent local data, copy the local configuration template and set `SPRING_PROFILES_ACTIVE=local`:
-
-```powershell
-Copy-Item backend/src/main/resources/application-local.example.yml backend/src/main/resources/application-local.yml
-```
-
-Alternatively, enable the `mysql` profile:
-
-```env
-SPRING_PROFILES_ACTIVE=mysql
-MYSQL_URL=jdbc:mysql://localhost:3306/ai_smart_recipe?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-MYSQL_USERNAME=root
-MYSQL_PASSWORD=your-mysql-password
-```
-
-Flyway runs migrations on application startup. Add a new migration instead of editing an already-applied migration.
-
-### SMS verification
-
-The default `mock` provider returns a generated code in the API response and auto-fills it in the frontend. This mode is for local development only. Codes expire after 5 minutes, cannot be requested again within 60 seconds, and become invalid after 5 failed attempts.
-
-For real SMS verification, configure Aliyun PNVS:
-
-```env
-SMS_PROVIDER=aliyun-pnvs
-ALIBABA_CLOUD_ACCESS_KEY_ID=your-access-key-id
-ALIBABA_CLOUD_ACCESS_KEY_SECRET=your-access-key-secret
-ALIYUN_PNVS_SIGN_NAME=your-system-signature
-ALIYUN_PNVS_TEMPLATE_CODE=your-template-code
-ALIYUN_PNVS_ENDPOINT=dypnsapi.aliyuncs.com
-```
-
-Production deployment must enable the `mysql,prod` profiles. Production mode disables the mock sender and refuses to start when real SMS configuration is missing. Keep secrets in environment variables or untracked local configuration.
-
-## Authentication
-
-Regular users can choose phone verification-code login or phone-password login. New users set a password during registration. Existing accounts without a password can continue using SMS login and set a password through the “forgot password” flow.
-
-Passwords must be 8–64 characters and contain at least one letter and one digit. Password login is locked for 15 minutes after five consecutive failures; SMS login and password reset remain available. Passwords are not stored in browser local storage.
-
-Default admin account:
-
-```text
-Username: admin
-Password: Admin@123456
-```
-
-Change the initial admin password before any real deployment.
-
-## API overview
-
-### AI and recipes
-
-| Method | Path | Description |
-| --- | --- | --- |
-| `POST` | `/api/ai/recipes/generate` | Generate a recipe in one response |
-| `POST` | `/api/ai/recipes/generate/stream` | Generate a recipe over SSE |
-| `POST` | `/api/ai/ingredients/recognize` | Recognize ingredients from JPG, PNG, or WebP, up to 5 MB |
-| `POST` | `/api/ai/finished-dish-reviews` | Request an AI review from a finished-dish image |
-
-### Authentication
-
-| Method | Path | Description |
-| --- | --- | --- |
-| `POST` | `/api/auth/user/register/code` | Request a registration code |
-| `POST` | `/api/auth/user/register` | Register and sign in |
-| `POST` | `/api/auth/user/code` | Request a login code |
-| `POST` | `/api/auth/user/login` | SMS login |
-| `POST` | `/api/auth/user/password-login` | Password login |
-| `POST` | `/api/auth/user/password/reset/code` | Request a password reset code |
-| `POST` | `/api/auth/user/password/reset` | Reset a user password |
-| `POST` | `/api/auth/admin/login` | Admin login |
-| `GET` | `/api/auth/me` | Read the current principal |
-
-### User data and administration
-
-- `/api/users/me/pantry`: pantry, expiry alerts, readiness, stock-in, cooking consumption, and undo.
-- `/api/users/me/health-profile`: health profile.
-- `/api/users/me/diet-preferences`: diet preferences.
-- `/api/users/me/weekly-menu`: weekly menu, AI generation, and shopping status.
-- `/api/recipes/saved`: saved recipes.
-- `/api/search-history/recent`: recent searches.
-- `/api/recommendation-feedbacks/{searchLogId}`: recommendation feedback and cooked status.
-- `/api/admin/dashboard/overview`: operations overview and popular ingredients.
-- `/api/admin/ai-config/text-recipe`: text-recipe AI configuration.
-- `/api/admin/operation-logs`: admin operation audit logs.
-- `/api/admin/error-logs`: system error logs.
-- `/api/stats/hot-ingredients`: popular ingredient statistics.
-
-Protected endpoints use:
-
-```http
-Authorization: Bearer <token>
-```
-
-See [Local setup, API, and Aliyun SMS configuration](docs/local-run-api-and-aliyun-sms.md) for request examples and provider details.
-
-## Test and build
-
-Backend tests:
-
-```powershell
-mvn "-Dmaven.repo.local=D:\AI-Search-food\.m2" -f backend/pom.xml test
-```
-
-Frontend production build:
-
-```powershell
-cd frontend
-npm run build
-```
-
-Backend tests cover authentication, password policy, lockout, verification codes, AI clients, controllers, authorization, and core services. Frontend utility tests are kept alongside the source and the production build checks Vue, routing, and static assets.
-
-## Docker Compose
-
-From the project root:
+Requirements: Docker Desktop (or Docker Engine) and Docker Compose v2. From the project root, create the environment file:
 
 ```powershell
 Copy-Item .env.example .env
-# Edit .env with database, JWT, Qwen, and Aliyun PNVS settings
+```
+
+On macOS/Linux:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`. Replace the database passwords, set a random `JWT_SECRET` of at least 32 bytes, and provide Aliyun PNVS AccessKey credentials, signature, and template code. Set `DASHSCOPE_API_KEY` to use AI features.
+
+Start the services:
+
+```bash
 docker compose up -d --build
 docker compose ps
 ```
 
-The frontend is available at `http://localhost`. Set `FRONTEND_PORT=8080` in `.env` if port 80 is unavailable.
+Open `http://localhost`. If port 80 is unavailable, set `FRONTEND_PORT=8080` in `.env` and visit `http://localhost:8080`.
 
-Useful commands:
+> Compose enables the production profile and requires real PNVS SMS configuration. The backend will not start without valid PNVS settings. Use the local setup above to explore the interface with mock SMS.
 
-```powershell
-docker compose logs -f backend
-docker compose logs -f frontend
-docker compose stop
-docker compose start
-docker compose down
-```
+## Core Features
 
-`docker compose down` keeps the `mysql_data` and `review_uploads` volumes. Use `docker compose down -v` only when you explicitly want to remove database and uploaded-file data.
+- **Ingredient recognition:** enter ingredients, upload an image, or use the camera.
+- **Personalized recipes:** recommendations consider ingredients, meal type, diet preferences, health profile, and pantry stock; results include cooking steps, estimated nutrition, and missing ingredients.
+- **Little Kitchen Spirit Agent:** chat to find or generate recipes and manage saved recipes, pantry stock, and weekly menus. Actions that change user data require confirmation.
+- **Cooking organization:** manage pantry items, shopping lists, weekly menus, and cooking feedback.
 
-## Security and development conventions
+## Technology
 
-- Never commit `.env`, API keys, SMS credentials, database passwords, or real user data.
-- Store user passwords as BCrypt hashes; never write passwords or verification codes to logs.
-- Use real SMS, a random JWT secret, and MySQL in production; never use the mock verification provider publicly.
-- Protect admin endpoints by role and isolate user resources by the authenticated principal.
-- Manage schema changes through Flyway versioned migrations.
-- Keep new user-facing copy primarily in Chinese to match the current product experience.
+| Area | Stack |
+| --- | --- |
+| Frontend | Vue 3, Vite, Element Plus, Pinia |
+| Backend | Java 17, Spring Boot 3, Maven |
+| Data | H2 locally; MySQL 8, Flyway, and Redis with Docker Compose |
+| AI and SMS | DashScope/Qwen-compatible API; mock SMS locally or Aliyun PNVS |
 
 ## Documentation
 
-- [Local setup, API, and Aliyun SMS configuration](docs/local-run-api-and-aliyun-sms.md)
-- [Design documents and phase plans](docs/superpowers/)
+- [Local setup, API, and Aliyun SMS](docs/local-run-api-and-aliyun-sms.md)
+- [Tencent Cloud TCR and CDN deployment](docs/tencent-cloud-tcr-cdn-deployment.md)
 - [中文 README](README.md)
+
+## Security
+
+- Never commit `.env`, API keys, SMS credentials, database passwords, or real user data.
+- For production, use a unique random JWT secret and change the initial administrator password.
