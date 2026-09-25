@@ -100,7 +100,37 @@ public class MemoryExtractor {
                     evidence(episode, "SAVE", ingredient)
             ));
         }
+
+        String dietGoal = confirmableDietGoal(text(payload, "goal"));
+        if (dietGoal != null) {
+            drafts.add(draft(
+                    "DIET_GOAL",
+                    dietGoal,
+                    "PURSUE",
+                    new BigDecimal("0.5500"),
+                    new BigDecimal("0.4500"),
+                    "IMPLICIT_BEHAVIOR",
+                    "RECENT",
+                    "选择饮食目标并收藏菜谱：" + dietGoal,
+                    false,
+                    evidence(episode, "SAVE_GOAL", dietGoal)
+            ));
+        }
         return drafts;
+    }
+
+    private String confirmableDietGoal(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        return switch (value.trim().toLowerCase(Locale.ROOT).replace('-', '_').replace(' ', '_')) {
+            case "protein", "high_protein", "高蛋白" -> "高蛋白";
+            case "light", "low_calorie", "低热量" -> "低热量";
+            case "fat_loss", "weight_loss", "减脂", "减重" -> "减脂";
+            case "muscle_gain", "增肌", "肌肉增长" -> "增肌";
+            case "low_sugar", "控糖" -> "控糖";
+            default -> null;
+        };
     }
 
     private List<MemoryCandidateDraft> extractFeedback(MemoryEpisode episode, JsonNode payload) {

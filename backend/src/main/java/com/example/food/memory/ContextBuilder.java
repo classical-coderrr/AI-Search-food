@@ -157,16 +157,19 @@ public class ContextBuilder {
                 copyIfPresent(source, selected, "ingredientPreferences");
                 copyIfPresent(source, selected, "recipePreferences");
                 copyIfPresent(source, selected, "behaviorPatterns");
+                copyIfPresent(source, selected, "dietGoals");
                 copyIfPresent(source, selected, "otherMemories");
             } else if (recommendation || plan != null
                     && "POST_WORKOUT_RECIPE_RECALL".equals(plan.intent())) {
                 copyIfPresent(source, selected, "ingredientPreferences");
                 copyIfPresent(source, selected, "recipePreferences");
                 copyIfPresent(source, selected, "behaviorPatterns");
+                copyIfPresent(source, selected, "dietGoals");
             }
             boolean hasRelevantProfileData = selected.has("ingredientPreferences")
                     || selected.has("recipePreferences")
                     || selected.has("behaviorPatterns")
+                    || selected.has("dietGoals")
                     || selected.has("otherMemories");
             return hasRelevantProfileData ? objectMapper.writeValueAsString(selected) : null;
         } catch (Exception ignored) {

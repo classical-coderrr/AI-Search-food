@@ -4,6 +4,8 @@ import com.example.food.agent.AgentController;
 import com.example.food.agent.AgentService;
 import com.example.food.agent.dto.AgentChatRequest;
 import com.example.food.common.ApiResponse;
+import com.example.food.memory.MemoryConfirmationController;
+import com.example.food.memory.MemoryConfirmationService;
 import com.example.food.stats.HotIngredientStatsController;
 import com.example.food.stats.HotIngredientStatsService;
 import com.example.food.stats.dto.HotIngredientStatsResponse;
@@ -49,7 +51,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         UserDietPreferenceController.class,
         IngredientImageController.class,
         VideoSearchController.class,
-        AgentController.class
+        AgentController.class,
+        MemoryConfirmationController.class
 })
 @Import(SecurityConfig.class)
 class SecurityConfigTest {
@@ -81,12 +84,22 @@ class SecurityConfigTest {
     @MockBean
     private AgentService agentService;
 
+    @MockBean
+    private MemoryConfirmationService memoryConfirmationService;
+
     @Test
     void unauthenticatedProtectedEndpointReturnsJsonUnauthorized() throws Exception {
         mockMvc.perform(get("/api/user/profile"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401))
                 .andExpect(jsonPath("$.message").value("Unauthorized"));
+    }
+
+    @Test
+    void unauthenticatedMemoryEndpointReturnsJsonUnauthorized() throws Exception {
+        mockMvc.perform(get("/api/memory/confirmations/pending"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401));
     }
 
     @Test
@@ -270,6 +283,28 @@ class SecurityConfigTest {
                         .header("Authorization", "Bearer admin-token"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value(403));
+    }
+
+    @Test
+    void adminCannotAccessUserMemoryEndpoints() throws Exception {
+        when(jwtService.parseToken("admin-token"))
+                .thenReturn(new AuthPrincipal(1L, "admin", AppRole.ADMIN));
+
+        mockMvc.perform(get("/api/memory/confirmations/pending")
+                        .header("Authorization", "Bearer admin-token"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+    }
+
+    @Test
+    void authenticatedUserCanAccessUserMemoryEndpoints() throws Exception {
+        when(jwtService.parseToken("user-token"))
+                .thenReturn(new AuthPrincipal(7L, "13800138000", AppRole.USER));
+        when(memoryConfirmationService.listPending(7L, 20)).thenReturn(java.util.List.of());
+
+        mockMvc.perform(get("/api/memory/confirmations/pending")
+                        .header("Authorization", "Bearer user-token"))
+                .andExpect(status().isOk());
     }
 
     @RestController

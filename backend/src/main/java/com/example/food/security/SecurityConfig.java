@@ -69,6 +69,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/recommendation-feedbacks/**").hasRole("USER")
                         .requestMatchers("/api/videos/**").hasRole("USER")
                         .requestMatchers("/api/agent/**").hasRole("USER")
+                        .requestMatchers("/api/memory/**").hasRole("USER")
                         .requestMatchers("/api/shared/recipes/**").permitAll()
                         .requestMatchers("/api/ai/**").permitAll()
                         .requestMatchers("/api/stats/hot-ingredients", "/api/stats/hot-recipes").permitAll()

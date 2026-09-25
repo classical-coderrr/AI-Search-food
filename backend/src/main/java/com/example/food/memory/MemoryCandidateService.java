@@ -13,6 +13,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.List;
@@ -170,9 +171,39 @@ public class MemoryCandidateService {
         candidate.setExtractionModel(extractionModel);
         candidate.setPromptVersion(promptVersion);
         candidate.setExtractedAt(LocalDateTime.now(clock));
-        candidate.setStatus(MemoryCandidateStatus.PENDING.name());
+        candidate.setStatus(initialStatus(userId, draft, normalization).name());
         candidate.setVersion(0);
         return candidate;
+    }
+
+    private MemoryCandidateStatus initialStatus(
+            Long userId,
+            MemoryCandidateDraft draft,
+            TagNormalizationResult normalization
+    ) {
+        if (!"DIET_GOAL".equalsIgnoreCase(draft.candidateType())
+                || !"PURSUE".equalsIgnoreCase(draft.preference())
+                || !"IMPLICIT_BEHAVIOR".equalsIgnoreCase(draft.sourceType())) {
+            return MemoryCandidateStatus.PENDING;
+        }
+
+        LocalDateTime now = LocalDateTime.now(clock);
+        LocalDateTime since = now.minus(90, ChronoUnit.DAYS);
+        String canonicalEntity = normalization.mapped() ? normalization.canonicalName() : draft.entity();
+        String canonicalGroupId = normalization.canonicalGroupId();
+        int priorOccurrences = candidateMapper.countRecentSimilarDietGoals(
+                userId, canonicalGroupId, canonicalEntity, since);
+        if (priorOccurrences < 2
+                || candidateMapper.countRecentDecisionsForSimilarDietGoal(
+                userId, canonicalGroupId, canonicalEntity, since) > 0) {
+            return MemoryCandidateStatus.PENDING;
+        }
+
+        boolean alreadyAsked = candidateMapper.listRecentSimilarDietGoals(
+                        userId, canonicalGroupId, canonicalEntity, since, 100).stream()
+                .anyMatch(candidate -> MemoryCandidateStatus.AWAITING_CONFIRMATION.name()
+                        .equals(candidate.getStatus()));
+        return alreadyAsked ? MemoryCandidateStatus.PENDING : MemoryCandidateStatus.AWAITING_CONFIRMATION;
     }
 
     private void persistEvidence(

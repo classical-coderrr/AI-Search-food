@@ -36,6 +36,8 @@ public class MemoryCandidate {
     private String promptVersion;
     private LocalDateTime extractedAt;
     private String status;
+    private String userDecision;
+    private LocalDateTime decidedAt;
     private Integer version;
     private LocalDateTime deletedAt;
     private LocalDateTime createdAt;
@@ -91,6 +93,10 @@ public class MemoryCandidate {
     public void setExtractedAt(LocalDateTime extractedAt) { this.extractedAt = extractedAt; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+    public String getUserDecision() { return userDecision; }
+    public void setUserDecision(String userDecision) { this.userDecision = userDecision; }
+    public LocalDateTime getDecidedAt() { return decidedAt; }
+    public void setDecidedAt(LocalDateTime decidedAt) { this.decidedAt = decidedAt; }
     public Integer getVersion() { return version; }
     public void setVersion(Integer version) { this.version = version; }
     public LocalDateTime getDeletedAt() { return deletedAt; }

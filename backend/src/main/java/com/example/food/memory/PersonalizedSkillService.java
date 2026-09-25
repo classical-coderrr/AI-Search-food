@@ -64,7 +64,29 @@ public class PersonalizedSkillService {
                 STRONG_PREFERENCE_CONFIDENCE, true));
         putIfPresent(strategy, "familiarCookedRecipes", repeatedCookedRecipes(
                 profile.path("behaviorPatterns").path("other")));
+        putIfPresent(strategy, "prioritizeDietGoals", confirmedDietGoals(profile.path("dietGoals")));
         return Map.copyOf(strategy);
+    }
+
+    private List<String> confirmedDietGoals(JsonNode values) {
+        if (!values.isArray()) {
+            return List.of();
+        }
+        Set<String> goals = new LinkedHashSet<>();
+        for (JsonNode value : values) {
+            String entity = safeName(value.path("entity").asText(null));
+            if (entity == null
+                    || !"USER".equalsIgnoreCase(value.path("scope").asText("USER"))
+                    || !"LONG_TERM".equalsIgnoreCase(value.path("temporalType").asText())
+                    || value.path("confidence").asDouble(0d) < STRONG_PREFERENCE_CONFIDENCE) {
+                continue;
+            }
+            goals.add(entity);
+            if (goals.size() >= 3) {
+                break;
+            }
+        }
+        return List.copyOf(goals);
     }
 
     private List<String> reliableValues(JsonNode values, double confidenceThreshold, boolean allowRepeatedEvidence) {
@@ -140,6 +162,7 @@ public class PersonalizedSkillService {
         addStrategy(lines, strategy, "avoidRecipeReferences", "避免机械重复用户明确不喜欢的同一道菜，可推荐相近但不同的做法");
         addStrategy(lines, strategy, "likedRecipeReferences", "用户明确喜欢过的菜可作为风味参考，不要默认重复推荐原菜");
         addStrategy(lines, strategy, "familiarCookedRecipes", "可参考用户多次实际烹饪过的菜式，但注意餐次与本轮目标");
+        addStrategy(lines, strategy, "prioritizeDietGoals", "仅在用户已确认的长期饮食目标中排序，不把单次搜索目标升级为长期目标");
         return String.join("\n", lines);
     }
 

@@ -257,6 +257,12 @@ public class MemoryConsolidationService {
         document.put("ingredientPreferences", preferenceGroups(items, "INGREDIENT_PREFERENCE"));
         document.put("recipePreferences", preferenceGroups(items, "RECIPE_PREFERENCE"));
         document.put("behaviorPatterns", preferenceGroups(items, "RECIPE_BEHAVIOR"));
+        document.put("dietGoals", items.stream()
+                .filter(item -> "DIET_GOAL".equals(item.getMemoryType())
+                        && "LONG_TERM".equalsIgnoreCase(item.getTemporalType()))
+                .sorted(Comparator.comparing(this::safeConfidence).reversed())
+                .map(this::itemView)
+                .toList());
         document.put("otherMemories", items.stream()
                 .filter(item -> !Set.of("INGREDIENT_PREFERENCE", "RECIPE_PREFERENCE", "RECIPE_BEHAVIOR")
                         .contains(item.getMemoryType()))
@@ -359,6 +365,7 @@ public class MemoryConsolidationService {
 
     private BigDecimal sourceWeight(String sourceType) {
         if ("EXPLICIT".equalsIgnoreCase(sourceType)
+                || "USER_CONFIRMED".equalsIgnoreCase(sourceType)
                 || "EXPLICIT_FEEDBACK".equalsIgnoreCase(sourceType)) {
             return new BigDecimal("1.00");
         }

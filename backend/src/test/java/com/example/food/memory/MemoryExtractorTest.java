@@ -44,6 +44,36 @@ class MemoryExtractorTest {
     }
 
     @Test
+    void extractsOnlyAllowlistedDietGoalsAsRecentBehaviorRatherThanConfirmedProfile() {
+        MemoryEpisode episode = episode(
+                "RECIPE_SAVED",
+                "{\"title\":\"高蛋白鸡胸肉\",\"goal\":\"muscle_gain\",\"ingredients\":[\"鸡胸肉\"]}"
+        );
+
+        MemoryCandidateDraft goal = extractor.extract(episode).stream()
+                .filter(item -> "DIET_GOAL".equals(item.candidateType()))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(goal.entity()).isEqualTo("增肌");
+        assertThat(goal.preference()).isEqualTo("PURSUE");
+        assertThat(goal.temporalType()).isEqualTo("RECENT");
+        assertThat(goal.sourceType()).isEqualTo("IMPLICIT_BEHAVIOR");
+        assertThat(goal.explicitConfirmed()).isFalse();
+        assertThat(goal.evidenceText()).contains("选择饮食目标");
+    }
+
+    @Test
+    void ignoresUnknownAndDefaultRecipeGoalsForLongTermInference() {
+        MemoryEpisode episode = episode(
+                "RECIPE_SAVED",
+                "{\"title\":\"家常菜\",\"goal\":\"balanced\",\"ingredients\":[]}"
+        );
+
+        assertThat(extractor.extract(episode)).noneMatch(item -> "DIET_GOAL".equals(item.candidateType()));
+    }
+
+    @Test
     void treatsExplicitFeedbackAsStrongerThanASave() {
         MemoryEpisode episode = episode(
                 "RECIPE_FEEDBACK",

@@ -180,6 +180,23 @@
               <div class="agent-card__actions"><button type="button" class="agent-button agent-button--primary" :disabled="loading || message.card.confirmed" @click="confirmAction(message)"><Check :size="14" aria-hidden="true" />{{ message.card.confirmed ? '已确认' : (message.card.actionLabel || '确认执行') }}</button><button type="button" class="agent-button" :disabled="loading || message.card.confirmed" @click="cancelConfirmation(message)">{{ message.card.cancelLabel || '暂不执行' }}</button></div>
             </template>
 
+            <template v-else-if="message.card.cardType === 'memory-confirmation-card'">
+              <div class="agent-confirmation__title"><ShieldCheck :size="16" aria-hidden="true" /><strong>要把这项饮食目标作为长期偏好吗？</strong></div>
+              <p class="agent-memory-confirmation__proposal">我发现你近期多次选择了 <strong>{{ message.card.payload.entity || message.card.payload.proposedPreference }}</strong> 相关饮食目标。</p>
+              <p class="agent-memory-confirmation__meta">近 90 天内有 {{ message.card.payload.evidenceCount }} 条相关记录<span v-if="message.card.payload.firstSeenAt || message.card.payload.lastSeenAt"> · {{ formatMemoryDate(message.card.payload.firstSeenAt) }} 至 {{ formatMemoryDate(message.card.payload.lastSeenAt) }}</span></p>
+              <ul v-if="message.card.payload.evidenceSummaries?.length" class="agent-memory-confirmation__evidence" aria-label="用于判断的近期记录">
+                <li v-for="(evidence, index) in message.card.payload.evidenceSummaries" :key="`${message.card.payload.candidateId}-${index}`">{{ evidence }}</li>
+              </ul>
+              <small :id="`memory-confirmation-help-${message.card.payload.candidateId}`">只有确认后才会加入长期画像并用于之后的个性化推荐；另外两项不会写入长期偏好。</small>
+              <div v-if="message.card.decisionResult" class="agent-memory-confirmation__result" role="status" aria-live="polite">{{ message.card.decisionResult }}</div>
+              <div v-else-if="message.card.decisionError" class="agent-memory-confirmation__error" role="alert">{{ message.card.decisionError }}</div>
+              <div class="agent-card__actions agent-memory-confirmation__actions" role="group" :aria-label="`确认${message.card.payload.entity || '饮食目标'}是否作为长期偏好`" :aria-describedby="`memory-confirmation-help-${message.card.payload.candidateId}`">
+                <button type="button" class="agent-button agent-button--primary" :disabled="message.card.decisionPending || message.card.decisionResolved" @click="decideMemory(message, 'CONFIRM')">{{ message.card.decisionPending === 'CONFIRM' ? '处理中…' : '确认长期记住' }}</button>
+                <button type="button" class="agent-button" :disabled="message.card.decisionPending || message.card.decisionResolved" @click="decideMemory(message, 'REJECT')">{{ message.card.decisionPending === 'REJECT' ? '处理中…' : '不记住' }}</button>
+                <button type="button" class="agent-button" :disabled="message.card.decisionPending || message.card.decisionResolved" @click="decideMemory(message, 'ONLY_THIS_TIME')">{{ message.card.decisionPending === 'ONLY_THIS_TIME' ? '处理中…' : '仅本次' }}</button>
+              </div>
+            </template>
+
             <template v-else-if="['operation-result-card', 'image-recognition-card', 'attachment-card', 'finished-dish-card'].includes(message.card.cardType)">
               <div class="agent-card__head"><div><ClipboardCheck :size="15" aria-hidden="true" /><strong>{{ message.card.payload?.title || '厨房操作结果' }}</strong></div></div>
               <p class="agent-card__note">{{ message.card.payload?.summary || '操作已完成' }}</p>
@@ -235,6 +252,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Bell, BookOpen, CalendarDays, Check, ClipboardCheck, Clock3, Database, HeartPulse, LockKeyhole, Maximize2, Minimize2, Paperclip, Save, Send, ShieldCheck, Square, X } from 'lucide-vue-next'
 import { deleteAgentConversation, getAgentConversationMessages, getAgentRunStatus, getLatestAgentConversation, resumeAgentEvents, streamAgentChat } from '../api/agent.js'
+import { decideMemoryConfirmation, getPendingMemoryConfirmations } from '../api/memory.js'
 import { useAuthStore } from '../stores/auth.js'
 import { clampAgentPanelPosition } from '../utils/agentPanelPosition.js'
 
@@ -313,7 +331,10 @@ onBeforeUnmount(() => {
 
 watch([messages, conversationId, runId, lastEventSeq], () => {
   if (auth.isUser) {
-    const storedMessages = messages.value.slice(-80).map(({ imagePreview, ...message }) => message)
+    const storedMessages = messages.value
+      .filter((message) => message.card?.cardType !== 'memory-confirmation-card')
+      .slice(-80)
+      .map(({ imagePreview, ...message }) => message)
     localStorage.setItem(storageKey(), JSON.stringify({
       conversationId: conversationId.value,
       runId: runId.value,
@@ -323,6 +344,20 @@ watch([messages, conversationId, runId, lastEventSeq], () => {
   }
   void scrollToBottom()
 }, { deep: true })
+
+watch(() => auth.token, (token, previousToken) => {
+  if (token === previousToken) return
+  stopGeneration()
+  stopRunTracking()
+  clearAttachment()
+  revokeAllPreviews()
+  conversationId.value = null
+  runId.value = null
+  lastEventSeq.value = 0
+  recoveryStatus.value = ''
+  messages.value = []
+  if (token && auth.isUser) void restoreConversation()
+})
 
 function togglePanel() {
   isOpen.value = !isOpen.value
@@ -723,9 +758,11 @@ function addMessage(message) {
 
 async function restoreConversation() {
   if (!auth.isUser) return
+  const requestToken = auth.token
+  const requestStorageKey = storageKey()
   const locallySavedRecipeKeys = new Set()
   try {
-    const saved = JSON.parse(localStorage.getItem(storageKey()) || 'null')
+    const saved = JSON.parse(localStorage.getItem(requestStorageKey) || 'null')
     conversationId.value = saved?.conversationId || null
     runId.value = saved?.runId || null
     lastEventSeq.value = Number(saved?.lastEventSeq) || 0
@@ -743,6 +780,7 @@ async function restoreConversation() {
 
   try {
     const response = await getLatestAgentConversation()
+    if (auth.token !== requestToken || !auth.isUser) return
     const history = response?.data?.data
     if (history) {
       conversationId.value = history.conversationId || null
@@ -759,6 +797,8 @@ async function restoreConversation() {
     // The local cache remains usable when the history endpoint is unavailable.
   }
 
+  if (auth.token !== requestToken || !auth.isUser) return
+
   if (runId.value) {
     const recoveryMessage = messages.value.some((message) => message.recoveryMessage)
       ? messages.value.find((message) => message.recoveryMessage)
@@ -771,6 +811,81 @@ async function restoreConversation() {
       recoveryMessage: true
     })
     void trackRun(runId.value, statusMessage)
+  }
+  await loadPendingMemoryConfirmations()
+}
+
+async function loadPendingMemoryConfirmations() {
+  if (!auth.isUser || !auth.token) return
+  const requestToken = auth.token
+  try {
+    const response = await getPendingMemoryConfirmations(100)
+    if (auth.token !== requestToken || !auth.isUser) return
+    const pending = Array.isArray(response?.data?.data) ? response.data.data : []
+    const byId = new Map(pending.map((candidate) => [String(candidate.candidateId), candidate]))
+    const existing = new Map()
+
+    messages.value.forEach((message) => {
+      if (message.card?.cardType !== 'memory-confirmation-card') return
+      const id = String(message.card.payload?.candidateId)
+      existing.set(id, message)
+      const latest = byId.get(id)
+      if (latest && !message.card.decisionResolved) {
+        message.card.payload = latest
+      } else if (!latest && !message.card.decisionResolved) {
+        message.card.decisionResolved = true
+        message.card.decisionError = ''
+        message.card.decisionResult = '这条偏好已不在待确认列表中，可能已在其他页面处理。'
+      }
+    })
+
+    pending.forEach((candidate) => {
+      if (existing.has(String(candidate.candidateId))) return
+      addMessage({
+        role: 'assistant',
+        content: '',
+        trace: [],
+        card: { cardType: 'memory-confirmation-card', payload: candidate }
+      })
+    })
+  } catch {
+    // Memory confirmation is optional UI; the rest of the conversation stays available.
+  }
+}
+
+async function decideMemory(message, decision) {
+  const card = message?.card
+  const candidate = card?.payload
+  if (!candidate?.candidateId || !auth.isUser || card.decisionPending || card.decisionResolved) return
+
+  card.decisionPending = decision
+  card.decisionError = ''
+  try {
+    const response = await decideMemoryConfirmation(candidate.candidateId, {
+      decision,
+      version: candidate.version
+    })
+    const result = response?.data?.data
+    card.decisionResolved = true
+    card.decisionResult = decision === 'CONFIRM'
+      ? (result?.profileUpdated
+          ? `已确认：之后会将“${candidate.entity}”作为长期饮食目标用于个性化推荐。`
+          : `已确认“${candidate.entity}”，但画像暂未更新；你仍可在记忆设置中查看。`)
+      : decision === 'REJECT'
+        ? '已记录：不会把这项推断作为长期偏好。'
+        : '已记录：仅本次使用，不会加入长期画像。'
+  } catch (error) {
+    if (error?.response?.status === 409) {
+      card.decisionError = '这条记忆刚刚发生了变化，正在刷新状态…'
+      await loadPendingMemoryConfirmations()
+      if (!card.decisionResolved) {
+        card.decisionError = '依据已刷新，请检查更新后的记录后再选择。'
+      }
+    } else {
+      card.decisionError = error?.response?.data?.message || error?.message || '暂时无法保存这个选择，请稍后重试。'
+    }
+  } finally {
+    card.decisionPending = ''
   }
 }
 
@@ -985,6 +1100,11 @@ function formatDateTime(value) {
   return String(value).replace('T', ' ').slice(0, 16)
 }
 
+function formatMemoryDate(value) {
+  if (!value) return '未知'
+  return String(value).replace('T', ' ').slice(0, 10)
+}
+
 function nutritionValue(value, unit) {
   return value === null || value === undefined ? `未设置${unit}` : `${value} ${unit}`
 }
@@ -1118,6 +1238,7 @@ async function scrollToBottom() {
 .agent-recipe-card__topline { color: #a36e2d; }.agent-card h3 { margin: 0; font-size: 19px; line-height: 1.35; }.agent-recipe-card__summary { margin: -3px 0 0; color: #80664a; font-size: 13px; line-height: 1.6; }.agent-recipe-card__section { display: grid; gap: 6px; padding-top: 9px; border-top: 1px solid #ead9b9; }.agent-recipe-card__section > strong { font-size: 12px; }.agent-recipe-card__chips { display: flex; flex-wrap: wrap; gap: 5px; }.agent-recipe-card__chips span { padding: 4px 6px; border: 1px solid #d5b77f; color: #5d4936; background: #fff4d6; font-size: 11px; }.agent-recipe-card__section--missing p { margin: 0; color: #a45246; font-size: 12px; line-height: 1.5; }.agent-recipe-card__section ol { display: grid; gap: 7px; margin: 0; padding-left: 22px; color: #5d4936; font-size: 12px; line-height: 1.55; }.agent-recipe-card__section li span { margin-right: 4px; color: #a36e2d; font-weight: 900; }.agent-recipe-card__nutrition { padding: 7px 8px; color: #4f7660; background: #e8f1e3; font-size: 11px; font-weight: 800; }
 .agent-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 44px; padding: 0 10px; border: 1px solid #b99562; color: #5d4936; background: #fffaf0; font: inherit; font-size: 11px; font-weight: 900; cursor: pointer; }.agent-button:hover, .agent-button:focus-visible { border-color: #4f8ca5; background: #fff4d6; outline: 2px solid #4f8ca5; outline-offset: 2px; }.agent-button--primary { border-color: #3d7866; color: #fff; background: #3d7866; }.agent-button--saved, .agent-button--saved:disabled { border-color: #a9a9a9; color: #666; background: #e2e2e2; opacity: 1; cursor: not-allowed; }.agent-button--stop { border-color: #c75b4d; color: #9b4037; background: #fff0ec; }.agent-button--retry { min-width: 64px; color: #9b4037; background: #fff0ec; }.agent-button:disabled { opacity: .5; cursor: not-allowed; }
 .agent-confirmation__title { color: #986424; }.agent-card--confirmation-card p { margin: 0; font-size: 13px; line-height: 1.6; }.agent-card--confirmation-card small { color: #8b765c; font-size: 11px; line-height: 1.5; }
+.agent-memory-confirmation__proposal, .agent-memory-confirmation__meta { margin: 0; color: #5d4936; font-size: 13px; line-height: 1.6; }.agent-memory-confirmation__proposal strong { color: #2f6655; }.agent-memory-confirmation__meta { color: #80664a; font-size: 11px; }.agent-memory-confirmation__evidence { display: grid; gap: 5px; margin: 0; padding: 0 0 0 19px; color: #5d4936; font-size: 12px; line-height: 1.55; }.agent-memory-confirmation__evidence li { padding-left: 2px; overflow-wrap: anywhere; }.agent-card--memory-confirmation-card > small { color: #80664a; font-size: 11px; line-height: 1.5; }.agent-memory-confirmation__actions { justify-content: flex-start; flex-wrap: wrap; }.agent-memory-confirmation__actions .agent-button { flex: 1 1 110px; }.agent-memory-confirmation__result, .agent-memory-confirmation__error { padding: 8px 9px; border: 1px solid #9bbda4; color: #285d43; background: #edf6ed; font-size: 12px; line-height: 1.55; }.agent-memory-confirmation__error { border-color: #d99a8d; color: #8b3e34; background: #fff0ec; }
 .agent-result-detail { max-height: 220px; margin: 0; overflow: auto; padding: 9px; border: 1px solid #ead9b9; color: #5d4936; background: #fffaf0; font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-trace { color: #8b765c; font-size: 10px; }.agent-trace summary { width: max-content; color: #876c4d; cursor: pointer; }.agent-trace span { display: block; margin-top: 4px; padding-left: 10px; overflow-wrap: anywhere; }.agent-trace span::before { content: '·'; margin-right: 5px; color: #a36e2d; }
 .agent-error-actions { display: flex; justify-content: flex-start; }.agent-login-hint { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-top: 1px solid #ead9b9; color: #986424; background: #fff4d6; font-size: 11px; font-weight: 800; }
