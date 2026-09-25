@@ -25,6 +25,7 @@ class MemoryManagementIntegrationTest {
     @Autowired private MemoryManagementService managementService;
     @Autowired private MemoryPersonalizationService personalizationService;
     @Autowired private MemorySessionService sessionService;
+    @Autowired private MemoryRetrievalTraceService retrievalTraceService;
     @Autowired private MemoryBehaviorEpisodeRecorder episodeRecorder;
 
     @Test
@@ -86,9 +87,13 @@ class MemoryManagementIntegrationTest {
         MemorySession session = sessionService.open(userId, new MemorySessionOpenCommand(
                 null, "management-session", "RECOMMEND_RECIPE", "偏好测试", "{}", "[]", "[]", null, null));
         MemoryEpisode existing = saveRecipeEpisode(userId, "clear-save-user", "番茄鸡蛋面", session.getId());
+        retrievalTraceService.record(userId, "clear-trace-user", "这段敏感查询不应明文落库",
+                null, null, "SUCCESS", null, 14);
         candidateService.extractAndPersist(userId, existing.getId());
         consolidationService.consolidate(userId);
         MemoryEpisode otherEpisode = saveRecipeEpisode(otherUserId, "clear-save-other", "清蒸鲈鱼");
+        retrievalTraceService.record(otherUserId, "clear-trace-other", "other account query",
+                null, null, "SUCCESS", null, 22);
         candidateService.extractAndPersist(otherUserId, otherEpisode.getId());
         consolidationService.consolidate(otherUserId);
 
@@ -107,6 +112,7 @@ class MemoryManagementIntegrationTest {
         assertThat(cleared.candidatesDeleted()).isGreaterThan(0);
         assertThat(cleared.memoriesDeleted()).isGreaterThan(0);
         assertThat(cleared.sessionsDeleted()).isEqualTo(1);
+        assertThat(cleared.retrievalTracesDeleted()).isEqualTo(1);
         assertThat(personalizationService.getState(userId).enabled()).isFalse();
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM memory_items WHERE user_id = ?", Integer.class, userId)).isZero();
@@ -114,6 +120,14 @@ class MemoryManagementIntegrationTest {
                 "SELECT COUNT(*) FROM memory_episodes WHERE user_id = ?", Integer.class, userId)).isZero();
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM memory_profiles WHERE user_id = ?", Integer.class, userId)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_retrieval_traces WHERE user_id = ?", Integer.class, userId)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_retrieval_traces WHERE user_id = ?", Integer.class, otherUserId))
+                .isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_retrieval_traces WHERE trace_id = ? AND query_hash = ?",
+                Integer.class, "clear-trace-other", "other account query")).isZero();
         assertThat(consolidationService.listOwnedItems(otherUserId, 500)).isNotEmpty();
     }
 

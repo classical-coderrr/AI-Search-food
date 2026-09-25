@@ -4,5 +4,6 @@ public record MemoryClearResult(
         int episodesDeleted,
         int candidatesDeleted,
         int memoriesDeleted,
-        int sessionsDeleted
+        int sessionsDeleted,
+        int retrievalTracesDeleted
 ) { }

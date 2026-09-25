@@ -10,6 +10,7 @@ import com.example.food.memory.MemorySessionOpenCommand;
 import com.example.food.memory.MemorySessionService;
 import com.example.food.memory.MemorySessionUpdate;
 import com.example.food.memory.MemoryPersonalizationService;
+import com.example.food.memory.MemoryRetrievalTraceService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,6 +36,7 @@ public class AgentMemoryContextProvider {
     private final MemorySessionService sessionService;
     private final ObjectMapper objectMapper;
     private final MemoryPersonalizationService personalizationService;
+    private final MemoryRetrievalTraceService retrievalTraceService;
 
     public AgentMemoryContextProvider(MemoryRetriever memoryRetriever,
                                       ContextBuilder contextBuilder,
@@ -43,21 +45,34 @@ public class AgentMemoryContextProvider {
         this(memoryRetriever, contextBuilder, sessionService, objectMapper, null);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
     public AgentMemoryContextProvider(MemoryRetriever memoryRetriever,
                                       ContextBuilder contextBuilder,
                                       MemorySessionService sessionService,
                                       ObjectMapper objectMapper,
                                       MemoryPersonalizationService personalizationService) {
+        this(memoryRetriever, contextBuilder, sessionService, objectMapper, personalizationService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentMemoryContextProvider(MemoryRetriever memoryRetriever,
+                                      ContextBuilder contextBuilder,
+                                      MemorySessionService sessionService,
+                                      ObjectMapper objectMapper,
+                                      MemoryPersonalizationService personalizationService,
+                                      MemoryRetrievalTraceService retrievalTraceService) {
         this.memoryRetriever = memoryRetriever;
         this.contextBuilder = contextBuilder;
         this.sessionService = sessionService;
         this.objectMapper = objectMapper;
         this.personalizationService = personalizationService;
+        this.retrievalTraceService = retrievalTraceService;
     }
 
     public PreparedContext prepare(Long userId, Long conversationId, String runId, String query) {
+        long startedAtNanos = System.nanoTime();
         MemorySession session = null;
+        MemoryRetrievalResult retrieval = null;
+        ContextBuilder.ContextBuildResult builtContext = null;
         try {
             if (personalizationService != null && !personalizationService.isEnabled(userId)) {
                 return PreparedContext.disabled();
@@ -75,7 +90,7 @@ public class AgentMemoryContextProvider {
                     expiresAt
             ));
 
-            MemoryRetrievalResult retrieval = memoryRetriever.search(
+            retrieval = memoryRetriever.search(
                     userId, MemorySearchCommand.query(query, session.getId()));
             Map<String, Object> sessionContext = new LinkedHashMap<>();
             sessionContext.put("intent", retrieval.queryPlan().intent());
@@ -97,7 +112,7 @@ public class AgentMemoryContextProvider {
                     writeJson(Map.of("runId", runId, "status", "RETRIEVED")),
                     expiresAt
             ));
-            ContextBuilder.ContextBuildResult context = contextBuilder.build(
+            builtContext = contextBuilder.build(
                     userId, session.getId(), retrieval, List.of(), List.of(), null);
 
             sessionService.touch(userId, session.getId(), new MemorySessionUpdate(
@@ -106,10 +121,10 @@ public class AgentMemoryContextProvider {
                     "检索与本轮任务相关的历史记忆",
                     writeJson(sessionContext),
                     writeJson(Map.of(
-                            "memoryItemIds", context.usedMemoryItemIds(),
-                            "episodeIds", context.usedEpisodeIds()
+                            "memoryItemIds", builtContext.usedMemoryItemIds(),
+                            "episodeIds", builtContext.usedEpisodeIds()
                     )),
-                    writeJson(context.knowledgeIds()),
+                    writeJson(builtContext.knowledgeIds()),
                     writeJson(Map.of("runId", runId, "status", "CONTEXT_BUILT")),
                     expiresAt
             ));
@@ -121,9 +136,9 @@ public class AgentMemoryContextProvider {
             }
 
             MemoryRetrievalResult.RetrievalTrace trace = retrieval.trace();
-            return new PreparedContext(
+            PreparedContext prepared = new PreparedContext(
                     session.getId(),
-                    context.promptContext(),
+                    builtContext.promptContext(),
                     "SUCCESS",
                     null,
                     retrieval.queryPlan().intent(),
@@ -131,20 +146,38 @@ public class AgentMemoryContextProvider {
                     trace.episodeCandidates(),
                     trace.selectedMemoryItemIds(),
                     trace.selectedEpisodeIds(),
-                    context.usedMemoryItemIds(),
-                    context.usedEpisodeIds(),
-                    context.knowledgeIds(),
-                    context.sections().keySet().stream().toList(),
-                    traceSummaries(retrieval, context),
-                    context.estimatedTokens(),
-                    context.tokenBudget(),
-                    context.truncated()
+                    builtContext.usedMemoryItemIds(),
+                    builtContext.usedEpisodeIds(),
+                    builtContext.knowledgeIds(),
+                    builtContext.sections().keySet().stream().toList(),
+                    traceSummaries(retrieval, builtContext),
+                    builtContext.estimatedTokens(),
+                    builtContext.tokenBudget(),
+                    builtContext.truncated()
             );
+            recordTrace(userId, runId, query, retrieval, builtContext, "SUCCESS", null, startedAtNanos);
+            return prepared;
         } catch (RuntimeException exception) {
             LOGGER.warn("Agent memory context degraded, runId={}, userId={}, errorType={}",
                     runId, userId, exception.getClass().getSimpleName());
-            return PreparedContext.degraded(session == null ? null : session.getId(),
+            PreparedContext degraded = PreparedContext.degraded(session == null ? null : session.getId(),
                     exception.getClass().getSimpleName());
+            recordTrace(userId, runId, query, retrieval, builtContext, "DEGRADED",
+                    exception.getClass().getSimpleName(), startedAtNanos);
+            return degraded;
+        }
+    }
+
+    private void recordTrace(Long userId, String runId, String query, MemoryRetrievalResult retrieval,
+                             ContextBuilder.ContextBuildResult context, String status, String errorType,
+                             long startedAtNanos) {
+        if (retrievalTraceService == null) return;
+        try {
+            long elapsedMs = Math.max(0L, (System.nanoTime() - startedAtNanos) / 1_000_000L);
+            retrievalTraceService.record(userId, runId, query, retrieval, context, status, errorType, elapsedMs);
+        } catch (RuntimeException traceFailure) {
+            LOGGER.warn("Memory retrieval trace persistence failed, runId={}, userId={}, errorType={}",
+                    runId, userId, traceFailure.getClass().getSimpleName());
         }
     }
 

@@ -27,6 +27,7 @@ class MemoryManagementServiceTest {
     @Mock private MemoryEpisodeMapper episodeMapper;
     @Mock private MemoryProfileMapper profileMapper;
     @Mock private MemorySessionMapper sessionMapper;
+    @Mock private MemoryRetrievalTraceMapper retrievalTraceMapper;
     @Mock private MemoryConsolidationService consolidationService;
     @Mock private MemoryPersonalizationService personalizationService;
 
@@ -99,6 +100,7 @@ class MemoryManagementServiceTest {
         when(episodeMapper.deleteAllOwned(7L)).thenReturn(4);
         when(itemMapper.deleteAllOwned(7L)).thenReturn(2);
         when(sessionMapper.deleteAllOwned(7L)).thenReturn(1);
+        when(retrievalTraceMapper.deleteAllOwned(7L)).thenReturn(6);
 
         MemoryClearResult result = service().clearAll(7L);
 
@@ -106,12 +108,14 @@ class MemoryManagementServiceTest {
         assertThat(result.candidatesDeleted()).isEqualTo(2);
         assertThat(result.memoriesDeleted()).isEqualTo(2);
         assertThat(result.sessionsDeleted()).isEqualTo(1);
+        assertThat(result.retrievalTracesDeleted()).isEqualTo(6);
+        verify(retrievalTraceMapper).deleteAllOwned(7L);
         verify(profileMapper).deleteOwned(7L);
     }
 
     private MemoryManagementService service() {
         return new MemoryManagementService(itemMapper, itemCandidateMapper, candidateMapper,
-                evidenceMapper, episodeMapper, profileMapper, sessionMapper, consolidationService,
+                evidenceMapper, episodeMapper, profileMapper, sessionMapper, retrievalTraceMapper, consolidationService,
                 personalizationService);
     }
 

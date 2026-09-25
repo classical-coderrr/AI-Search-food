@@ -11,6 +11,7 @@ import com.example.food.memory.MemorySessionOpenCommand;
 import com.example.food.memory.MemorySessionService;
 import com.example.food.memory.MemorySessionUpdate;
 import com.example.food.memory.MemoryPersonalizationService;
+import com.example.food.memory.MemoryRetrievalTraceService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -20,7 +21,9 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -34,6 +37,7 @@ class AgentMemoryContextProviderTest {
         MemoryRetriever retriever = mock(MemoryRetriever.class);
         ContextBuilder contextBuilder = mock(ContextBuilder.class);
         MemorySessionService sessionService = mock(MemorySessionService.class);
+        MemoryRetrievalTraceService traceService = mock(MemoryRetrievalTraceService.class);
         MemorySession session = new MemorySession();
         session.setId(55L);
         when(sessionService.open(eq(7L), any(MemorySessionOpenCommand.class))).thenReturn(session);
@@ -54,9 +58,10 @@ class AgentMemoryContextProviderTest {
         when(contextBuilder.build(7L, 55L, retrieval, List.of(), List.of(), null)).thenReturn(built);
 
         AgentMemoryContextProvider provider = new AgentMemoryContextProvider(
-                retriever, contextBuilder, sessionService, new ObjectMapper());
+                retriever, contextBuilder, sessionService, new ObjectMapper(), null, traceService);
+        String query = "今晚推荐一道清淡鸡肉晚餐";
         AgentMemoryContextProvider.PreparedContext result = provider.prepare(
-                7L, 42L, "run-1", "今晚推荐一道清淡鸡肉晚餐");
+                7L, 42L, "run-1", query);
 
         assertThat(result.status()).isEqualTo("SUCCESS");
         assertThat(result.sessionId()).isEqualTo(55L);
@@ -77,6 +82,8 @@ class AgentMemoryContextProviderTest {
         verify(retriever).search(eq(7L), eq(MemorySearchCommand.query("今晚推荐一道清淡鸡肉晚餐", 55L)));
         verify(sessionService, times(2)).touch(eq(7L), eq(55L), any(MemorySessionUpdate.class));
         verify(sessionService).close(7L, 55L);
+        verify(traceService).record(eq(7L), eq("run-1"), eq(query), eq(retrieval), eq(built),
+                eq("SUCCESS"), isNull(), anyLong());
     }
 
     @Test

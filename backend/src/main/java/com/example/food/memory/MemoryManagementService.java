@@ -25,6 +25,7 @@ public class MemoryManagementService {
     private final MemoryEpisodeMapper episodeMapper;
     private final MemoryProfileMapper profileMapper;
     private final MemorySessionMapper sessionMapper;
+    private final MemoryRetrievalTraceMapper retrievalTraceMapper;
     private final MemoryConsolidationService consolidationService;
     private final MemoryPersonalizationService personalizationService;
 
@@ -36,6 +37,7 @@ public class MemoryManagementService {
             MemoryEpisodeMapper episodeMapper,
             MemoryProfileMapper profileMapper,
             MemorySessionMapper sessionMapper,
+            MemoryRetrievalTraceMapper retrievalTraceMapper,
             MemoryConsolidationService consolidationService,
             MemoryPersonalizationService personalizationService
     ) {
@@ -46,6 +48,7 @@ public class MemoryManagementService {
         this.episodeMapper = episodeMapper;
         this.profileMapper = profileMapper;
         this.sessionMapper = sessionMapper;
+        this.retrievalTraceMapper = retrievalTraceMapper;
         this.consolidationService = consolidationService;
         this.personalizationService = personalizationService;
     }
@@ -135,7 +138,8 @@ public class MemoryManagementService {
         profileMapper.deleteOwned(userId);
         int memories = itemMapper.deleteAllOwned(userId);
         int sessions = sessionMapper.deleteAllOwned(userId);
-        return new MemoryClearResult(episodes, candidates, memories, sessions);
+        int traces = retrievalTraceMapper.deleteAllOwned(userId);
+        return new MemoryClearResult(episodes, candidates, memories, sessions, traces);
     }
 
     private MemoryManagementItemResponse toResponse(MemoryItem item) {

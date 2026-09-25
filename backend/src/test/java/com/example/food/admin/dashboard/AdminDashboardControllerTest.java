@@ -26,6 +26,8 @@ class AdminDashboardControllerTest {
     private static final String OVERVIEW_URL = "/api/admin/dashboard/overview";
     private static final String AGENT_OBSERVABILITY_URL = "/api/admin/dashboard/agent-observability";
     private static final String AGENT_EVALUATION_URL = "/api/admin/dashboard/agent-evaluation";
+    private static final String MEMORY_EVALUATION_URL = "/api/admin/dashboard/memory-evaluation";
+    private static final String MEMORY_OBSERVABILITY_URL = "/api/admin/dashboard/memory-observability";
 
     @Autowired
     private MockMvc mockMvc;
@@ -115,5 +117,58 @@ class AdminDashboardControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PASSED"))
                 .andExpect(jsonPath("$.data.cases[0].inputMessage").exists());
+    }
+
+    @Test
+    void adminCanRunMemoryEvaluationAndReadPrivacySafeObservability() throws Exception {
+        String adminToken = jwtService.generateToken(new AuthPrincipal(1L, "admin", AppRole.ADMIN));
+
+        mockMvc.perform(post(MEMORY_EVALUATION_URL + "/run")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.suiteVersion").value("memory-evaluation-v1"))
+                .andExpect(jsonPath("$.data.status").value("PASSED"))
+                .andExpect(jsonPath("$.data.totalCases").value(12))
+                .andExpect(jsonPath("$.data.passedCases").value(12))
+                .andExpect(jsonPath("$.data.metrics.extractionPrecision").isNumber())
+                .andExpect(jsonPath("$.data.metrics.extractionRecall").isNumber())
+                .andExpect(jsonPath("$.data.metrics.rerankRecallAt3").isNumber())
+                .andExpect(jsonPath("$.data.metrics.canonicalDedupAccuracy").isNumber())
+                .andExpect(jsonPath("$.data.metrics.extractionPrecision").value(1.0))
+                .andExpect(jsonPath("$.data.metrics.extractionRecall").value(1.0))
+                .andExpect(jsonPath("$.data.metrics.rerankRecallAt3").value(1.0))
+                .andExpect(jsonPath("$.data.metrics.canonicalDedupAccuracy").value(1.0))
+                .andExpect(jsonPath("$.data.unmeasuredMetrics.length()").value(4))
+                .andExpect(content().string(not(containsString("apiKey"))))
+                .andExpect(content().string(not(containsString("password"))));
+
+        mockMvc.perform(get(MEMORY_EVALUATION_URL)
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").exists())
+                .andExpect(jsonPath("$.data.cases.length()").value(12));
+
+        mockMvc.perform(get(MEMORY_OBSERVABILITY_URL)
+                        .param("range", "7d")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.range").value("7d"))
+                .andExpect(jsonPath("$.data.metrics.retrievalCount").isNumber())
+                .andExpect(jsonPath("$.data.metrics.averageLatencyMs").isNumber())
+                .andExpect(content().string(not(containsString("userId"))))
+                .andExpect(content().string(not(containsString("queryHash"))));
+    }
+
+    @Test
+    void memoryObservabilityAndEvaluationAreAdminOnly() throws Exception {
+        String userToken = jwtService.generateToken(new AuthPrincipal(7L, "13800138000", AppRole.USER));
+
+        mockMvc.perform(get(MEMORY_OBSERVABILITY_URL)
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post(MEMORY_EVALUATION_URL + "/run")
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isForbidden());
     }
 }

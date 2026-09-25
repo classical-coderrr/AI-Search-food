@@ -1,11 +1,17 @@
 package com.example.food.memory;
 
+import com.example.food.admin.dashboard.AdminMemoryObservabilityService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -23,12 +29,21 @@ class MemoryPersistenceIntegrationTest {
     @Autowired
     private MemoryEpisodeService episodeService;
 
+    @Autowired
+    private MemoryRetrievalTraceService retrievalTraceService;
+
+    @Autowired
+    private AdminMemoryObservabilityService adminMemoryObservabilityService;
+
     @Test
     void flywayCreatesMemoryTablesAndPreservesUserIsolationAndIdempotency() {
         assertThat(tableExists("agent_sessions")).isTrue();
         assertThat(tableExists("memory_episodes")).isTrue();
+        assertThat(tableExists("memory_retrieval_traces")).isTrue();
+        assertThat(tableExists("memory_evaluation_runs")).isTrue();
         assertThat(columnExists("memory_episodes", "payload_json")).isTrue();
         assertThat(indexExists("uq_memory_episodes_user_key")).isTrue();
+        assertThat(indexExists("uq_memory_retrieval_traces_trace")).isTrue();
 
         Long userId = insertUser("13900000901", "记忆测试用户");
         Long otherUserId = insertUser("13900000902", "其他记忆用户");
@@ -67,6 +82,46 @@ class MemoryPersistenceIntegrationTest {
         assertThat(episodeService.listOwned(userId, session.getId(), "RECIPE_EXPERIENCE", 20))
                 .extracting(MemoryEpisode::getId)
                 .containsExactly(first.episode().getId());
+    }
+
+    @Test
+    void retrievalTraceStoresScoreAndUsageWithoutRawQueryAndSupportsAggregates() {
+        Long userId = insertUser("13900000903", "记忆追踪测试用户");
+        String query = "这句个人问题不得明文进入追踪记录";
+        MemoryQueryPlan plan = new MemoryQueryPlan(query, "GENERAL_MEMORY_RECALL", query, null,
+                List.of(), List.of(), List.of(), List.of(), null, null, List.of(), List.of(),
+                null, null, 8);
+        MemorySearchHit hit = new MemorySearchHit("MEMORY_ITEM", 13L, "INGREDIENT_PREFERENCE", "敏感标题",
+                "个人记忆文本", null, "DISLIKE", "LONG_TERM", new BigDecimal("0.95"),
+                new BigDecimal("0.90"), LocalDateTime.now(),
+                new MemorySearchHit.ScoreBreakdown(0.8, 0.9, 0.9, 0.95, 1.0, 0.5, 0.87));
+        MemoryRetrievalResult retrieval = new MemoryRetrievalResult(plan, List.of(hit),
+                new MemoryRetrievalResult.RetrievalTrace(userId, null, LocalDateTime.now(),
+                        2, 1, List.of(13L), List.of(22L)));
+        ContextBuilder.ContextBuildResult context = new ContextBuilder.ContextBuildResult(
+                "personal context", Map.of("PERSONAL_MEMORY", List.of("safe summary")),
+                List.of(13L), List.of(), List.of(9L), 120, 500, false);
+
+        assertThat(retrievalTraceService.record(userId, "trace-memory-test", query, retrieval,
+                context, "SUCCESS", null, 31)).isTrue();
+        assertThat(retrievalTraceService.record(userId, "trace-memory-test", query, retrieval,
+                context, "SUCCESS", null, 31)).isFalse();
+
+        String queryHash = jdbcTemplate.queryForObject(
+                "SELECT query_hash FROM memory_retrieval_traces WHERE trace_id = ?", String.class,
+                "trace-memory-test");
+        String ranking = jdbcTemplate.queryForObject(
+                "SELECT ranking_json FROM memory_retrieval_traces WHERE trace_id = ?", String.class,
+                "trace-memory-test");
+        assertThat(queryHash).hasSize(64).doesNotContain(query);
+        assertThat(ranking).contains("MEMORY_ITEM", "13", "0.87", "true")
+                .doesNotContain(query, "敏感标题", "个人记忆文本");
+
+        var metrics = adminMemoryObservabilityService.snapshot("24h").metrics();
+        assertThat(metrics.retrievalCount()).isEqualTo(1);
+        assertThat(metrics.successCount()).isEqualTo(1);
+        assertThat(metrics.averageCandidates()).isEqualTo(3D);
+        assertThat(metrics.averageEstimatedTokens()).isEqualTo(120D);
     }
 
     private Long insertUser(String phone, String nickname) {

@@ -46,6 +46,9 @@ app:
       temporary-context-half-life-days: ${MEMORY_TEMPORARY_HALF_LIFE_DAYS:7}
       candidate-limit: ${MEMORY_RETRIEVAL_CANDIDATE_LIMIT:200}
       default-token-budget: ${MEMORY_CONTEXT_TOKEN_BUDGET:1800}
+    observability:
+      trace-retention: ${MEMORY_TRACE_RETENTION:P30D}
+      trace-cleanup-interval: ${MEMORY_TRACE_CLEANUP_INTERVAL:PT6H}
   agent:
     state-store: ${AGENT_STATE_STORE:redis}
     intent-recognition:
