@@ -131,6 +131,7 @@
         <span>点击“立即执行评测”，验证当前 Agent 的工具路由边界。</span>
       </div>
     </section>
+    <AdminMemoryEvaluationPanel />
   </section>
 </template>
 
@@ -138,6 +139,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { CheckCircle2, CircleAlert, ClipboardCheck, RefreshCw } from 'lucide-vue-next'
+import AdminMemoryEvaluationPanel from './AdminMemoryEvaluationPanel.vue'
 import { getAdminAgentEvaluation, runAdminAgentEvaluation } from '../api/adminAgentEvaluation'
 import { normalizeAgentEvaluation } from '../utils/adminAgentEvaluation'
 

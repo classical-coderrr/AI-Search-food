@@ -26,7 +26,10 @@ public record AdminMemoryEvaluationResponse(
             double extractionPrecision,
             double extractionRecall,
             double rerankRecallAt3,
-            double canonicalDedupAccuracy
+            double canonicalDedupAccuracy,
+            double conflictScenarioSelectionAccuracy,
+            double staleMemoryTop3SelectionRate,
+            double personalizationScenarioWinRate
     ) { }
 
     public record CaseResult(
