@@ -19,9 +19,13 @@
   <a href="README.en.md"><strong>English</strong></a>
 </p>
 
-A multimodal AI cooking assistant for home kitchens. Enter or photograph ingredients to get recipes tailored to dietary preferences, or chat with Little Kitchen Spirit to manage recipes, pantry stock, and weekly menus.
+Little Kitchen Spirit is a multimodal AI cooking assistant for everyday home cooking. It helps users go from “what is already in the fridge?” to a meal they can cook. Enter ingredients manually, upload a photo, or take one with a camera. After you review the recognized items, the app combines the meal occasion, taste preferences, dietary restrictions, health profile, and current pantry stock to suggest several recipes, with ingredient quantities, step-by-step instructions, missing-item notes, and estimated nutrition.
 
-A graduation project built with Java 17, Spring Boot 3, and Vue 3. It supports local development and Docker Compose deployment.
+**Typical flow:** enter or photograph ingredients → review recognition results → set a meal and dietary goal → compare recipes and cooking steps → save a recipe or add it to a weekly menu.
+
+Beyond one-off recommendations, you can have a multi-turn conversation with the kitchen Agent, “Little Kitchen Spirit,” to find or generate recipes, get pantry-aware suggestions, and manage saved recipes and weekly menus. It asks for confirmation before operations that add, change, or consume personal data. Pantry stock, health information, recipes, and menus can also be managed from dedicated areas of the workspace.
+
+This graduation project is built with Java 17, Spring Boot 3, and Vue 3. It includes a local H2 setup and a full Docker Compose deployment. Recipe generation and image recognition require an API key for a DashScope/Qwen-compatible endpoint. See “Quick Start” below for setup instructions.
 
 ## Product Preview
 
