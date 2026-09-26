@@ -206,9 +206,19 @@ public class AgentMemoryContextProvider {
                 }
             } else if ("EPISODE".equals(hit.sourceKind()) && usedEpisodeIds.contains(hit.id())) {
                 String summary = safeTraceText(hit.title());
-                if (summary != null) summaries.add("历史行为：" + summary);
+                if (summary != null) {
+                    String occurredAt = hit.occurredAt() == null ? ""
+                            : "（发生于 " + hit.occurredAt() + "）";
+                    summaries.add("历史行为" + occurredAt + "：" + summary);
+                }
             }
         }
+
+        context.sections().getOrDefault("MEMORY_CONFLICTS", List.of()).stream()
+                .limit(2)
+                .map(value -> safeTraceText(value))
+                .filter(java.util.Objects::nonNull)
+                .forEach(summaries::add);
 
         List<String> profileSummaries = profileTraceSummaries(
                 context.sections().get("STRUCTURED_PROFILE"));

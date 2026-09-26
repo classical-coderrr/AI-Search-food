@@ -21,6 +21,7 @@ public class MemoryEpisodeService {
     private static final int MAX_SUMMARY_LENGTH = 512;
     private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
     private static final int MAX_LIMIT = 100;
+    private static final int MAX_BATCH_SIZE = 500;
     private final MemoryEpisodeMapper mapper;
     private final Clock clock;
 
@@ -85,6 +86,17 @@ public class MemoryEpisodeService {
         requireUser(userId);
         int safeLimit = Math.max(1, Math.min(limit <= 0 ? 20 : limit, MAX_LIMIT));
         return mapper.listOwned(userId, sessionId, normalize(episodeType), safeLimit);
+    }
+
+    public List<MemoryEpisode> findOwnedByIds(Long userId, List<Long> episodeIds) {
+        requireUser(userId);
+        if (episodeIds == null || episodeIds.isEmpty()) return List.of();
+        List<Long> safeIds = episodeIds.stream()
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .limit(MAX_BATCH_SIZE)
+                .toList();
+        return safeIds.isEmpty() ? List.of() : mapper.findOwnedByIds(userId, safeIds);
     }
 
     @Transactional

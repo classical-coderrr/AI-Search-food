@@ -145,6 +145,21 @@ public class MemoryConsolidationService {
         return itemMapper.listActive(userId, safeLimit);
     }
 
+    public List<MemoryCandidate> listOwnedSourceCandidates(Long userId, List<MemoryItem> items) {
+        requireUser(userId);
+        if (items == null || items.isEmpty()) return List.of();
+        LinkedHashSet<Long> candidateIds = new LinkedHashSet<>();
+        for (MemoryItem item : items) {
+            List<Long> sourceIds = readIds(item.getSourceCandidateIdsJson());
+            int from = Math.max(0, sourceIds.size() - 20);
+            candidateIds.addAll(sourceIds.subList(from, sourceIds.size()));
+            if (candidateIds.size() >= 500) break;
+        }
+        if (candidateIds.isEmpty()) return List.of();
+        return candidateMapper.findOwnedByIds(userId, List.copyOf(candidateIds).subList(0,
+                Math.min(500, candidateIds.size())));
+    }
+
     public MemoryProfile getOwnedProfile(Long userId) {
         requireUser(userId);
         return profileMapper.findOwned(userId);

@@ -12,6 +12,10 @@ public final class AgentMemoryAnswerGuard {
             "(?:你|用户)[^。！？!?\\n]{0,160}(?:从未|从来没有|从不|从没)[^。！？!?\\n]{0,220}[。！？!?]?"
     );
     private static final Pattern SENTENCE_BOUNDARY = Pattern.compile("(?<=[。！？!?\\n])");
+    private static final Pattern TIMELINE_CONTRADICTION = Pattern.compile("时间线(?:存在|上)?(?:明确的)?矛盾");
+    private static final Pattern DATED_EPISODE_SUMMARY = Pattern.compile(
+            "^历史行为（发生于 \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}）："
+    );
     private static final List<String> NEGATIVE_PREFERENCE_TERMS = List.of(
             "不喜欢", "不爱", "不吃", "忌口", "避免", "避开", "不想吃", "省略", "不添加", "不放"
     );
@@ -43,6 +47,7 @@ public final class AgentMemoryAnswerGuard {
         }
 
         String guarded = softenAbsoluteHistoryClaims(answer);
+        guarded = clarifyTimelineConflict(guarded, traceSummaries);
         List<String> positiveEntities = positiveEntities(traceSummaries);
         if (positiveEntities.isEmpty()) return guarded;
 
@@ -51,6 +56,30 @@ public final class AgentMemoryAnswerGuard {
             corrected.add(correctContradictoryClaim(sentence, positiveEntities, traceSummaries));
         }
         return String.join("", corrected);
+    }
+
+    private static String clarifyTimelineConflict(String answer, List<String> traceSummaries) {
+        if (traceSummaries == null || traceSummaries.stream()
+                .filter(summary -> summary != null && DATED_EPISODE_SUMMARY.matcher(summary).find())
+                .limit(2).count() < 2) {
+            return answer;
+        }
+        Matcher matcher = TIMELINE_CONTRADICTION.matcher(answer);
+        StringBuffer result = new StringBuffer();
+        while (matcher.find()) {
+            int sentenceStart = Math.max(Math.max(answer.lastIndexOf('。', matcher.start()),
+                            answer.lastIndexOf('！', matcher.start())),
+                    Math.max(answer.lastIndexOf('？', matcher.start()), answer.lastIndexOf('\n', matcher.start()))) + 1;
+            String prefix = answer.substring(sentenceStart, matcher.start());
+            if (containsAny(prefix, List.of("并非", "不是", "不构成", "不存在", "并不", "没有"))) {
+                matcher.appendReplacement(result, Matcher.quoteReplacement(matcher.group()));
+            } else {
+                matcher.appendReplacement(result,
+                        Matcher.quoteReplacement("正反反馈方向冲突（事件先后以记录时间为准）"));
+            }
+        }
+        matcher.appendTail(result);
+        return result.toString();
     }
 
     private static String softenAbsoluteHistoryClaims(String answer) {

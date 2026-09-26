@@ -9,8 +9,11 @@ import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.math.BigDecimal;
 
 /** Builds task-scoped context while keeping personal memory and external knowledge separate. */
 @Service
@@ -21,6 +24,8 @@ public class ContextBuilder {
     private final ContextBudgetManager budgetManager;
     private final ObjectMapper objectMapper;
     private final PersonalizedSkillService personalizedSkillService;
+    private final MemoryConflictResolver conflictResolver;
+    private final MemoryEpisodeService episodeService;
 
     @Autowired
     public ContextBuilder(MemoryConsolidationService consolidationService,
@@ -28,13 +33,38 @@ public class ContextBuilder {
                           MemoryRankingProperties properties,
                           ContextBudgetManager budgetManager,
                           ObjectMapper objectMapper,
-                          PersonalizedSkillService personalizedSkillService) {
+                          PersonalizedSkillService personalizedSkillService,
+                          MemoryConflictResolver conflictResolver,
+                          MemoryEpisodeService episodeService) {
         this.consolidationService = consolidationService;
         this.sessionService = sessionService;
         this.properties = properties;
         this.budgetManager = budgetManager;
         this.objectMapper = objectMapper;
         this.personalizedSkillService = personalizedSkillService;
+        this.conflictResolver = conflictResolver;
+        this.episodeService = episodeService;
+    }
+
+    public ContextBuilder(MemoryConsolidationService consolidationService,
+                          MemorySessionService sessionService,
+                          MemoryRankingProperties properties,
+                          ContextBudgetManager budgetManager,
+                          ObjectMapper objectMapper,
+                          PersonalizedSkillService personalizedSkillService,
+                          MemoryConflictResolver conflictResolver) {
+        this(consolidationService, sessionService, properties, budgetManager, objectMapper,
+                personalizedSkillService, conflictResolver, null);
+    }
+
+    public ContextBuilder(MemoryConsolidationService consolidationService,
+                          MemorySessionService sessionService,
+                          MemoryRankingProperties properties,
+                          ContextBudgetManager budgetManager,
+                          ObjectMapper objectMapper,
+                          PersonalizedSkillService personalizedSkillService) {
+        this(consolidationService, sessionService, properties, budgetManager, objectMapper,
+                personalizedSkillService, new MemoryConflictResolver(objectMapper));
     }
 
     public ContextBuilder(MemoryConsolidationService consolidationService,
@@ -77,8 +107,10 @@ public class ContextBuilder {
         }
 
         if (retrieval != null) {
-            for (MemorySearchHit hit : retrieval.hits()) {
-                String text = join(hit.title(), hit.content(), hit.payload());
+            for (MemorySearchHit hit : chronologicalEpisodeOrder(retrieval.hits())) {
+                String occurredAt = "EPISODE".equals(hit.sourceKind()) && hit.occurredAt() != null
+                        ? "事件发生时间：" + hit.occurredAt() : null;
+                String text = join(occurredAt, hit.title(), hit.content(), hit.payload());
                 entries.add(new ContextBudgetManager.ContextEntry("PERSONAL_MEMORY", hit.sourceKind(),
                         hit.id(), text, 90, order++));
             }
@@ -97,6 +129,23 @@ public class ContextBuilder {
             String relevantProfile = relevantProfile(profile.getProfileJson(),
                     retrieval == null ? null : retrieval.queryPlan());
             if (StringUtils.hasText(relevantProfile)) {
+                MemoryQueryPlan plan = retrieval == null ? null : retrieval.queryPlan();
+                if (conflictResolver.hasIngredientConflicts(relevantProfile)) {
+                    Set<Long> conflictingItemIds = conflictResolver.conflictingMemoryItemIds(relevantProfile);
+                    List<MemoryItem> conflictingItems = consolidationService.listOwnedItems(userId, 500).stream()
+                            .filter(item -> item.getId() != null && conflictingItemIds.contains(item.getId()))
+                            .toList();
+                    List<MemoryCandidate> sourceCandidates = consolidationService
+                            .listOwnedSourceCandidates(userId, conflictingItems);
+                    List<MemorySearchHit> conflictEpisodes = conflictEpisodes(userId, conflictingItems,
+                            retrieval == null ? List.of() : retrieval.hits());
+                    List<String> explanations = conflictResolver.explain(relevantProfile, plan,
+                            conflictEpisodes, conflictingItems, sourceCandidates);
+                    for (String explanation : explanations) {
+                        entries.add(new ContextBudgetManager.ContextEntry("MEMORY_CONFLICTS",
+                                "MEMORY_CONFLICTS", userId, explanation, 94, order++));
+                    }
+                }
                 entries.add(new ContextBudgetManager.ContextEntry("STRUCTURED_PROFILE", "PROFILE", userId,
                         relevantProfile, 80, order++));
             }
@@ -128,12 +177,73 @@ public class ContextBuilder {
                 allocation.estimatedTokens(), allocation.tokenBudget(), allocation.truncated());
     }
 
+    private List<MemorySearchHit> chronologicalEpisodeOrder(List<MemorySearchHit> hits) {
+        if (hits == null || hits.size() < 2) return hits == null ? List.of() : List.copyOf(hits);
+        List<MemorySearchHit> episodes = hits.stream()
+                .filter(hit -> "EPISODE".equals(hit.sourceKind()))
+                .sorted(java.util.Comparator.comparing(MemorySearchHit::occurredAt,
+                        java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder()))
+                        .thenComparing(MemorySearchHit::id,
+                                java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder())))
+                .toList();
+        if (episodes.size() < 2) return List.copyOf(hits);
+
+        List<MemorySearchHit> ordered = new ArrayList<>(hits.size());
+        int episodeIndex = 0;
+        for (MemorySearchHit hit : hits) {
+            if ("EPISODE".equals(hit.sourceKind())) ordered.add(episodes.get(episodeIndex++));
+            else ordered.add(hit);
+        }
+        return List.copyOf(ordered);
+    }
+
     private String join(String... values) {
         return java.util.Arrays.stream(values).filter(StringUtils::hasText).collect(
                 java.util.stream.Collectors.joining("\n"));
     }
 
     private String safe(String value) { return value == null ? "" : value; }
+
+    private List<MemorySearchHit> conflictEpisodes(Long userId, List<MemoryItem> items,
+                                                    List<MemorySearchHit> retrievedHits) {
+        LinkedHashMap<Long, MemorySearchHit> episodes = new LinkedHashMap<>();
+        if (retrievedHits != null) {
+            retrievedHits.stream()
+                    .filter(hit -> "EPISODE".equals(hit.sourceKind()) && hit.id() != null)
+                    .forEach(hit -> episodes.putIfAbsent(hit.id(), hit));
+        }
+        List<Long> sourceIds = sourceEpisodeIds(items);
+        if (episodeService == null || sourceIds.isEmpty()) return List.copyOf(episodes.values());
+        for (MemoryEpisode episode : episodeService.findOwnedByIds(userId, sourceIds)) {
+            if (episode == null || episode.getId() == null) continue;
+            BigDecimal importance = episode.getImportance() == null
+                    ? new BigDecimal("0.5000") : episode.getImportance();
+            episodes.putIfAbsent(episode.getId(), new MemorySearchHit("EPISODE", episode.getId(),
+                    episode.getEpisodeType(), episode.getSummary(), episode.getSummary(),
+                    episode.getPayloadJson(), null, "TEMPORARY_CONTEXT",
+                    new BigDecimal("0.5000"), importance, episode.getOccurredAt(), null));
+        }
+        return List.copyOf(episodes.values());
+    }
+
+    private List<Long> sourceEpisodeIds(List<MemoryItem> items) {
+        if (items == null || items.isEmpty()) return List.of();
+        LinkedHashSet<Long> ids = new LinkedHashSet<>();
+        for (MemoryItem item : items) {
+            if (item == null || !StringUtils.hasText(item.getSourceEpisodeIdsJson())) continue;
+            try {
+                JsonNode sourceIds = objectMapper.readTree(item.getSourceEpisodeIdsJson());
+                if (!sourceIds.isArray()) continue;
+                sourceIds.forEach(value -> {
+                    if (value.canConvertToLong() && value.asLong() > 0) ids.add(value.asLong());
+                });
+            } catch (Exception ignored) {
+                // Malformed provenance is skipped; retrieval hits can still provide evidence.
+            }
+            if (ids.size() >= 500) break;
+        }
+        return ids.stream().limit(500).toList();
+    }
 
     private String relevantProfile(String profileJson, MemoryQueryPlan plan) {
         try {

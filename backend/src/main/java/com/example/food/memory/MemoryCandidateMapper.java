@@ -50,6 +50,24 @@ public interface MemoryCandidateMapper extends BaseMapper<MemoryCandidate> {
     );
 
     @Select("""
+            <script>
+            SELECT * FROM memory_candidates
+            WHERE user_id = #{userId}
+              AND deleted_at IS NULL
+              AND id IN
+              <foreach collection='candidateIds' item='candidateId' open='(' separator=',' close=')'>
+                #{candidateId}
+              </foreach>
+            ORDER BY extracted_at DESC, id DESC
+            LIMIT 500
+            </script>
+            """)
+    List<MemoryCandidate> findOwnedByIds(
+            @Param("userId") Long userId,
+            @Param("candidateIds") List<Long> candidateIds
+    );
+
+    @Select("""
             SELECT * FROM memory_candidates
             WHERE user_id = #{userId}
               AND deleted_at IS NULL

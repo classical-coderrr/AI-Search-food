@@ -65,6 +65,32 @@ class AgentMemoryAnswerGuardTest {
     }
 
     @Test
+    void distinguishesOppositePreferencesFromChronologyWhenDatedEpisodesAreAvailable() {
+        String answer = "上述记录存在明确的时间线矛盾，不应互相覆盖。";
+        List<String> datedEvents = List.of(
+                "历史行为（发生于 2026-09-24T16:38:36）：REACTION_CLEARED",
+                "历史行为（发生于 2026-09-24T16:38:42）：REACTION DISLIKE"
+        );
+
+        String guarded = AgentMemoryAnswerGuard.guard(answer, SECTIONS, datedEvents);
+
+        assertThat(guarded)
+                .contains("正反反馈方向冲突（事件先后以记录时间为准）")
+                .doesNotContain("时间线矛盾");
+    }
+
+    @Test
+    void preservesAnExplicitlyNegatedTimelineContradiction() {
+        String answer = "这并非时间线矛盾，而是偏好方向不同。";
+        List<String> datedEvents = List.of(
+                "历史行为（发生于 2026-09-24T16:38:36）：REACTION_CLEARED",
+                "历史行为（发生于 2026-09-24T16:38:42）：REACTION DISLIKE"
+        );
+
+        assertThat(AgentMemoryAnswerGuard.guard(answer, SECTIONS, datedEvents)).isEqualTo(answer);
+    }
+
+    @Test
     void doesNothingWhenNoPersonalMemoryWasInjected() {
         String answer = "你从未说过要放生姜。";
 

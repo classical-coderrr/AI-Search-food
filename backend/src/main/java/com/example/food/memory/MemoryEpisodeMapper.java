@@ -32,6 +32,24 @@ public interface MemoryEpisodeMapper extends BaseMapper<MemoryEpisode> {
     @Select("""
             <script>
             SELECT * FROM memory_episodes
+            WHERE user_id = #{userId}
+              AND deleted_at IS NULL
+              AND status != 'REJECTED'
+              AND id IN
+              <foreach collection='episodeIds' item='episodeId' open='(' separator=',' close=')'>
+                #{episodeId}
+              </foreach>
+            ORDER BY occurred_at DESC, id DESC
+            </script>
+            """)
+    List<MemoryEpisode> findOwnedByIds(
+            @Param("userId") Long userId,
+            @Param("episodeIds") List<Long> episodeIds
+    );
+
+    @Select("""
+            <script>
+            SELECT * FROM memory_episodes
             WHERE user_id = #{userId} AND deleted_at IS NULL
             <if test='sessionId != null'>AND session_id = #{sessionId}</if>
             <if test='episodeType != null and episodeType != ""'>AND episode_type = #{episodeType}</if>

@@ -36,6 +36,10 @@ class MemoryConsolidationIntegrationTest {
 
         MemoryEpisode first = saveEpisode(userId, "save-1", "鸡胸肉意面");
         MemoryEpisode second = saveEpisode(userId, "save-2", "鸡胸肉意面");
+        assertThat(episodeService.findOwnedByIds(userId, List.of(first.getId(), second.getId())))
+                .hasSize(2);
+        assertThat(episodeService.findOwnedByIds(otherUserId, List.of(first.getId(), second.getId())))
+                .isEmpty();
         candidateService.extractAndPersist(userId, first.getId());
         candidateService.extractAndPersist(userId, second.getId());
 
@@ -56,6 +60,9 @@ class MemoryConsolidationIntegrationTest {
             assertThat(item.getSourceCount()).isEqualTo(2);
             assertThat(item.getConfidence()).isBetween(BigDecimal.ZERO, BigDecimal.ONE);
         });
+        List<MemoryCandidate> sourceCandidates = consolidationService.listOwnedSourceCandidates(userId, items);
+        assertThat(sourceCandidates).hasSize(4)
+                .allSatisfy(candidate -> assertThat(candidate.getSourceType()).isEqualTo("IMPLICIT_BEHAVIOR"));
 
         MemoryProfile profile = consolidationService.getOwnedProfile(userId);
         assertThat(profile).isNotNull();
