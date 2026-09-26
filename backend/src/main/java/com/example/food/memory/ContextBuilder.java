@@ -130,7 +130,7 @@ public class ContextBuilder {
                     retrieval == null ? null : retrieval.queryPlan());
             if (StringUtils.hasText(relevantProfile)) {
                 MemoryQueryPlan plan = retrieval == null ? null : retrieval.queryPlan();
-                if (conflictResolver.hasIngredientConflicts(relevantProfile)) {
+                if (conflictResolver.hasPreferenceConflicts(relevantProfile)) {
                     Set<Long> conflictingItemIds = conflictResolver.conflictingMemoryItemIds(relevantProfile);
                     List<MemoryItem> conflictingItems = consolidationService.listOwnedItems(userId, 500).stream()
                             .filter(item -> item.getId() != null && conflictingItemIds.contains(item.getId()))
@@ -251,8 +251,10 @@ public class ContextBuilder {
             if (!(profile instanceof ObjectNode source)) return null;
             String query = plan == null || plan.originalQuery() == null
                     ? "" : plan.originalQuery().toLowerCase(java.util.Locale.ROOT);
+            boolean feedbackQuestion = containsAny(query, "反馈", "评价", "评分")
+                    && !containsAny(query, "昨天", "yesterday", "上次");
             boolean profileQuestion = containsAny(query, "偏好", "口味", "饮食习惯", "画像", "记得我",
-                    "喜欢", "不喜欢", "不吃", "忌口", "不爱");
+                    "喜欢", "不喜欢", "不吃", "忌口", "不爱") || feedbackQuestion;
             boolean recommendation = containsAny(query, "推荐", "吃什么", "做什么", "今晚", "晚餐",
                     "晚饭", "健身", "训练", "recommend");
             boolean historyLookup = containsAny(query, "昨天", "上次", "历史", "找", "查看", "收藏过", "做过")

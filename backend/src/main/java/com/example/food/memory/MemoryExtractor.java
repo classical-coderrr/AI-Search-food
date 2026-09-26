@@ -27,6 +27,9 @@ public class MemoryExtractor {
     private static final BigDecimal SAVED_CONFIDENCE = new BigDecimal("0.4500");
     private static final BigDecimal FEEDBACK_STRENGTH = new BigDecimal("0.9000");
     private static final BigDecimal FEEDBACK_CONFIDENCE = new BigDecimal("0.8500");
+    private static final BigDecimal FINISHED_REVIEW_LIKE_THRESHOLD = new BigDecimal("80");
+    private static final BigDecimal FINISHED_REVIEW_DISLIKE_THRESHOLD = new BigDecimal("40");
+    private static final BigDecimal FINISHED_REVIEW_MAX_SCORE = new BigDecimal("100");
     private static final BigDecimal COOKED_STRENGTH = new BigDecimal("0.6500");
     private static final BigDecimal COOKED_CONFIDENCE = new BigDecimal("0.6500");
     private static final int MAX_INGREDIENT_CANDIDATES = 30;
@@ -184,12 +187,13 @@ public class MemoryExtractor {
     ) {
         String title = firstText(payload, "recipeTitle", "title", "recipeName");
         BigDecimal score = decimal(payload.path("overallScore"));
-        if (title == null || score == null) {
+        if (title == null || score == null || score.compareTo(BigDecimal.ZERO) < 0
+                || score.compareTo(FINISHED_REVIEW_MAX_SCORE) > 0) {
             return List.of();
         }
-        String preference = score.compareTo(new BigDecimal("4.0")) >= 0
+        String preference = score.compareTo(FINISHED_REVIEW_LIKE_THRESHOLD) >= 0
                 ? "LIKE"
-                : score.compareTo(new BigDecimal("2.0")) <= 0 ? "DISLIKE" : null;
+                : score.compareTo(FINISHED_REVIEW_DISLIKE_THRESHOLD) <= 0 ? "DISLIKE" : null;
         if (preference == null) {
             return List.of();
         }
@@ -201,7 +205,7 @@ public class MemoryExtractor {
                 FEEDBACK_CONFIDENCE,
                 "EXPLICIT_FEEDBACK",
                 "LONG_TERM",
-                "成品评价 " + score.stripTrailingZeros().toPlainString() + " 星：" + title,
+                "成品评价 " + score.stripTrailingZeros().toPlainString() + "/100 分：" + title,
                 true,
                 evidence(episode, "RATING_" + preference, title)
         ));

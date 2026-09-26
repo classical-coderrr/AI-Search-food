@@ -90,6 +90,30 @@ class MemoryExtractorTest {
     }
 
     @Test
+    void classifiesFinishedDishReviewUsingItsZeroToOneHundredPointScale() {
+        MemoryCandidateDraft positive = extractor.extract(episode("FINISHED_DISH_REVIEW",
+                "{\"recipeTitle\":\"番茄炒蛋\",\"overallScore\":85}"))
+                .get(0);
+        MemoryCandidateDraft negative = extractor.extract(episode("FINISHED_DISH_REVIEW",
+                "{\"recipeTitle\":\"番茄炒蛋\",\"overallScore\":35}"))
+                .get(0);
+
+        assertThat(positive.preference()).isEqualTo("LIKE");
+        assertThat(positive.evidenceText()).contains("85/100 分").doesNotContain("星");
+        assertThat(negative.preference()).isEqualTo("DISLIKE");
+    }
+
+    @Test
+    void doesNotInferARecipePreferenceFromMiddleOrOutOfRangeFinishedReviewScores() {
+        assertThat(extractor.extract(episode("FINISHED_DISH_REVIEW",
+                "{\"recipeTitle\":\"番茄炒蛋\",\"overallScore\":60}"))).isEmpty();
+        assertThat(extractor.extract(episode("FINISHED_DISH_REVIEW",
+                "{\"recipeTitle\":\"番茄炒蛋\",\"overallScore\":101}"))).isEmpty();
+        assertThat(extractor.extract(episode("FINISHED_DISH_REVIEW",
+                "{\"recipeTitle\":\"番茄炒蛋\",\"overallScore\":-1}"))).isEmpty();
+    }
+
+    @Test
     void supportsExplicitUserPreferenceEpisode() {
         MemoryEpisode episode = episode(
                 "USER_PREFERENCE_DECLARED",

@@ -19,7 +19,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-/** Produces conservative, task-scoped explanations for opposing ingredient memories. */
+/** Produces conservative, task-scoped explanations for opposing preference memories. */
 @Service
 public class MemoryConflictResolver {
 
@@ -35,6 +35,11 @@ public class MemoryConflictResolver {
     }
 
     public boolean hasIngredientConflicts(String profileJson) {
+        return conflicts(parsePreferences(profileJson)).stream()
+                .anyMatch(pair -> "INGREDIENT".equals(pair.like().domain()));
+    }
+
+    public boolean hasPreferenceConflicts(String profileJson) {
         return !conflicts(parsePreferences(profileJson)).isEmpty();
     }
 
@@ -109,10 +114,15 @@ public class MemoryConflictResolver {
             reason = "这条相反记忆的记录时间较新";
         }
 
-        StringBuilder text = new StringBuilder("同一食材存在正反向记忆：")
+        String conflictSubject = "RECIPE".equals(pair.like().domain())
+                ? "同一菜谱存在正反向记忆：" : "同一食材存在正反向记忆：";
+        StringBuilder text = new StringBuilder(conflictSubject)
                 .append(pair.entity()).append("；")
                 .append(describe(like, "喜欢")).append("；")
                 .append(describe(dislike, "不喜欢")).append("。");
+        if ("RECIPE".equals(pair.like().domain())) {
+            appendRecipeEvidence(text, like, dislike);
+        }
         appendEventChronology(text, like, dislike);
         String currentDescription = currentSignals.isEmpty()
                 ? null
@@ -146,10 +156,31 @@ public class MemoryConflictResolver {
         Side earlier = like.eventTime().isBefore(dislike.eventTime()) ? like : dislike;
         Side later = earlier == like ? dislike : like;
         text.append("关联事件先后顺序：")
-                .append(preferenceLabel(earlier.preference())).append("证据发生于 ")
+                .append(eventLabel(earlier)).append("发生于 ")
                 .append(formatTime(earlier.eventTime())).append("；")
-                .append(preferenceLabel(later.preference())).append("证据发生于 ")
+                .append(eventLabel(later)).append("发生于 ")
                 .append(formatTime(later.eventTime())).append("。");
+    }
+
+    private void appendRecipeEvidence(StringBuilder text, Side like, Side dislike) {
+        String positive = latestEventFact(like).map(EventFact::label)
+                .orElse("喜欢方向的事件来源未能追溯");
+        String negative = latestEventFact(dislike).map(EventFact::label)
+                .orElse("不喜欢方向的事件来源未能追溯");
+        text.append("反馈渠道核对：喜欢方向来自").append(positive)
+                .append("；不喜欢方向来自").append(negative)
+                .append("。推荐反馈与实际成品评价属于不同环节，不相互抹除。");
+    }
+
+    private String eventLabel(Side side) {
+        return latestEventFact(side).map(EventFact::label)
+                .orElse(preferenceLabel(side.preference()) + "证据");
+    }
+
+    private java.util.Optional<EventFact> latestEventFact(Side side) {
+        return side.eventFacts().stream()
+                .max(Comparator.comparing(EventFact::occurredAt,
+                        Comparator.nullsFirst(Comparator.naturalOrder())));
     }
 
     private String preferenceLabel(String preference) {
@@ -174,19 +205,46 @@ public class MemoryConflictResolver {
         boolean behaviorEvidence = provenance.stream()
                 .anyMatch(candidate -> "IMPLICIT_BEHAVIOR".equalsIgnoreCase(candidate.getSourceType()));
         List<Signal> historicalSignals = new ArrayList<>();
+        List<EventFact> eventFacts = new ArrayList<>();
         LocalDateTime latestEpisodeTime = null;
         for (Long sourceId : sourceIds) {
             MemorySearchHit hit = episodesById.get(sourceId);
             if (hit == null) continue;
             latestEpisodeTime = newest(latestEpisodeTime, hit.occurredAt());
             historicalSignals.addAll(episodeSignals(hit.payload()));
+            EventFact fact = eventFact(hit);
+            if (fact != null) eventFacts.add(fact);
         }
         LocalDateTime profileTime = parseTime(preference.lastSeenAt());
         boolean sceneMatch = historicalSignals.stream().anyMatch(historical -> currentSignals.stream()
                 .anyMatch(current -> sameSignal(historical, current)));
         return new Side(preference.preference(), preference.temporalType(), preference.scope(),
                 profileTime, latestEpisodeTime, List.copyOf(new LinkedHashSet<>(historicalSignals)), sceneMatch,
-                explicitEvidence, userModified || !provenance.isEmpty(), behaviorEvidence);
+                explicitEvidence, userModified || !provenance.isEmpty(), behaviorEvidence,
+                List.copyOf(eventFacts));
+    }
+
+    private EventFact eventFact(MemorySearchHit hit) {
+        if (!StringUtils.hasText(hit.payload())) return null;
+        try {
+            JsonNode payload = objectMapper.readTree(hit.payload());
+            String eventType = safeCode(hit.memoryType());
+            if ("RECIPE_FEEDBACK".equals(eventType)
+                    && "REACTION".equalsIgnoreCase(payload.path("action").asText())) {
+                String reaction = safeCode(payload.path("reaction").asText(null));
+                if ("LIKE".equals(reaction) || "DISLIKE".equals(reaction)) {
+                    return new EventFact("推荐反馈（" + preferenceLabel(reaction) + "）", hit.occurredAt());
+                }
+            }
+            if ("FINISHED_DISH_REVIEW".equals(eventType) && payload.path("overallScore").isNumber()) {
+                String score = payload.path("overallScore").decimalValue()
+                        .stripTrailingZeros().toPlainString();
+                return new EventFact("实际制作后的成品评价（" + score + "/100分）", hit.occurredAt());
+            }
+        } catch (Exception ignored) {
+            // Invalid source payloads do not invalidate the preference conflict itself.
+        }
+        return null;
     }
 
     private String describe(Side side, String polarity) {
@@ -210,17 +268,23 @@ public class MemoryConflictResolver {
     private List<Preference> parsePreferences(String profileJson) {
         if (!StringUtils.hasText(profileJson)) return List.of();
         try {
-            JsonNode profile = objectMapper.readTree(profileJson).path("ingredientPreferences");
+            JsonNode root = objectMapper.readTree(profileJson);
             List<Preference> result = new ArrayList<>();
-            readPreferenceArray(profile.path("liked"), "LIKE", result);
-            readPreferenceArray(profile.path("disliked"), "DISLIKE", result);
+            readPreferenceGroup(root.path("ingredientPreferences"), "INGREDIENT", result);
+            readPreferenceGroup(root.path("recipePreferences"), "RECIPE", result);
             return List.copyOf(result);
         } catch (Exception ignored) {
             return List.of();
         }
     }
 
-    private void readPreferenceArray(JsonNode values, String groupPreference, List<Preference> target) {
+    private void readPreferenceGroup(JsonNode group, String domain, List<Preference> target) {
+        readPreferenceArray(group.path("liked"), "LIKE", domain, target);
+        readPreferenceArray(group.path("disliked"), "DISLIKE", domain, target);
+    }
+
+    private void readPreferenceArray(JsonNode values, String groupPreference, String domain,
+                                     List<Preference> target) {
         if (!values.isArray()) return;
         for (JsonNode value : values) {
             String entity = safeLabel(value.path("entity").asText(null));
@@ -228,7 +292,7 @@ public class MemoryConflictResolver {
             String preference = value.path("preference").asText(groupPreference).trim().toUpperCase(Locale.ROOT);
             if (!"LIKE".equals(preference) && !"DISLIKE".equals(preference)) continue;
             Set<String> canonicalIdentities = canonicalIdentities(value);
-            target.add(new Preference(value.path("id").asLong(0L), canonicalIdentities, entity, preference,
+            target.add(new Preference(value.path("id").asLong(0L), domain, canonicalIdentities, entity, preference,
                     safeCode(value.path("temporalType").asText(null)),
                     safeCode(value.path("scope").asText(null)),
                     value.path("lastSeenAt").asText(null)));
@@ -240,7 +304,7 @@ public class MemoryConflictResolver {
         for (Preference first : preferences) {
             if (!"LIKE".equals(first.preference())) continue;
             for (Preference second : preferences) {
-                if (!"DISLIKE".equals(second.preference()) || !sameIngredient(first, second)) continue;
+                if (!"DISLIKE".equals(second.preference()) || !samePreferenceIdentity(first, second)) continue;
                 String key = conflictKey(first, second);
                 ConflictPair existing = pairs.get(key);
                 if (existing == null || preferenceScore(first, second) > preferenceScore(existing.like(), existing.dislike())) {
@@ -258,13 +322,27 @@ public class MemoryConflictResolver {
     }
 
     private boolean isRelevantToQuery(ConflictPair pair, MemoryQueryPlan plan) {
-        if (plan == null || plan.ingredients() == null || plan.ingredients().isEmpty()) return true;
-        return plan.ingredients().stream().map(this::safeLabel).filter(java.util.Objects::nonNull)
-                .map(this::normalizeKey)
-                .anyMatch(ingredient -> {
-                    String entity = normalizeKey(pair.entity());
-                    return hasPrefixAliasMatch(ingredient, entity);
-                });
+        if (plan == null) return true;
+        if ("INGREDIENT".equals(pair.like().domain())) {
+            if (plan.ingredients() == null || plan.ingredients().isEmpty()) return true;
+            return plan.ingredients().stream().map(this::safeLabel).filter(java.util.Objects::nonNull)
+                    .map(this::normalizeKey)
+                    .anyMatch(ingredient -> hasPrefixAliasMatch(ingredient, normalizeKey(pair.entity())));
+        }
+        String query = normalizeKey(safe(plan.originalQuery()) + " " + safe(plan.rewrittenQuery()));
+        if (!StringUtils.hasText(query)) return false;
+        if (containsAny(query, "菜谱偏好", "菜谱反馈", "菜谱评价", "整体偏好", "饮食画像",
+                "个人画像", "全部记忆", "所有记忆", "偏好冲突")) return true;
+        return query.contains(normalizeKey(pair.entity()));
+    }
+
+    private String safe(String value) { return value == null ? "" : value; }
+
+    private boolean containsAny(String value, String... terms) {
+        for (String term : terms) {
+            if (value.contains(term)) return true;
+        }
+        return false;
     }
 
     private boolean isExplicitSource(String sourceType) {
@@ -301,15 +379,17 @@ public class MemoryConflictResolver {
         return Set.copyOf(identities);
     }
 
-    private boolean sameIngredient(Preference first, Preference second) {
+    private boolean samePreferenceIdentity(Preference first, Preference second) {
+        if (!first.domain().equals(second.domain())) return false;
         boolean sameCanonicalTag = first.canonicalIdentities().stream()
                 .anyMatch(second.canonicalIdentities()::contains);
         return sameCanonicalTag || normalizeKey(first.entity()).equals(normalizeKey(second.entity()));
     }
 
     private String conflictKey(Preference first, Preference second) {
-        return first.canonicalIdentities().stream().filter(second.canonicalIdentities()::contains)
+        String identity = first.canonicalIdentities().stream().filter(second.canonicalIdentities()::contains)
                 .sorted().findFirst().orElse("ENTITY:" + normalizeKey(first.entity()));
+        return first.domain() + ":" + identity;
     }
 
     private boolean hasPrefixAliasMatch(String first, String second) {
@@ -444,13 +524,15 @@ public class MemoryConflictResolver {
         return first.isAfter(second) ? first : second;
     }
 
-    private record Preference(long id, Set<String> canonicalIdentities, String entity, String preference,
+    private record Preference(long id, String domain, Set<String> canonicalIdentities, String entity, String preference,
                               String temporalType, String scope, String lastSeenAt) { }
     private record ConflictPair(Preference like, Preference dislike, String entity) { }
     private record Signal(String type, String key, String label) { }
     private record Side(String preference, String temporalType, String scope,
                         LocalDateTime profileTime, LocalDateTime eventTime,
                         List<Signal> historicalSignals, boolean matchesCurrentScene,
-                        boolean explicitEvidence, boolean sourceKnown, boolean behaviorEvidence) { }
+                        boolean explicitEvidence, boolean sourceKnown, boolean behaviorEvidence,
+                        List<EventFact> eventFacts) { }
+    private record EventFact(String label, LocalDateTime occurredAt) { }
     private record Explanation(String text, int contextMatch, LocalDateTime newestTime, String entity) { }
 }

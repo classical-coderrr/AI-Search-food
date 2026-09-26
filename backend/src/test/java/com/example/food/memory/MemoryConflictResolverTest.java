@@ -171,6 +171,73 @@ class MemoryConflictResolverTest {
         assertThat(explanations.get(0)).contains("香菜").doesNotContain("鸡胸肉");
     }
 
+    @Test
+    void explainsRecipeFeedbackAndFinishedDishReviewAsSeparateEventsInChronologicalOrder() {
+        String profile = """
+                {"recipePreferences":{
+                  "liked":[{"id":1,"entity":"番茄黄瓜炒鸡丁","preference":"LIKE","scope":"USER",
+                    "temporalType":"LONG_TERM","lastSeenAt":"2026-09-24T17:18:20"}],
+                  "disliked":[{"id":2,"entity":"番茄黄瓜炒鸡丁","preference":"DISLIKE","scope":"USER",
+                    "temporalType":"LONG_TERM","lastSeenAt":"2026-09-24T16:38:42"}]}}
+                """;
+        List<MemoryItem> items = List.of(item(1L, "[46]"), item(2L, "[42]"));
+        List<MemorySearchHit> episodes = List.of(
+                recipeEpisode(42L, "RECIPE_FEEDBACK",
+                        "{\"action\":\"REACTION\",\"reaction\":\"DISLIKE\"}",
+                        LocalDateTime.parse("2026-09-24T16:38:42")),
+                recipeEpisode(46L, "FINISHED_DISH_REVIEW", "{\"overallScore\":85}",
+                        LocalDateTime.parse("2026-09-24T17:18:20")));
+        MemoryQueryPlan query = recipePlan("结合我对番茄黄瓜炒鸡丁的历史反馈解释正反向记忆");
+
+        List<String> explanations = resolver.explain(profile, query, episodes, items);
+
+        assertThat(explanations).hasSize(1);
+        assertThat(explanations.get(0))
+                .contains("同一菜谱存在正反向记忆：番茄黄瓜炒鸡丁",
+                        "推荐反馈（不喜欢）", "实际制作后的成品评价（85/100分）",
+                        "推荐反馈（不喜欢）发生于 2026-09-24 16:38:42",
+                        "实际制作后的成品评价（85/100分）发生于 2026-09-24 17:18:20",
+                        "本轮暂按“喜欢”处理", "不相互抹除");
+    }
+
+    @Test
+    void onlyIncludesRecipeConflictsForThatRecipeOrAnExplicitRecipeProfileQuestion() {
+        String profile = """
+                {"recipePreferences":{
+                  "liked":[{"id":1,"entity":"番茄黄瓜炒鸡丁","preference":"LIKE"}],
+                  "disliked":[{"id":2,"entity":"番茄黄瓜炒鸡丁","preference":"DISLIKE"}]}}
+                """;
+
+        assertThat(resolver.explain(profile, recipePlan("今晚推荐什么晚餐"), List.of(), List.of())).isEmpty();
+        assertThat(resolver.explain(profile, recipePlan("总结我的菜谱偏好"), List.of(), List.of())).hasSize(1);
+    }
+
+    @Test
+    void doesNotTreatAnIngredientAndARecipeWithTheSameNameAsOneConflict() {
+        String profile = """
+                {"ingredientPreferences":{
+                  "liked":[{"id":1,"entity":"番茄炒蛋","preference":"LIKE"}]},
+                 "recipePreferences":{
+                  "disliked":[{"id":2,"entity":"番茄炒蛋","preference":"DISLIKE"}]}}
+                """;
+
+        assertThat(resolver.hasIngredientConflicts(profile)).isFalse();
+        assertThat(resolver.hasPreferenceConflicts(profile)).isFalse();
+    }
+
+    @Test
+    void detectsRecipeConflictsWithoutChangingIngredientOnlyCompatibilityMethod() {
+        String profile = """
+                {"recipePreferences":{
+                  "liked":[{"id":1,"entity":"番茄炒蛋","preference":"LIKE"}],
+                  "disliked":[{"id":2,"entity":"番茄炒蛋","preference":"DISLIKE"}]}}
+                """;
+
+        assertThat(resolver.hasIngredientConflicts(profile)).isFalse();
+        assertThat(resolver.hasPreferenceConflicts(profile)).isTrue();
+        assertThat(resolver.conflictingMemoryItemIds(profile)).containsExactlyInAnyOrder(1L, 2L);
+    }
+
     private String profile(String likedEntity, String dislikedEntity, String likedAt, String dislikedAt,
                            String likedTemporal, String dislikedTemporal, String canonicalGroupId) {
         return """
@@ -198,6 +265,16 @@ class MemoryConflictResolverTest {
     private MemorySearchHit episode(Long id, String payload, LocalDateTime occurredAt) {
         return new MemorySearchHit("EPISODE", id, "RECIPE_FEEDBACK", "雞胸肉反馈", "feedback", payload,
                 null, "TEMPORARY_CONTEXT", BigDecimal.valueOf(0.8), BigDecimal.valueOf(0.7), occurredAt, null);
+    }
+
+    private MemorySearchHit recipeEpisode(Long id, String type, String payload, LocalDateTime occurredAt) {
+        return new MemorySearchHit("EPISODE", id, type, "番茄黄瓜炒鸡丁", "recipe event", payload,
+                null, "LONG_TERM", BigDecimal.valueOf(0.9), BigDecimal.valueOf(0.8), occurredAt, null);
+    }
+
+    private MemoryQueryPlan recipePlan(String query) {
+        return new MemoryQueryPlan(query, "GENERAL_MEMORY_RECALL", query, null, List.of(), List.of(),
+                List.of(), List.of(), null, null, List.of(), List.of(), null, null, 5);
     }
 
     private MemoryQueryPlan plan(List<String> scenes, List<String> mealTypes) {
