@@ -46,6 +46,20 @@ export function isRecipeReady(recipe) {
   return Boolean(hasText(recipe?.title) && hasText(recipe?.summary) && hasIngredient && hasStep)
 }
 
+export function validateRecipeBatchCompletion(expectedTotal, payload) {
+  const total = Number(expectedTotal)
+  const recipes = payload?.recipes
+  if (!Number.isInteger(total)
+    || total < 1
+    || Number(payload?.total) !== total
+    || !Array.isArray(recipes)
+    || recipes.length !== total
+    || recipes.some((recipe) => !isRecipeReady(recipe))) {
+    throw new RecipeStreamError('AI 返回的菜谱数量或内容不完整，请点击重试', 502)
+  }
+  return recipes
+}
+
 export function shouldSubmitIngredientsKey(event, { generating = false, recognizing = false } = {}) {
   if (!event || event.isComposing || event.keyCode === 229) {
     return false

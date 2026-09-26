@@ -17,7 +17,10 @@ import com.example.food.video.dto.VideoSearchResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -682,6 +685,26 @@ public class RecipeRecommendationService {
     ) {
         Long searchLogId = searchLogService.record(request, response, principal, anonymousId);
         return response.withSearchLogId(searchLogId);
+    }
+
+    @Transactional
+    public List<RecipeGenerateResponse> persistBatch(
+            RecipeGenerateRequest request,
+            List<RecipeGenerateResponse> responses,
+            int expectedCount,
+            AuthPrincipal principal,
+            String anonymousId
+    ) {
+        if (expectedCount < 1 || responses == null || responses.size() != expectedCount
+                || responses.stream().anyMatch(java.util.Objects::isNull)) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI 返回的菜谱数量不完整，请点击重试");
+        }
+
+        List<RecipeGenerateResponse> persisted = new ArrayList<>(expectedCount);
+        for (RecipeGenerateResponse response : responses) {
+            persisted.add(persist(request, response, principal, anonymousId));
+        }
+        return List.copyOf(persisted);
     }
 
     private String buildPrompt(

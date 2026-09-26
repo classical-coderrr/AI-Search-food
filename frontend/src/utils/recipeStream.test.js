@@ -8,7 +8,8 @@ import {
   isRecipeReady,
   isRecipeResultPriority,
   parseRecipeStreamBlock,
-  shouldSubmitIngredientsKey
+  shouldSubmitIngredientsKey,
+  validateRecipeBatchCompletion
 } from './recipeStream.js'
 
 const homeViewSource = await readFile(new URL('../views/HomeView.vue', import.meta.url), 'utf8')
@@ -85,6 +86,35 @@ test('recognizes incomplete and complete progressive recipes', () => {
   })
   assert.equal(isRecipeReady(recipe), true)
   assert.equal(recipe.searchLogId, 12)
+})
+
+test('rejects an undersized or incomplete recipe batch instead of lowering its expected total', () => {
+  const completeRecipe = {
+    title: '番茄炒蛋',
+    summary: '家常菜',
+    ingredients: [{ name: '番茄' }],
+    steps: [{ title: '炒制' }]
+  }
+
+  assert.equal(validateRecipeBatchCompletion(3, {
+    total: 3,
+    recipes: [completeRecipe, completeRecipe, completeRecipe]
+  }).length, 3)
+  assert.throws(
+    () => validateRecipeBatchCompletion(3, { total: 1, recipes: [completeRecipe] }),
+    /菜谱数量或内容不完整/
+  )
+  assert.throws(
+    () => validateRecipeBatchCompletion(3, { total: 3, recipes: [completeRecipe, completeRecipe] }),
+    /菜谱数量或内容不完整/
+  )
+  assert.throws(
+    () => validateRecipeBatchCompletion(3, {
+      total: 3,
+      recipes: [completeRecipe, completeRecipe, { ...completeRecipe, steps: [] }]
+    }),
+    /菜谱数量或内容不完整/
+  )
 })
 
 test('submits Enter but keeps Shift+Enter and IME composition untouched', () => {
@@ -166,5 +196,7 @@ test('uses the backend batch total for dynamically sized recipe batches', () => 
   assert.match(homeViewSource, /:aria-label="`\$\{recommendationRecipes\.length\}道推荐菜谱`"/)
   assert.match(homeViewSource, /recommendationReadyCount\.value >= \(recommendationBatch\.value\?\.total \|\| recommendationRecipes\.value\.length\)/)
   assert.match(homeViewSource, /Number\.isInteger\(parsedTotal\) && parsedTotal >= 3 \? parsedTotal : 3/)
+  assert.match(homeViewSource, /validateRecipeBatchCompletion\(expectedTotal, data\)/)
+  assert.match(homeViewSource, /total: expectedTotal/)
   assert.match(homeViewSource, /recommendationRecipes\.value = createRecipeBatchDraft\(3\)/)
 })

@@ -36,6 +36,8 @@ class RecipeStreamingServiceTest {
     void keepsGeneratedResponseWhenPantryContextIsNotUnderTest() {
         when(recommendationService.applyGenerationContextFlags(any(), any(), any()))
                 .thenAnswer(invocation -> invocation.getArgument(1));
+        when(recommendationService.persistBatch(any(), anyList(), anyInt(), any(), anyString()))
+                .thenAnswer(invocation -> invocation.getArgument(1));
     }
 
     @Test
@@ -47,7 +49,6 @@ class RecipeStreamingServiceTest {
         when(recommendationService.recommendationBatchMode(any())).thenReturn("MEAL_COMBO");
         when(recommendationService.batchRecipePrompt(anyString(), any(), anyInt(), anyInt(), anyList()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        when(recommendationService.persist(any(), any(), any(), anyString())).thenReturn(response);
         when(qwenClient.streamRecipe(anyString(), any(), any())).thenAnswer(invocation -> {
             Consumer<String> onDelta = invocation.getArgument(1);
             onDelta.accept("{\"title\":\"番茄炒蛋\",\"summary\":\"家常菜\",\"ingredients\":[{\"name\":\"番茄\"}],\"steps\":[{\"title\":\"炒制\",\"description\":\"炒熟\"}]}");
@@ -60,7 +61,7 @@ class RecipeStreamingServiceTest {
                 "anon-001"
         );
 
-        verify(recommendationService, timeout(2000).times(3)).persist(any(), any(), any(), anyString());
+        verify(recommendationService, timeout(2000)).persistBatch(any(), anyList(), anyInt(), any(), anyString());
         verify(recommendationService, timeout(2000).times(1)).validateBatchIngredientAlignment(any(), any());
         verify(qwenClient, timeout(2000).times(3)).streamRecipe(anyString(), any(), any());
         emitter.complete();
@@ -82,8 +83,6 @@ class RecipeStreamingServiceTest {
             List<RecipeGenerateResponse> previous = invocation.getArgument(1);
             return previous.stream().anyMatch(item -> item != null && item.title().equals(candidate.title()));
         });
-        when(recommendationService.persist(any(), any(), any(), anyString()))
-                .thenAnswer(invocation -> invocation.getArgument(1));
         when(qwenClient.streamRecipe(anyString(), any(), any()))
                 .thenReturn(streamResult(first), streamResult(first), streamResult(replacement), streamResult(third));
 
@@ -94,7 +93,7 @@ class RecipeStreamingServiceTest {
         );
 
         verify(qwenClient, timeout(2000).times(4)).streamRecipe(anyString(), any(), any());
-        verify(recommendationService, timeout(2000).times(3)).persist(any(), any(), any(), anyString());
+        verify(recommendationService, timeout(2000)).persistBatch(any(), anyList(), anyInt(), any(), anyString());
         emitter.complete();
     }
 
@@ -108,8 +107,6 @@ class RecipeStreamingServiceTest {
         when(recommendationService.recommendationBatchMode(any())).thenReturn("MEAL_COMBO");
         when(recommendationService.batchRecipePrompt(anyString(), any(), anyInt(), anyInt(), anyList()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        when(recommendationService.persist(any(), any(), any(), anyString()))
-                .thenAnswer(invocation -> invocation.getArgument(1));
         when(qwenClient.streamRecipe(anyString(), any(), any()))
                 .thenReturn(streamResult(response));
 
@@ -125,7 +122,7 @@ class RecipeStreamingServiceTest {
         );
 
         verify(qwenClient, timeout(2000).times(9)).streamRecipe(anyString(), any(), any());
-        verify(recommendationService, timeout(2000).times(9)).persist(any(), any(), any(), anyString());
+        verify(recommendationService, timeout(2000)).persistBatch(any(), anyList(), org.mockito.ArgumentMatchers.eq(9), any(), anyString());
         emitter.complete();
     }
 
@@ -145,8 +142,6 @@ class RecipeStreamingServiceTest {
                 .thenReturn(List.of(plan, plan, plan));
         when(recommendationService.batchRecipePrompt(anyString(), any(), anyInt(), anyInt(), anyList(), any()))
                 .thenReturn("planned-prompt");
-        when(recommendationService.persist(any(), any(), any(), anyString()))
-                .thenAnswer(invocation -> invocation.getArgument(1));
         when(qwenClient.streamRecipe(anyString(), any(), any())).thenReturn(
                 streamResult(response), streamResult(response), streamResult(response)
         );
@@ -186,8 +181,6 @@ class RecipeStreamingServiceTest {
                 .thenReturn("planned-prompt");
         when(recommendationService.batchRecipePrompt(anyString(), any(), anyInt(), anyInt(), anyList()))
                 .thenReturn("fallback-prompt");
-        when(recommendationService.persist(any(), any(), any(), anyString()))
-                .thenAnswer(invocation -> invocation.getArgument(1));
         when(qwenClient.streamRecipe(anyString(), any(), any()))
                 .thenReturn(streamResult(response));
 
@@ -198,7 +191,7 @@ class RecipeStreamingServiceTest {
         );
 
         verify(qwenClient, timeout(2000).times(3)).streamRecipe(anyString(), any(), any());
-        verify(recommendationService, timeout(2000).times(3)).persist(any(), any(), any(), anyString());
+        verify(recommendationService, timeout(2000)).persistBatch(any(), anyList(), anyInt(), any(), anyString());
         emitter.complete();
     }
 
@@ -216,8 +209,6 @@ class RecipeStreamingServiceTest {
                 .doNothing()
                 .when(recommendationService)
                 .validateRecipeIngredientPair(any(), any(), anyInt(), anyInt());
-        when(recommendationService.persist(any(), any(), any(), anyString()))
-                .thenAnswer(invocation -> invocation.getArgument(1));
         when(qwenClient.streamRecipe(anyString(), any(), any()))
                 .thenReturn(streamResult(invalid), streamResult(valid), streamResult(valid), streamResult(valid));
 
@@ -230,7 +221,7 @@ class RecipeStreamingServiceTest {
         ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
         verify(qwenClient, timeout(2000).times(4)).streamRecipe(prompts.capture(), any(), any());
         assertTrue(prompts.getAllValues().get(1).contains("食材约束校正"));
-        verify(recommendationService, timeout(2000).times(3)).persist(any(), any(), any(), anyString());
+        verify(recommendationService, timeout(2000)).persistBatch(any(), anyList(), anyInt(), any(), anyString());
         emitter.complete();
     }
 
@@ -258,8 +249,6 @@ class RecipeStreamingServiceTest {
         }).when(recommendationService).validateRequiredIngredientCoverage(
                 any(), any(), anyInt(), anyInt(), any()
         );
-        when(recommendationService.persist(any(), any(), any(), anyString()))
-                .thenAnswer(invocation -> invocation.getArgument(1));
         when(qwenClient.streamRecipe(anyString(), any(), any()))
                 .thenReturn(streamResult(tomato), streamResult(tomato), streamResult(egg), streamResult(tomato));
 
@@ -272,7 +261,7 @@ class RecipeStreamingServiceTest {
         ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
         verify(qwenClient, timeout(2000).times(4)).streamRecipe(prompts.capture(), any(), any());
         assertTrue(prompts.getAllValues().get(2).contains("coverage-retry"));
-        verify(recommendationService, timeout(2000).times(3)).persist(any(), any(), any(), anyString());
+        verify(recommendationService, timeout(2000)).persistBatch(any(), anyList(), anyInt(), any(), anyString());
         emitter.complete();
     }
 
@@ -302,7 +291,7 @@ class RecipeStreamingServiceTest {
         service.generate(new RecipeGenerateRequest("番茄", "dinner", "light", "text"), null, "anon-001");
 
         verify(qwenClient, timeout(2000)).streamRecipe(anyString(), any(), any());
-        verify(recommendationService, never()).persist(any(), any(), any(), anyString());
+        verify(recommendationService, never()).persistBatch(any(), anyList(), anyInt(), any(), anyString());
     }
 
     private RecipeGenerateResponse recipe() {

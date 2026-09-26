@@ -1199,7 +1199,8 @@ import {
   isRecipeReady,
   isRecipeResultPriority,
   RecipeStreamError,
-  shouldSubmitIngredientsKey
+  shouldSubmitIngredientsKey,
+  validateRecipeBatchCompletion
 } from '../utils/recipeStream'
 import { emptyNutritionTarget, normalizeNutritionTarget } from '../utils/nutritionTarget'
 import {
@@ -1762,14 +1763,16 @@ function handleRecipeComplete(data) {
 }
 
 function handleBatchComplete(data) {
-  if (!data || !Array.isArray(data.recipes)) return
+  if (!data) return
+  const expectedTotal = Number(recommendationBatch.value?.total)
+  const completedRecipes = validateRecipeBatchCompletion(expectedTotal, data)
   recommendationBatch.value = {
     ...(recommendationBatch.value || {}),
     batchId: data.batchId || recommendationBatch.value?.batchId,
     mode: data.mode || recommendationBatch.value?.mode || 'STYLE_VARIANTS',
-    total: data.total || data.recipes.length
+    total: expectedTotal
   }
-  data.recipes.forEach((item, index) => {
+  completedRecipes.forEach((item, index) => {
     const recipeId = recommendationRecipes.value[index]?.id || `${data.batchId}-recipe-${index + 1}`
     replaceRecommendationRecipe(recipeId, {
       ...item,

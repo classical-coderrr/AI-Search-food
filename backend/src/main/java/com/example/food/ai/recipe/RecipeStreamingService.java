@@ -294,28 +294,42 @@ public class RecipeStreamingService {
             requireActive(cancelled);
             sendStatusOrCancel(emitter, cancelled, "saving", "正在保存本次推荐记录");
 
-            List<RecipeGenerateResponse> persistedRecipes = new ArrayList<>(recommendationCount);
+            List<RecipeGenerateResponse> recipesToPersist = new ArrayList<>(recommendationCount);
             for (GeneratedRecipe generated : generatedRecipes) {
                 requireActive(cancelled);
-                RecipeGenerateResponse persisted = recipeRecommendationService.applyGenerationContextFlags(
+                recipesToPersist.add(recipeRecommendationService.applyGenerationContextFlags(
                         request,
                         generated.response(),
                         prepared
-                );
-                persisted = recipeRecommendationService.persist(request, persisted, principal, anonymousId);
-                persistedRecipes.add(persisted);
+                ));
+            }
+            if (generatedRecipes.size() != recommendationCount || recipesToPersist.size() != recommendationCount) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI 返回的菜谱数量不完整，请点击重试");
+            }
+            List<RecipeGenerateResponse> persistedRecipes = recipeRecommendationService.persistBatch(
+                    request,
+                    recipesToPersist,
+                    recommendationCount,
+                    principal,
+                    anonymousId
+            );
+            if (persistedRecipes == null || persistedRecipes.size() != recommendationCount) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "菜谱保存数量不完整，请点击重试");
+            }
+            for (int index = 0; index < generatedRecipes.size(); index++) {
+                GeneratedRecipe generated = generatedRecipes.get(index);
                 sendOrCancel(emitter, cancelled, "recipe-complete", Map.of(
                         "batchId", batchId,
                         "recipeId", generated.recipeId(),
                         "index", generated.index(),
-                        "recipe", persisted
+                        "recipe", persistedRecipes.get(index)
                 ));
             }
             requireActive(cancelled);
             sendOrCancel(emitter, cancelled, "complete", new RecipeRecommendationBatch(
                     batchId,
                     mode,
-                    persistedRecipes.size(),
+                    recommendationCount,
                     persistedRecipes
             ));
             emitter.complete();
