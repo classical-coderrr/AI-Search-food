@@ -14,6 +14,15 @@ public record AdminMemoryObservabilityResponse(
             long truncatedCount,
             double averageCandidates,
             double averageEstimatedTokens,
-            double averageLatencyMs
+            double averageLatencyMs,
+            long feedbackCount,
+            long helpfulFeedbackCount,
+            long notRelevantFeedbackCount,
+            long inaccurateFeedbackCount,
+            long outdatedFeedbackCount,
+            double helpfulFeedbackRate,
+            double notRelevantFeedbackRate,
+            double inaccurateFeedbackRate,
+            double outdatedFeedbackRate
     ) { }
 }

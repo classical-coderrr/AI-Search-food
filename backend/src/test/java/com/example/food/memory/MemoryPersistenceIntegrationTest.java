@@ -33,6 +33,9 @@ class MemoryPersistenceIntegrationTest {
     private MemoryRetrievalTraceService retrievalTraceService;
 
     @Autowired
+    private MemoryFeedbackService memoryFeedbackService;
+
+    @Autowired
     private AdminMemoryObservabilityService adminMemoryObservabilityService;
 
     @Test
@@ -40,10 +43,12 @@ class MemoryPersistenceIntegrationTest {
         assertThat(tableExists("agent_sessions")).isTrue();
         assertThat(tableExists("memory_episodes")).isTrue();
         assertThat(tableExists("memory_retrieval_traces")).isTrue();
+        assertThat(tableExists("memory_feedback")).isTrue();
         assertThat(tableExists("memory_evaluation_runs")).isTrue();
         assertThat(columnExists("memory_episodes", "payload_json")).isTrue();
         assertThat(indexExists("uq_memory_episodes_user_key")).isTrue();
         assertThat(indexExists("uq_memory_retrieval_traces_trace")).isTrue();
+        assertThat(uniqueConstraintExists("memory_feedback", "uq_memory_feedback_trace")).isTrue();
 
         Long userId = insertUser("13900000901", "记忆测试用户");
         Long otherUserId = insertUser("13900000902", "其他记忆用户");
@@ -117,11 +122,28 @@ class MemoryPersistenceIntegrationTest {
         assertThat(ranking).contains("MEMORY_ITEM", "13", "0.87", "true")
                 .doesNotContain(query, "敏感标题", "个人记忆文本");
 
+        MemoryFeedbackRequest helpfulRequest = new MemoryFeedbackRequest("trace-memory-test", MemoryFeedbackType.HELPFUL);
+        MemoryFeedbackResponse helpful = memoryFeedbackService.submit(userId, helpfulRequest);
+        MemoryFeedbackResponse retry = memoryFeedbackService.submit(userId, helpfulRequest);
+        assertThat(retry.id()).isEqualTo(helpful.id());
+        assertThat(retry.updated()).isFalse();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_feedback WHERE trace_id = ?", Integer.class,
+                "trace-memory-test")).isEqualTo(1);
+
+        MemoryFeedbackResponse corrected = memoryFeedbackService.submit(userId,
+                new MemoryFeedbackRequest("trace-memory-test", MemoryFeedbackType.OUTDATED));
+        assertThat(corrected.updated()).isTrue();
+        assertThat(corrected.feedbackType()).isEqualTo(MemoryFeedbackType.OUTDATED);
+
         var metrics = adminMemoryObservabilityService.snapshot("24h").metrics();
         assertThat(metrics.retrievalCount()).isEqualTo(1);
         assertThat(metrics.successCount()).isEqualTo(1);
         assertThat(metrics.averageCandidates()).isEqualTo(3D);
         assertThat(metrics.averageEstimatedTokens()).isEqualTo(120D);
+        assertThat(metrics.feedbackCount()).isEqualTo(1);
+        assertThat(metrics.outdatedFeedbackCount()).isEqualTo(1);
+        assertThat(metrics.outdatedFeedbackRate()).isEqualTo(1D);
     }
 
     private Long insertUser(String phone, String nickname) {
@@ -154,6 +176,17 @@ class MemoryPersistenceIntegrationTest {
                 "SELECT COUNT(*) FROM INFORMATION_SCHEMA.INDEXES WHERE LOWER(INDEX_NAME) = ?",
                 Integer.class,
                 indexName
+        );
+        return count != null && count == 1;
+    }
+
+    private boolean uniqueConstraintExists(String tableName, String constraintName) {
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS "
+                        + "WHERE LOWER(TABLE_NAME) = ? AND LOWER(CONSTRAINT_NAME) = ? AND CONSTRAINT_TYPE = 'UNIQUE'",
+                Integer.class,
+                tableName,
+                constraintName
         );
         return count != null && count == 1;
     }

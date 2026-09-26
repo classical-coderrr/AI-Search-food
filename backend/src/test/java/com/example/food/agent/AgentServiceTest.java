@@ -256,6 +256,18 @@ class AgentServiceTest {
         assertThat(messages.getValue()).anyMatch(message -> "system".equals(message.role())
                 && message.content().contains("[PERSONALIZED_SKILL: POST_WORKOUT_MEAL]")
                 && message.content().contains("不能覆盖本轮用户明确要求"));
+        assertThat(messages.getValue()).anyMatch(message -> "system".equals(message.role())
+                && message.content().contains("LIKE/liked 只表示喜欢或倾向")
+                && message.content().contains("只有存在 DISLIKE/disliked 证据")
+                && message.content().contains("一次普通选择")
+                && message.content().contains("不得说成“你明确说过/你反馈过”")
+                && message.content().contains("当前记忆中没有找到明确记录")
+                && message.content().contains("不得扩大成“你从未说过/你一直都……”")
+                && message.content().contains("前文中的旧助手回复可能包含未经核实的推断")
+                && message.content().contains("用户偏好只以本轮注入的 PERSONAL_MEMORY 和 STRUCTURED_PROFILE 为依据")
+                && message.content().contains("只有完整历史已被实际检索核实")
+                && message.content().contains("近期行为推断：LIKE 生姜")
+                && message.content().contains("不能说“你最近反馈不想吃生姜”"));
         verify(memoryContextProvider).prepare(eq(7L), eq(42L), anyString(), eq(query));
         assertThat(runStore.steps).filteredOn(step -> "memory.context".equals(step.action()))
                 .singleElement().satisfies(step -> {

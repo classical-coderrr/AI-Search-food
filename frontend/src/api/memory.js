@@ -4,6 +4,14 @@ export function getPendingMemoryConfirmations(limit = 100) {
   return http.get('/memory/confirmations/pending', { params: { limit } })
 }
 
+export function getMemoryFeedbackStatus(traceId) {
+  return http.get(`/memory/feedback/${encodeURIComponent(traceId)}`)
+}
+
+export function submitMemoryFeedback(traceId, feedbackType) {
+  return http.post('/memory/feedback', { traceId, feedbackType })
+}
+
 export function decideMemoryConfirmation(candidateId, payload) {
   return http.post(`/memory/confirmations/${encodeURIComponent(candidateId)}/decision`, payload)
 }

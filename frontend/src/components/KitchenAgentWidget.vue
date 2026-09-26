@@ -210,6 +210,13 @@
             <summary>本次使用了哪些数据</summary>
             <span v-for="entry in message.trace" :key="entry">{{ entry }}</span>
           </details>
+          <MemoryResponseFeedback
+            v-if="auth.isUser && message.role === 'assistant' && message.completed && message.traceId && !message.error"
+            :key="`memory-feedback-${message.id}-${message.traceId}`"
+            :trace-id="message.traceId"
+            :initial-feedback-type="message.memoryFeedbackType || null"
+            @feedback-change="message.memoryFeedbackType = $event"
+          />
           <div v-if="message.error" class="agent-error-actions"><button type="button" class="agent-button agent-button--retry" @click="retryLast">重试</button></div>
         </article>
       </div>
@@ -251,6 +258,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Bell, BookOpen, CalendarDays, Check, ClipboardCheck, Clock3, Database, HeartPulse, LockKeyhole, Maximize2, Minimize2, Paperclip, Save, Send, ShieldCheck, Square, X } from 'lucide-vue-next'
+import MemoryResponseFeedback from './MemoryResponseFeedback.vue'
 import { deleteAgentConversation, getAgentConversationMessages, getAgentRunStatus, getLatestAgentConversation, resumeAgentEvents, streamAgentChat } from '../api/agent.js'
 import { decideMemoryConfirmation, getPendingMemoryConfirmations } from '../api/memory.js'
 import { useAuthStore } from '../stores/auth.js'
@@ -622,6 +630,7 @@ function applyEvent(event, assistant) {
   if (event.type === 'conversation.ready') {
     conversationId.value = data.conversationId
     runId.value = data.runId || runId.value
+    if (assistant && data.runId) assistant.traceId = data.runId
     recoveryStatus.value = ''
   }
   if (assistant?.restored && !['conversation.ready', 'done'].includes(event.type)) {
@@ -653,6 +662,10 @@ function applyEvent(event, assistant) {
     assistant.error = true
     assistant.content = data.message || '小厨灵暂时没有完成这次操作，请点击重试。'
     resetPendingRecipeSave()
+  }
+  if (event.type === 'done' && assistant) {
+    assistant.traceId = data.runId || assistant.traceId
+    assistant.completed = true
   }
 }
 
@@ -966,7 +979,7 @@ async function trackRun(targetRunId, assistant) {
         return
       } else if (status.status === 'COMPLETED') {
         recoveryStatus.value = '恢复完成，正在加载最新结果'
-        await loadConversationHistory(status.conversationId || conversationId.value)
+        await loadConversationHistory(status.conversationId || conversationId.value, targetRunId)
         finishRunTracking()
         return
       } else {
@@ -1026,7 +1039,7 @@ async function replayRunEvents(targetRunId, assistant) {
   }
 }
 
-async function loadConversationHistory(targetConversationId) {
+async function loadConversationHistory(targetConversationId, completedTraceId = null) {
   if (!targetConversationId) return
   try {
     const response = await getAgentConversationMessages(targetConversationId)
@@ -1034,6 +1047,13 @@ async function loadConversationHistory(targetConversationId) {
     if (history) {
       conversationId.value = history.conversationId
       messages.value = (history.messages || []).map(toUiMessage)
+      if (completedTraceId) {
+        const latestAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
+        if (latestAssistant) {
+          latestAssistant.traceId = completedTraceId
+          latestAssistant.completed = true
+        }
+      }
     }
   } catch {
     // The next refresh can retry the server-side history load.

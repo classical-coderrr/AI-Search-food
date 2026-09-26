@@ -26,7 +26,23 @@ class MemoryManagementIntegrationTest {
     @Autowired private MemoryPersonalizationService personalizationService;
     @Autowired private MemorySessionService sessionService;
     @Autowired private MemoryRetrievalTraceService retrievalTraceService;
+    @Autowired private MemoryFeedbackService memoryFeedbackService;
     @Autowired private MemoryBehaviorEpisodeRecorder episodeRecorder;
+
+    @Test
+    void clearingMemoryCascadesOnlyTheOwnersFeedback() {
+        Long userId = insertUser("13900000806", "清理反馈用户");
+        Long otherUserId = insertUser("13900000807", "保留反馈用户");
+        recordFeedbackTrace(userId, "feedback-clear-user");
+        recordFeedbackTrace(otherUserId, "feedback-clear-other");
+
+        managementService.clearAll(userId);
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_feedback WHERE user_id = ?", Integer.class, userId)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_feedback WHERE user_id = ?", Integer.class, otherUserId)).isEqualTo(1);
+    }
 
     @Test
     void userEditSurvivesLaterConsolidationAndDoesNotCrossAccounts() {
@@ -153,5 +169,14 @@ class MemoryManagementIntegrationTest {
     private Long insertUser(String phone, String nickname) {
         jdbcTemplate.update("INSERT INTO users (phone, nickname) VALUES (?, ?)", phone, nickname);
         return jdbcTemplate.queryForObject("SELECT id FROM users WHERE phone = ?", Long.class, phone);
+    }
+
+    private void recordFeedbackTrace(Long userId, String traceId) {
+        ContextBuilder.ContextBuildResult context = new ContextBuilder.ContextBuildResult(
+                "personal context", Map.of("PERSONAL_MEMORY", List.of("safe summary")),
+                List.of(71L), List.of(), List.of(), 40, 500, false);
+        assertThat(retrievalTraceService.record(userId, traceId, "memory context query",
+                null, context, "SUCCESS", null, 12)).isTrue();
+        memoryFeedbackService.submit(userId, new MemoryFeedbackRequest(traceId, MemoryFeedbackType.HELPFUL));
     }
 }

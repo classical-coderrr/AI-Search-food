@@ -12,6 +12,10 @@ import java.util.Map;
 @Mapper
 public interface MemoryRetrievalTraceMapper extends BaseMapper<MemoryRetrievalTrace> {
 
+    @Select("SELECT * FROM memory_retrieval_traces WHERE user_id = #{userId} AND trace_id = #{traceId} LIMIT 1")
+    MemoryRetrievalTrace findOwnedByTraceId(@Param("userId") Long userId,
+                                            @Param("traceId") String traceId);
+
     @Select("""
             SELECT COUNT(*) AS totalCount,
                    COALESCE(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END), 0) AS successCount,

@@ -164,6 +164,8 @@ class AdminDashboardControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.range").value("7d"))
                 .andExpect(jsonPath("$.data.metrics.retrievalCount").isNumber())
+                .andExpect(jsonPath("$.data.metrics.feedbackCount").isNumber())
+                .andExpect(jsonPath("$.data.metrics.inaccurateFeedbackRate").isNumber())
                 .andExpect(jsonPath("$.data.metrics.averageLatencyMs").isNumber())
                 .andExpect(content().string(not(containsString("userId"))))
                 .andExpect(content().string(not(containsString("queryHash"))));
