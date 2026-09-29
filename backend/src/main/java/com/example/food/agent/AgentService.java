@@ -1708,7 +1708,10 @@ public class AgentService {
         boolean useExpiring = arguments.path("prioritize_expiring").asBoolean(false)
                 || arguments.path("prefer_expiring").asBoolean(false)
                 || containsAny(requested.toLowerCase(Locale.ROOT), "快过期", "临期", "用它们", "用这些");
-        String requestedIngredients = explicitRecipeIngredients(userMessage);
+        String requestedIngredients = recipeIngredientArgument(
+                arguments,
+                explicitRecipeIngredients(userMessage)
+        );
         requestedIngredients = useExpiring && !expiringNames.isEmpty()
                 ? String.join("、", expiringNames)
                 : requestedIngredients;

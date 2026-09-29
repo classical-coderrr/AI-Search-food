@@ -77,6 +77,17 @@ class AgentServiceTest {
     }
 
     @Test
+    void usesToolExtractedIngredientWhenNaturalLanguageParserCannotFindIt() throws Exception {
+        JsonNode arguments = objectMapper.readTree("""
+                {"ingredients": ["青椒"]}
+                """);
+        String fallback = AgentService.explicitRecipeIngredients("我说给我推荐几道青椒的菜");
+
+        assertThat(fallback).isEmpty();
+        assertThat(AgentService.recipeIngredientArgument(arguments, fallback)).isEqualTo("青椒");
+    }
+
+    @Test
     void fallsBackToRequestTextWhenIngredientArrayIsMissing() throws Exception {
         JsonNode arguments = objectMapper.readTree("{\"meal_type\":\"dinner\"}");
 
