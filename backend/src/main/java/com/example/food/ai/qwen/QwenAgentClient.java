@@ -53,6 +53,7 @@ public class QwenAgentClient {
             6. 回答简洁、友好，使用中文；营养内容仅作一般饮食参考，不作医疗判断。
             7. 普通知识、闲聊、日期时间等不需要厨房数据的问题直接回答，不要强行调用工具。
             8. 任何会修改用户数据的工具只会创建确认请求；必须等待用户在确认卡片中确认后才能执行。
+            9. 用户明确要求记住或长期保存其饮食偏好时，必须调用 memory_episode_save 发起确认卡片；不要用普通文字再次询问确认，也不要在确认卡片批准前声称已保存。只有用户本轮明确表达的内容才能作为证据，不得推断偏好。
             """;
 
     private final RestTemplate restTemplate;
@@ -95,6 +96,11 @@ public class QwenAgentClient {
     }
 
     public AgentTurn complete(List<ConversationMessage> conversation, List<Map<String, Object>> tools) {
+        return complete(conversation, tools, null);
+    }
+
+    public AgentTurn complete(List<ConversationMessage> conversation, List<Map<String, Object>> tools,
+                              String requiredToolName) {
         AiModelRuntimeConfig runtimeConfig = runtimeConfig();
         if (runtimeConfig.apiKey() == null || runtimeConfig.apiKey().isBlank()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
@@ -105,7 +111,7 @@ public class QwenAgentClient {
             ResponseEntity<JsonNode> response = restTemplate.exchange(
                     requestUrl(runtimeConfig),
                     HttpMethod.POST,
-                    new HttpEntity<>(requestBody(conversation, tools, runtimeConfig), headers(runtimeConfig)),
+                    new HttpEntity<>(requestBody(conversation, tools, runtimeConfig, requiredToolName), headers(runtimeConfig)),
                     JsonNode.class
             );
             return parse(response.getBody(), runtimeConfig);
@@ -124,10 +130,11 @@ public class QwenAgentClient {
     private Map<String, Object> requestBody(
             List<ConversationMessage> conversation,
             List<Map<String, Object>> tools,
-            AiModelRuntimeConfig runtimeConfig
+            AiModelRuntimeConfig runtimeConfig,
+            String requiredToolName
     ) {
         if (isAnthropic(runtimeConfig)) {
-            return anthropicRequestBody(conversation, tools, runtimeConfig);
+            return anthropicRequestBody(conversation, tools, runtimeConfig, requiredToolName);
         }
 
         List<Map<String, Object>> messages = new ArrayList<>();
@@ -143,7 +150,7 @@ public class QwenAgentClient {
         body.put("messages", messages);
         if (tools != null && !tools.isEmpty()) {
             body.put("tools", tools);
-            body.put("tool_choice", "auto");
+            body.put("tool_choice", toolChoice(requiredToolName));
             body.put("parallel_tool_calls", false);
         }
         body.put("temperature", 0.2);
@@ -157,7 +164,8 @@ public class QwenAgentClient {
     private Map<String, Object> anthropicRequestBody(
             List<ConversationMessage> conversation,
             List<Map<String, Object>> tools,
-            AiModelRuntimeConfig runtimeConfig
+            AiModelRuntimeConfig runtimeConfig,
+            String requiredToolName
     ) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", runtimeConfig.modelName());
@@ -166,9 +174,17 @@ public class QwenAgentClient {
         body.put("messages", anthropicMessages(conversation));
         if (tools != null && !tools.isEmpty()) {
             body.put("tools", tools.stream().map(this::anthropicTool).toList());
+            if (hasText(requiredToolName)) {
+                body.put("tool_choice", Map.of("type", "tool", "name", requiredToolName));
+            }
         }
         body.put("temperature", 0.2);
         return body;
+    }
+
+    private Object toolChoice(String requiredToolName) {
+        if (!hasText(requiredToolName)) return "auto";
+        return Map.of("type", "function", "function", Map.of("name", requiredToolName));
     }
 
     private List<Map<String, Object>> anthropicMessages(List<ConversationMessage> conversation) {
@@ -328,7 +344,8 @@ public class QwenAgentClient {
             }
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "千问 Agent 没有返回回答或工具调用");
         }
-        return new AgentTurn(content, List.copyOf(toolCalls), runtimeConfig.provider(), runtimeConfig.modelName());
+        return new AgentTurn(content, List.copyOf(toolCalls), runtimeConfig.provider(), runtimeConfig.modelName(),
+                parseTokenUsage(root));
     }
 
     private ParsedStructuredToolCalls parseOpenAiToolCalls(JsonNode calls, int existingCallCount) {
@@ -434,6 +451,10 @@ public class QwenAgentClient {
         return "";
     }
 
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
     private JsonNode firstPresent(JsonNode primary, String firstField, String secondField, JsonNode fallback) {
         JsonNode first = primary.path(firstField);
         if (!first.isMissingNode() && !first.isNull()) {
@@ -509,7 +530,36 @@ public class QwenAgentClient {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "千问 Agent 没有返回回答或工具调用");
         }
         toolCalls.addAll(parsedTextToolCalls.toolCalls());
-        return new AgentTurn(parsedTextToolCalls.content().trim(), List.copyOf(toolCalls), runtimeConfig.provider(), runtimeConfig.modelName());
+        return new AgentTurn(parsedTextToolCalls.content().trim(), List.copyOf(toolCalls),
+                runtimeConfig.provider(), runtimeConfig.modelName(), parseTokenUsage(root));
+    }
+
+    private TokenUsage parseTokenUsage(JsonNode root) {
+        JsonNode usage = root == null ? null : root.path("usage");
+        if (usage == null || !usage.isObject()) return TokenUsage.unavailable();
+        Long inputTokens = firstTokenCount(usage, "input_tokens", "prompt_tokens", "inputTokens", "promptTokens");
+        Long outputTokens = firstTokenCount(usage, "output_tokens", "completion_tokens", "outputTokens",
+                "completionTokens");
+        Long totalTokens = firstTokenCount(usage, "total_tokens", "totalTokens");
+        if (totalTokens == null && inputTokens != null && outputTokens != null) {
+            try {
+                totalTokens = Math.addExact(inputTokens, outputTokens);
+            } catch (ArithmeticException ignored) {
+                totalTokens = null;
+            }
+        }
+        return new TokenUsage(inputTokens, outputTokens, totalTokens);
+    }
+
+    private Long firstTokenCount(JsonNode usage, String... names) {
+        for (String name : names) {
+            JsonNode value = usage.path(name);
+            if (value.isIntegralNumber() && value.canConvertToLong()) {
+                long count = value.longValue();
+                if (count >= 0 && count <= 1_000_000_000L) return count;
+            }
+        }
+        return null;
     }
 
     private ParsedTextToolCalls parseTextToolCalls(String content, int existingCallCount) {
@@ -620,7 +670,21 @@ public class QwenAgentClient {
         return name == null ? "" : name.replace("\\_", "_").trim();
     }
 
-    public record AgentTurn(String content, List<ToolCall> toolCalls, String provider, String model) {
+    public record AgentTurn(String content, List<ToolCall> toolCalls, String provider, String model,
+                            TokenUsage tokenUsage) {
+        public AgentTurn(String content, List<ToolCall> toolCalls, String provider, String model) {
+            this(content, toolCalls, provider, model, TokenUsage.unavailable());
+        }
+    }
+
+    public record TokenUsage(Long inputTokens, Long outputTokens, Long totalTokens) {
+        public static TokenUsage unavailable() {
+            return new TokenUsage(null, null, null);
+        }
+
+        public boolean hasUsage() {
+            return inputTokens != null || outputTokens != null || totalTokens != null;
+        }
     }
 
     public record ToolCall(String id, String name, String arguments) {

@@ -21,16 +21,27 @@ public class MemoryEpisodeService {
     private static final int MAX_SUMMARY_LENGTH = 512;
     private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
     private static final int MAX_LIMIT = 100;
+    private static final int MAX_BATCH_SIZE = 500;
     private final MemoryEpisodeMapper mapper;
+    private final MemoryVectorStoreAdapter vectorStore;
     private final Clock clock;
 
-    @Autowired
     public MemoryEpisodeService(MemoryEpisodeMapper mapper) {
-        this(mapper, Clock.systemDefaultZone());
+        this(mapper, null, Clock.systemDefaultZone());
     }
 
     MemoryEpisodeService(MemoryEpisodeMapper mapper, Clock clock) {
+        this(mapper, null, clock);
+    }
+
+    @Autowired
+    public MemoryEpisodeService(MemoryEpisodeMapper mapper, MemoryVectorStoreAdapter vectorStore) {
+        this(mapper, vectorStore, Clock.systemDefaultZone());
+    }
+
+    private MemoryEpisodeService(MemoryEpisodeMapper mapper, MemoryVectorStoreAdapter vectorStore, Clock clock) {
         this.mapper = mapper;
+        this.vectorStore = vectorStore;
         this.clock = clock;
     }
 
@@ -87,6 +98,42 @@ public class MemoryEpisodeService {
         return mapper.listOwned(userId, sessionId, normalize(episodeType), safeLimit);
     }
 
+    public List<MemoryEpisode> listOwnedRecipeHistory(Long userId, int limit) {
+        requireUser(userId);
+        int safeLimit = Math.max(1, Math.min(limit <= 0 ? 20 : limit, MAX_LIMIT));
+        return mapper.listOwnedRecipeHistory(userId, safeLimit);
+    }
+
+    public List<MemoryEpisode> listOwnedRecipeSavesBySource(
+            Long userId,
+            String sourceId,
+            LocalDateTime occurredAt,
+            Long episodeId
+    ) {
+        requireUser(userId);
+        if (!StringUtils.hasText(sourceId) || occurredAt == null || episodeId == null || episodeId <= 0) {
+            return List.of();
+        }
+        return mapper.listOwnedRecipeSavesBySource(userId, sourceId.trim(), occurredAt, episodeId);
+    }
+
+    public List<MemoryEpisode> listOwnedRecipeFeedbackBySource(Long userId, String sourceId) {
+        requireUser(userId);
+        if (!StringUtils.hasText(sourceId)) return List.of();
+        return mapper.listOwnedRecipeFeedbackBySource(userId, sourceId.trim());
+    }
+
+    public List<MemoryEpisode> findOwnedByIds(Long userId, List<Long> episodeIds) {
+        requireUser(userId);
+        if (episodeIds == null || episodeIds.isEmpty()) return List.of();
+        List<Long> safeIds = episodeIds.stream()
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .limit(MAX_BATCH_SIZE)
+                .toList();
+        return safeIds.isEmpty() ? List.of() : mapper.findOwnedByIds(userId, safeIds);
+    }
+
     @Transactional
     public void delete(Long userId, Long episodeId) {
         requireUser(userId);
@@ -94,6 +141,7 @@ public class MemoryEpisodeService {
         if (mapper.softDeleteOwned(userId, episodeId, episode.getVersion()) != 1) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "记忆事件已被其他请求更新，请重试");
         }
+        if (vectorStore != null) vectorStore.deleteSource(userId, "EPISODE", episodeId);
     }
 
     private void validate(MemoryEpisodeCommand command) {

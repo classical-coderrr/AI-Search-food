@@ -37,6 +37,14 @@ services:
       timeout: 5s
       retries: 12
 
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - memory_vector_network
+
   backend:
     build:
       context: ./backend
@@ -78,6 +86,24 @@ services:
       DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-plus}
       DASHSCOPE_VISION_MODEL: ${DASHSCOPE_VISION_MODEL:-qwen-vl-plus}
       DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}
+      MEMORY_VECTOR_ENABLED: ${MEMORY_VECTOR_ENABLED:-true}
+      MEMORY_EMBEDDING_MODEL: ${MEMORY_EMBEDDING_MODEL:-text-embedding-v3}
+      MEMORY_EMBEDDING_DIMENSIONS: ${MEMORY_EMBEDDING_DIMENSIONS:-1024}
+      MEMORY_EMBEDDING_BATCH_SIZE: ${MEMORY_EMBEDDING_BATCH_SIZE:-8}
+      MEMORY_EMBEDDING_POLL_BATCH_SIZE: ${MEMORY_EMBEDDING_POLL_BATCH_SIZE:-24}
+      MEMORY_EMBEDDING_POLL_INTERVAL: ${MEMORY_EMBEDDING_POLL_INTERVAL:-PT30S}
+      MEMORY_EMBEDDING_INDEX_USER_ID: ${MEMORY_EMBEDDING_INDEX_USER_ID:-0}
+      MEMORY_VECTOR_RECALL_LIMIT: ${MEMORY_VECTOR_RECALL_LIMIT:-200}
+      MEMORY_VECTOR_SCAN_LIMIT: ${MEMORY_VECTOR_SCAN_LIMIT:-5000}
+      MEMORY_RANKING_VECTOR_SEMANTIC_RATIO: ${MEMORY_RANKING_VECTOR_SEMANTIC_RATIO:-0.70}
+      MEMORY_QDRANT_ENABLED: ${MEMORY_QDRANT_ENABLED:-true}
+      MEMORY_QDRANT_URL: http://qdrant:6333
+      MEMORY_QDRANT_COLLECTION: ${MEMORY_QDRANT_COLLECTION:-xiaochuling_memory_v1}
+      MEMORY_QDRANT_POLL_INTERVAL: ${MEMORY_QDRANT_POLL_INTERVAL:-PT5S}
+      MEMORY_QDRANT_POLL_BATCH_SIZE: ${MEMORY_QDRANT_POLL_BATCH_SIZE:-100}
+      MEMORY_QDRANT_CONSISTENCY_CHECK_INTERVAL: ${MEMORY_QDRANT_CONSISTENCY_CHECK_INTERVAL:-PT5M}
+      MEMORY_QDRANT_IDENTITY_AUDIT_INTERVAL: ${MEMORY_QDRANT_IDENTITY_AUDIT_INTERVAL:-PT5S}
+      MEMORY_QDRANT_IDENTITY_AUDIT_BATCH_SIZE: ${MEMORY_QDRANT_IDENTITY_AUDIT_BATCH_SIZE:-500}
       APP_AI_ENV_FILE: /app/config/.env
       SMS_PROVIDER: aliyun-pnvs
       ALIBABA_CLOUD_ACCESS_KEY_ID: ${ALIBABA_CLOUD_ACCESS_KEY_ID:?set ALIBABA_CLOUD_ACCESS_KEY_ID}
@@ -109,11 +135,14 @@ services:
     networks:
       - app_network
       - database_network
+      - memory_vector_network
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:7068/actuator/health || exit 1"]
       interval: 15s
@@ -145,10 +174,13 @@ services:
 volumes:
   mysql_data:
   redis_data:
+  qdrant_data:
   review_uploads:
   user_avatars:
 
 networks:
   app_network:
+  memory_vector_network:
+    internal: true
   database_network:
     internal: true

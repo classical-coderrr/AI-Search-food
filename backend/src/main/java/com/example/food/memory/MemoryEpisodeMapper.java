@@ -32,6 +32,24 @@ public interface MemoryEpisodeMapper extends BaseMapper<MemoryEpisode> {
     @Select("""
             <script>
             SELECT * FROM memory_episodes
+            WHERE user_id = #{userId}
+              AND deleted_at IS NULL
+              AND status != 'REJECTED'
+              AND id IN
+              <foreach collection='episodeIds' item='episodeId' open='(' separator=',' close=')'>
+                #{episodeId}
+              </foreach>
+            ORDER BY occurred_at DESC, id DESC
+            </script>
+            """)
+    List<MemoryEpisode> findOwnedByIds(
+            @Param("userId") Long userId,
+            @Param("episodeIds") List<Long> episodeIds
+    );
+
+    @Select("""
+            <script>
+            SELECT * FROM memory_episodes
             WHERE user_id = #{userId} AND deleted_at IS NULL
             <if test='sessionId != null'>AND session_id = #{sessionId}</if>
             <if test='episodeType != null and episodeType != ""'>AND episode_type = #{episodeType}</if>
@@ -44,6 +62,51 @@ public interface MemoryEpisodeMapper extends BaseMapper<MemoryEpisode> {
             @Param("sessionId") Long sessionId,
             @Param("episodeType") String episodeType,
             @Param("limit") int limit
+    );
+
+    @Select("""
+            SELECT * FROM memory_episodes
+            WHERE user_id = #{userId}
+              AND deleted_at IS NULL
+              AND status != 'REJECTED'
+              AND episode_type IN (
+                'RECIPE_SEARCH', 'RECIPE_SAVED', 'RECIPE_UNSAVED', 'RECIPE_FEEDBACK',
+                'RECIPE_EXPERIENCE', 'RECIPE_BEHAVIOR', 'FINISHED_DISH_REVIEW'
+              )
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT #{limit}
+            """)
+    List<MemoryEpisode> listOwnedRecipeHistory(@Param("userId") Long userId, @Param("limit") int limit);
+
+    @Select("""
+            SELECT * FROM memory_episodes
+            WHERE user_id = #{userId}
+              AND episode_type = 'RECIPE_SAVED'
+              AND source_id = #{sourceId}
+              AND (occurred_at < #{occurredAt}
+                   OR (occurred_at = #{occurredAt} AND id < #{episodeId}))
+              AND deleted_at IS NULL
+            ORDER BY occurred_at DESC, id DESC
+            """)
+    List<MemoryEpisode> listOwnedRecipeSavesBySource(
+            @Param("userId") Long userId,
+            @Param("sourceId") String sourceId,
+            @Param("occurredAt") java.time.LocalDateTime occurredAt,
+            @Param("episodeId") Long episodeId
+    );
+
+    @Select("""
+            SELECT * FROM memory_episodes
+            WHERE user_id = #{userId}
+              AND episode_type = 'RECIPE_FEEDBACK'
+              AND source_id = #{sourceId}
+              AND deleted_at IS NULL
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT 200
+            """)
+    List<MemoryEpisode> listOwnedRecipeFeedbackBySource(
+            @Param("userId") Long userId,
+            @Param("sourceId") String sourceId
     );
 
     @Select("""

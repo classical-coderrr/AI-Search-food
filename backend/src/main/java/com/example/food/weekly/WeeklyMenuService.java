@@ -5,6 +5,8 @@ import com.example.food.ai.config.AiModelRuntimeConfig;
 import com.example.food.ai.qwen.QwenRecipeClient;
 import com.example.food.ai.recipe.dto.RecipeGenerateResponse;
 import com.example.food.pantry.UserPantryService;
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.recipe.RecipeIngredient;
 import com.example.food.recipe.RecipeIngredientMapper;
 import com.example.food.recipe.RecipeRecord;
@@ -34,6 +36,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -85,6 +90,7 @@ public class WeeklyMenuService {
     private final UserDietPreferenceService userDietPreferenceService;
     private final ObjectMapper objectMapper;
     private final VideoSearchService videoSearchService;
+    private final MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
 
     @org.springframework.beans.factory.annotation.Autowired
     public WeeklyMenuService(
@@ -100,7 +106,8 @@ public class WeeklyMenuService {
             UserNutritionTargetService userNutritionTargetService,
             UserDietPreferenceService userDietPreferenceService,
             ObjectMapper objectMapper,
-            VideoSearchService videoSearchService
+            VideoSearchService videoSearchService,
+            MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder
     ) {
         this.planMapper = planMapper;
         this.itemMapper = itemMapper;
@@ -115,6 +122,27 @@ public class WeeklyMenuService {
         this.userDietPreferenceService = userDietPreferenceService;
         this.objectMapper = objectMapper;
         this.videoSearchService = videoSearchService;
+        this.memoryEpisodeRecorder = memoryEpisodeRecorder;
+    }
+
+    public WeeklyMenuService(
+            WeeklyMenuPlanMapper planMapper,
+            WeeklyMenuItemMapper itemMapper,
+            WeeklyMenuShoppingCheckMapper shoppingCheckMapper,
+            RecipeRecordMapper recipeRecordMapper,
+            RecipeIngredientMapper recipeIngredientMapper,
+            UserPantryService userPantryService,
+            IngredientNormalizer ingredientNormalizer,
+            QwenRecipeClient qwenRecipeClient,
+            UserHealthProfileService userHealthProfileService,
+            UserNutritionTargetService userNutritionTargetService,
+            UserDietPreferenceService userDietPreferenceService,
+            ObjectMapper objectMapper,
+            VideoSearchService videoSearchService
+    ) {
+        this(planMapper, itemMapper, shoppingCheckMapper, recipeRecordMapper, recipeIngredientMapper,
+                userPantryService, ingredientNormalizer, qwenRecipeClient, userHealthProfileService,
+                userNutritionTargetService, userDietPreferenceService, objectMapper, videoSearchService, null);
     }
 
     public WeeklyMenuService(
@@ -230,7 +258,60 @@ public class WeeklyMenuService {
         }
         plan.setUpdatedAt(now);
         planMapper.updateById(plan);
-        return get(userId, weekStart);
+        WeeklyMenuResponse response = get(userId, weekStart);
+        recordSelectedMenu(userId, plan, response, now);
+        return response;
+    }
+
+    private void recordSelectedMenu(Long userId, WeeklyMenuPlan plan, WeeklyMenuResponse response,
+                                    LocalDateTime occurredAt) {
+        if (memoryEpisodeRecorder == null || response.items().isEmpty()) {
+            return;
+        }
+        List<WeeklyMenuItemResponse> selectedItems = response.items().stream()
+                .sorted(java.util.Comparator.comparing(WeeklyMenuItemResponse::menuDate)
+                        .thenComparing(WeeklyMenuItemResponse::mealType)
+                        .thenComparing(WeeklyMenuItemResponse::recipeId))
+                .toList();
+        List<String> fingerprintParts = selectedItems.stream()
+                .map(item -> item.menuDate() + "|" + item.mealType() + "|" + item.recipeId())
+                .toList();
+        String eventId = "weekly-menu:" + plan.getId() + ":" + sha256(String.join("\n", fingerprintParts));
+        List<Map<String, Object>> meals = selectedItems.stream().map(item -> {
+            Map<String, Object> meal = new LinkedHashMap<>();
+            meal.put("menuDate", item.menuDate());
+            meal.put("mealType", item.mealType());
+            meal.put("recipeId", item.recipeId());
+            meal.put("recipeTitle", item.recipeTitle());
+            return meal;
+        }).toList();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("weekStart", response.weekStart());
+        payload.put("weekEnd", response.weekEnd());
+        payload.put("meals", meals);
+        memoryEpisodeRecorder.record(new MemoryBehaviorEpisodeEvent(
+                userId,
+                null,
+                null,
+                "WEEKLY_MENU_SELECTED",
+                "WEEKLY_MENU_PLAN",
+                String.valueOf(plan.getId()),
+                eventId,
+                eventId,
+                "安排周菜单：" + response.weekStart() + "，共 " + selectedItems.size() + " 餐",
+                payload,
+                occurredAt,
+                new BigDecimal("0.5500")
+        ));
+    }
+
+    private String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest, 0, 16);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("无法计算周菜单记忆事件幂等键", exception);
+        }
     }
 
     private WeeklyMenuResponse autoGenerateIndependentMenu(

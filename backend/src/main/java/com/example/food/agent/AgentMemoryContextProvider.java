@@ -11,6 +11,7 @@ import com.example.food.memory.MemorySessionService;
 import com.example.food.memory.MemorySessionUpdate;
 import com.example.food.memory.MemoryPersonalizationService;
 import com.example.food.memory.MemoryRetrievalTraceService;
+import com.example.food.memory.MemoryConflictDecisionService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -37,6 +38,7 @@ public class AgentMemoryContextProvider {
     private final ObjectMapper objectMapper;
     private final MemoryPersonalizationService personalizationService;
     private final MemoryRetrievalTraceService retrievalTraceService;
+    private final MemoryConflictDecisionService conflictDecisionService;
 
     public AgentMemoryContextProvider(MemoryRetriever memoryRetriever,
                                       ContextBuilder contextBuilder,
@@ -53,19 +55,31 @@ public class AgentMemoryContextProvider {
         this(memoryRetriever, contextBuilder, sessionService, objectMapper, personalizationService, null);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
     public AgentMemoryContextProvider(MemoryRetriever memoryRetriever,
                                       ContextBuilder contextBuilder,
                                       MemorySessionService sessionService,
                                       ObjectMapper objectMapper,
                                       MemoryPersonalizationService personalizationService,
                                       MemoryRetrievalTraceService retrievalTraceService) {
+        this(memoryRetriever, contextBuilder, sessionService, objectMapper, personalizationService,
+                retrievalTraceService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentMemoryContextProvider(MemoryRetriever memoryRetriever,
+                                      ContextBuilder contextBuilder,
+                                      MemorySessionService sessionService,
+                                      ObjectMapper objectMapper,
+                                      MemoryPersonalizationService personalizationService,
+                                      MemoryRetrievalTraceService retrievalTraceService,
+                                      MemoryConflictDecisionService conflictDecisionService) {
         this.memoryRetriever = memoryRetriever;
         this.contextBuilder = contextBuilder;
         this.sessionService = sessionService;
         this.objectMapper = objectMapper;
         this.personalizationService = personalizationService;
         this.retrievalTraceService = retrievalTraceService;
+        this.conflictDecisionService = conflictDecisionService;
     }
 
     public PreparedContext prepare(Long userId, Long conversationId, String runId, String query) {
@@ -114,6 +128,7 @@ public class AgentMemoryContextProvider {
             ));
             builtContext = contextBuilder.build(
                     userId, session.getId(), retrieval, List.of(), List.of(), null);
+            recordConflictDecisions(userId, runId, session.getId(), builtContext);
 
             sessionService.touch(userId, session.getId(), new MemorySessionUpdate(
                     conversationId,
@@ -181,6 +196,28 @@ public class AgentMemoryContextProvider {
         }
     }
 
+    private void recordConflictDecisions(Long userId, String runId, Long sessionId,
+                                         ContextBuilder.ContextBuildResult context) {
+        if (conflictDecisionService == null || context == null || context.conflictResolutions().isEmpty()) return;
+        try {
+            conflictDecisionService.record(userId, runId, sessionId, context.conflictResolutions());
+        } catch (RuntimeException decisionFailure) {
+            LOGGER.warn("Memory conflict decision persistence failed, runId={}, userId={}, errorType={}",
+                    runId, userId, decisionFailure.getClass().getSimpleName());
+        }
+    }
+
+    public void recordModelUsage(Long userId, String runId, Long inputTokens, Long outputTokens, Long totalTokens) {
+        if (retrievalTraceService == null || runId == null || runId.isBlank()
+                || inputTokens == null && outputTokens == null && totalTokens == null) return;
+        try {
+            retrievalTraceService.recordLlmUsage(userId, runId, inputTokens, outputTokens, totalTokens);
+        } catch (RuntimeException usageFailure) {
+            LOGGER.warn("Memory LLM token usage persistence failed, runId={}, userId={}, errorType={}",
+                    runId, userId, usageFailure.getClass().getSimpleName());
+        }
+    }
+
     private String writeJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
@@ -206,9 +243,19 @@ public class AgentMemoryContextProvider {
                 }
             } else if ("EPISODE".equals(hit.sourceKind()) && usedEpisodeIds.contains(hit.id())) {
                 String summary = safeTraceText(hit.title());
-                if (summary != null) summaries.add("历史行为：" + summary);
+                if (summary != null) {
+                    String occurredAt = hit.occurredAt() == null ? ""
+                            : "（发生于 " + hit.occurredAt() + "）";
+                    summaries.add("历史行为" + occurredAt + "：" + summary);
+                }
             }
         }
+
+        context.sections().getOrDefault("MEMORY_CONFLICTS", List.of()).stream()
+                .limit(2)
+                .map(value -> safeTraceText(value))
+                .filter(java.util.Objects::nonNull)
+                .forEach(summaries::add);
 
         List<String> profileSummaries = profileTraceSummaries(
                 context.sections().get("STRUCTURED_PROFILE"));

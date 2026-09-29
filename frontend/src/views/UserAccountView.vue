@@ -168,80 +168,88 @@
                 当前展示 {{ memoryItems.length }} 条；记忆较多时，这里最多载入 500 条。
               </p>
 
-              <div v-if="memoryItems.length" class="memory-list" role="list" aria-label="已保存的个性化记忆">
-                <article v-for="item in visibleMemoryItems" :key="item.id" class="memory-item" role="listitem">
-                  <div class="memory-item-main">
-                    <div class="memory-item-tags">
-                      <span class="memory-type-tag">{{ memoryTypeLabel(item.memoryType) }}</span>
-                      <span class="memory-scope-tag">{{ memoryScopeLabel(item.scope) }}</span>
-                      <span v-if="item.userModified" class="memory-user-tag">你已修改</span>
+              <div v-if="activeMemoryItem" class="memory-stack-stage" role="group" aria-label="小厨灵记忆卡片堆">
+                <div class="memory-stack" :class="{ 'memory-stack--single': memoryItems.length < 2 }">
+                  <article :key="activeMemoryItem.id" class="memory-item">
+                    <div class="memory-item-main">
+                      <div class="memory-item-tags">
+                        <span class="memory-type-tag">{{ memoryTypeLabel(activeMemoryItem.memoryType) }}</span>
+                        <span class="memory-scope-tag">{{ memoryScopeLabel(activeMemoryItem.scope) }}</span>
+                        <span v-if="activeMemoryItem.userModified" class="memory-user-tag">你已修改</span>
+                      </div>
+                      <h4>{{ activeMemoryItem.entity || memoryTypeLabel(activeMemoryItem.memoryType) }}</h4>
+                      <p class="memory-preference-line">
+                        {{ memoryPreferenceLabel(activeMemoryItem.preference) }}<span v-if="activeMemoryItem.entity"> · {{ memoryTypeLabel(activeMemoryItem.memoryType) }}</span>
+                      </p>
+                      <dl class="memory-facts">
+                        <div>
+                          <dt>置信度</dt>
+                          <dd>{{ formatPercent(activeMemoryItem.confidence) }}</dd>
+                        </div>
+                        <div>
+                          <dt>偏好强度</dt>
+                          <dd>{{ formatPercent(activeMemoryItem.strength) }}</dd>
+                        </div>
+                        <div>
+                          <dt>相关证据</dt>
+                          <dd>{{ activeMemoryItem.evidenceCount ?? 0 }} 条</dd>
+                        </div>
+                        <div>
+                          <dt>行为次数</dt>
+                          <dd>{{ activeMemoryItem.occurrenceCount ?? 0 }} 次</dd>
+                        </div>
+                        <div>
+                          <dt>首次记录</dt>
+                          <dd>{{ formatDate(activeMemoryItem.firstSeenAt) }}</dd>
+                        </div>
+                        <div>
+                          <dt>最近更新</dt>
+                          <dd>{{ formatDate(activeMemoryItem.lastSeenAt) }}</dd>
+                        </div>
+                        <div>
+                          <dt>记忆来源</dt>
+                          <dd>{{ memoryTemporalTypeLabel(activeMemoryItem.temporalType) }} · {{ activeMemoryItem.sourceCount ?? 0 }} 个来源</dd>
+                        </div>
+                      </dl>
                     </div>
-                    <h4>{{ item.entity || memoryTypeLabel(item.memoryType) }}</h4>
-                    <p class="memory-preference-line">
-                      {{ memoryPreferenceLabel(item.preference) }}<span v-if="item.entity"> · {{ memoryTypeLabel(item.memoryType) }}</span>
-                    </p>
-                    <dl class="memory-facts">
-                      <div>
-                        <dt>置信度</dt>
-                        <dd>{{ formatPercent(item.confidence) }}</dd>
-                      </div>
-                      <div>
-                        <dt>偏好强度</dt>
-                        <dd>{{ formatPercent(item.strength) }}</dd>
-                      </div>
-                      <div>
-                        <dt>相关证据</dt>
-                        <dd>{{ item.evidenceCount ?? 0 }} 条</dd>
-                      </div>
-                      <div>
-                        <dt>行为次数</dt>
-                        <dd>{{ item.occurrenceCount ?? 0 }} 次</dd>
-                      </div>
-                      <div>
-                        <dt>首次记录</dt>
-                        <dd>{{ formatDate(item.firstSeenAt) }}</dd>
-                      </div>
-                      <div>
-                        <dt>最近更新</dt>
-                        <dd>{{ formatDate(item.lastSeenAt) }}</dd>
-                      </div>
-                      <div>
-                        <dt>记忆来源</dt>
-                        <dd>{{ memoryTemporalTypeLabel(item.temporalType) }} · {{ item.sourceCount ?? 0 }} 个来源</dd>
-                      </div>
-                    </dl>
-                  </div>
-                  <div class="memory-item-actions">
-                    <el-button
-                      v-if="item.editable"
-                      class="outline-button memory-action-button"
-                      :disabled="memoryMutating || clearingMemories"
-                      @click="openMemoryEditor(item)"
-                    >
-                      <Pencil :size="15" aria-hidden="true" />编辑
-                    </el-button>
-                    <el-button
-                      class="memory-delete-button"
-                      :disabled="memoryMutating || clearingMemories"
-                      :aria-label="`删除记忆：${item.entity || memoryTypeLabel(item.memoryType)}`"
-                      @click="handleDeleteMemory(item)"
-                    >
-                      <Trash2 :size="15" aria-hidden="true" />删除
-                    </el-button>
-                  </div>
-                </article>
+                    <div class="memory-item-actions">
+                      <el-button
+                        v-if="activeMemoryItem.editable"
+                        class="outline-button memory-action-button"
+                        :disabled="memoryMutating || clearingMemories"
+                        @click="openMemoryEditor(activeMemoryItem)"
+                      >
+                        <Pencil :size="15" aria-hidden="true" />编辑
+                      </el-button>
+                      <el-button
+                        class="memory-delete-button"
+                        :disabled="memoryMutating || clearingMemories"
+                        :aria-label="`删除记忆：${activeMemoryItem.entity || memoryTypeLabel(activeMemoryItem.memoryType)}`"
+                        @click="handleDeleteMemory(activeMemoryItem)"
+                      >
+                        <Trash2 :size="15" aria-hidden="true" />删除
+                      </el-button>
+                    </div>
+                  </article>
+                </div>
+                <div v-if="memoryItems.length > 1" class="memory-stack-navigation" role="group" aria-label="浏览记忆卡片">
+                  <el-button
+                    class="outline-button memory-stack-button"
+                    :disabled="memoryCardIndex === 0"
+                    @click="moveMemoryCard(-1)"
+                  >
+                    <ChevronLeft :size="16" aria-hidden="true" />上一条
+                  </el-button>
+                  <span role="status" aria-live="polite">第 {{ memoryCardIndex + 1 }} / {{ memoryItems.length }} 条</span>
+                  <el-button
+                    class="outline-button memory-stack-button"
+                    :disabled="memoryCardIndex >= memoryItems.length - 1"
+                    @click="moveMemoryCard(1)"
+                  >
+                    下一条<ChevronRight :size="16" aria-hidden="true" />
+                  </el-button>
+                </div>
               </div>
-
-              <el-pagination
-                v-if="memoryItems.length > memoryPageSize"
-                v-model:current-page="memoryPage"
-                class="memory-pagination"
-                background
-                layout="prev, pager, next"
-                :page-size="memoryPageSize"
-                :total="memoryItems.length"
-                aria-label="记忆列表分页"
-              />
 
               <div v-if="!memoryItems.length" class="memory-empty-state">
                 <Sparkles :size="21" aria-hidden="true" />
@@ -350,7 +358,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { AlertTriangle, Brain, Camera, Pencil, ShieldCheck, Sparkles, Trash2 } from 'lucide-vue-next'
+import { AlertTriangle, Brain, Camera, ChevronLeft, ChevronRight, Pencil, ShieldCheck, Sparkles, Trash2 } from 'lucide-vue-next'
 import { cancelMyAccount, deleteMyAvatar, getMyAccount, loadMyAvatar, logoutAllDevices, requestAccountCancellationCode, updateMyProfile, uploadMyAvatar } from '../api/userAccount'
 import { clearManagedMemories, deleteManagedMemory, getMemoryManagement, updateManagedMemory, updateMemoryPersonalization } from '../api/memory'
 import { useAuthStore } from '../stores/auth'
@@ -383,18 +391,14 @@ const memoryEditorVisible = ref(false)
 const editingMemory = ref(null)
 const memoryEditForm = ref({ preference: '', strength: 0.5 })
 const savingMemoryEdit = ref(false)
-const memoryPage = ref(1)
-const memoryPageSize = 20
+const memoryCardIndex = ref(0)
 let countdownTimer = null
 
 const avatarSource = computed(() => avatarPreview.value || avatarImageUrl.value)
 const avatarInitial = computed(() => (account.value.nickname || '用户').trim().slice(0, 1).toUpperCase())
 const statusLabel = computed(() => account.value.status === 'ACTIVE' ? '账号正常' : '账号不可用')
 const memoryEditOptions = computed(() => memoryPreferenceOptions(editingMemory.value?.memoryType))
-const visibleMemoryItems = computed(() => {
-  const start = (memoryPage.value - 1) * memoryPageSize
-  return memoryItems.value.slice(start, start + memoryPageSize)
-})
+const activeMemoryItem = computed(() => memoryItems.value[memoryCardIndex.value] || null)
 
 onMounted(() => {
   void loadAccount()
@@ -429,12 +433,18 @@ async function loadMemoryManagement() {
     memoryPersonalization.value = overview.personalization
     memoryItems.value = overview.memories
     memoryTotal.value = overview.total
-    memoryPage.value = Math.min(memoryPage.value, Math.max(1, Math.ceil(overview.memories.length / memoryPageSize)))
+    memoryCardIndex.value = Math.min(memoryCardIndex.value, Math.max(0, overview.memories.length - 1))
   } catch (error) {
     memoryError.value = messageFrom(error, '记忆读取失败，请检查网络后重试')
   } finally {
     memoryLoading.value = false
   }
+}
+
+function moveMemoryCard(direction) {
+  const nextIndex = memoryCardIndex.value + direction
+  if (nextIndex < 0 || nextIndex >= memoryItems.value.length) return
+  memoryCardIndex.value = nextIndex
 }
 
 async function handlePersonalizationToggle(enabled) {
@@ -878,9 +888,13 @@ h1 {
 .memory-list-heading > div { min-width: 0; }
 .memory-refresh { flex: 0 0 auto; }
 .memory-limit-note { margin: 0 0 12px; color: var(--app-text-faint); font-size: 12px; line-height: 1.5; }
-.memory-list { display: grid; gap: 12px; }
-.memory-pagination { justify-content: center; margin-top: 16px; }
-.memory-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 16px; border: 1px solid var(--app-line); border-radius: 8px; background: var(--app-surface); }
+.memory-stack-stage { margin: 4px 0 8px; }
+.memory-stack { position: relative; isolation: isolate; padding: 0 12px 14px 0; }
+.memory-stack::before, .memory-stack::after { position: absolute; z-index: 0; border: 1px solid var(--app-line); border-radius: 8px; background: var(--app-surface-strong); content: ''; pointer-events: none; }
+.memory-stack::before { inset: 8px 9px 7px 8px; transform: translate(3px, 2px) rotate(.25deg); }
+.memory-stack::after { inset: 14px 17px 1px 16px; transform: translate(4px, 3px) rotate(.5deg); }
+.memory-stack--single::before, .memory-stack--single::after { display: none; }
+.memory-item { position: relative; z-index: 1; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 16px; border: 1px solid var(--app-line); border-radius: 8px; background: var(--app-surface); box-shadow: 0 5px 14px rgba(34, 48, 63, .08); }
 .memory-item-main { min-width: 0; flex: 1; }
 .memory-item-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-bottom: 10px; }
 .memory-type-tag, .memory-scope-tag, .memory-user-tag { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border: 1px solid var(--app-line); border-radius: 999px; color: var(--app-text-muted); font-size: 11px; font-weight: 800; }
@@ -893,6 +907,9 @@ h1 {
 .memory-facts dt { margin-bottom: 4px; color: var(--app-text-faint); font-size: 11px; }
 .memory-facts dd { margin: 0; color: var(--app-text-soft); font-size: 12px; font-weight: 700; line-height: 1.5; overflow-wrap: anywhere; }
 .memory-item-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+.memory-stack-navigation { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 2px; }
+.memory-stack-navigation > span { min-width: 116px; color: var(--app-text-muted); font-size: 12px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+.memory-stack-button { display: inline-flex; min-width: 108px; align-items: center; justify-content: center; gap: 6px; }
 .memory-action-button, .memory-delete-button, .memory-clear-button { min-height: 44px; font-weight: 800; }
 .memory-action-button { display: inline-flex; align-items: center; gap: 6px; }
 .memory-delete-button { color: #a94f42; border: 1px solid color-mix(in srgb, #b45c48 35%, var(--app-line)); background: transparent; }
@@ -965,6 +982,9 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid 
   .memory-list-heading { margin-top: 20px; }
   .memory-refresh, .memory-item-actions > *, .memory-clear-button { width: 100%; }
   .memory-item-actions { flex-direction: column; }
+  .memory-stack-navigation { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 7px; }
+  .memory-stack-navigation > span { min-width: 0; font-size: 11px; }
+  .memory-stack-navigation .memory-stack-button { width: 100%; min-width: 0; padding-right: 7px; padding-left: 7px; }
   .memory-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .memory-settings-copy p, .memory-list-heading p, .memory-clear-row p, .memory-empty-state p { font-size: 14px; }
   .memory-preference-line { font-size: 15px; }

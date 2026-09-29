@@ -18,7 +18,8 @@ RUN groupadd --system --gid 10001 app \
 WORKDIR /app
 COPY --from=build --chown=app:app /workspace/target/ai-smart-recipe-backend-0.0.1-SNAPSHOT.jar /app/app.jar
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+    && chmod 755 /usr/local/bin/docker-entrypoint.sh
 
 USER root
 EXPOSE 7068

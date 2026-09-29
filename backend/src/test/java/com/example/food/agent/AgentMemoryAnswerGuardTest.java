@@ -65,6 +65,56 @@ class AgentMemoryAnswerGuardTest {
     }
 
     @Test
+    void distinguishesOppositePreferencesFromChronologyWhenDatedEpisodesAreAvailable() {
+        String answer = "上述记录存在明确的时间线矛盾，不应互相覆盖。";
+        List<String> datedEvents = List.of(
+                "历史行为（发生于 2026-09-24T16:38:36）：REACTION_CLEARED",
+                "历史行为（发生于 2026-09-24T16:38:42）：REACTION DISLIKE"
+        );
+
+        String guarded = AgentMemoryAnswerGuard.guard(answer, SECTIONS, datedEvents);
+
+        assertThat(guarded)
+                .contains("正反反馈方向冲突（事件先后以记录时间为准）")
+                .doesNotContain("时间线矛盾");
+    }
+
+    @Test
+    void preservesAnExplicitlyNegatedTimelineContradiction() {
+        String answer = "这并非时间线矛盾，而是偏好方向不同。";
+        List<String> datedEvents = List.of(
+                "历史行为（发生于 2026-09-24T16:38:36）：REACTION_CLEARED",
+                "历史行为（发生于 2026-09-24T16:38:42）：REACTION DISLIKE"
+        );
+
+        assertThat(AgentMemoryAnswerGuard.guard(answer, SECTIONS, datedEvents)).isEqualTo(answer);
+    }
+
+    @Test
+    void removesAnInventoryEventTimestampThatIsNotInCurrentMemoryTrace() {
+        String answer = "本轮检索到番茄在 2026-09-24T17:30:51 撤销了库存操作。";
+        List<String> currentTrace = List.of(
+                "历史行为（发生于 2026-09-24T17:36:13）：PANTRY_OPERATION_REVERSED 番茄"
+        );
+
+        String guarded = AgentMemoryAnswerGuard.guard(answer, SECTIONS, currentTrace);
+
+        assertThat(guarded)
+                .contains("本轮检索到的记忆中没有这条事件时间依据")
+                .doesNotContain("17:30:51");
+    }
+
+    @Test
+    void keepsAnInventoryEventTimestampSupportedByCurrentMemoryTrace() {
+        String answer = "本轮检索到番茄在 2026-09-24 17:36 撤销了库存操作。";
+        List<String> currentTrace = List.of(
+                "历史行为（发生于 2026-09-24T17:36:13）：PANTRY_OPERATION_REVERSED 番茄"
+        );
+
+        assertThat(AgentMemoryAnswerGuard.guard(answer, SECTIONS, currentTrace)).isEqualTo(answer);
+    }
+
+    @Test
     void doesNothingWhenNoPersonalMemoryWasInjected() {
         String answer = "你从未说过要放生姜。";
 

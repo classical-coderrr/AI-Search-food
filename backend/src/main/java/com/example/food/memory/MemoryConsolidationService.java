@@ -37,7 +37,7 @@ public class MemoryConsolidationService {
 
     private static final int MAX_CANDIDATES = 500;
     private static final int MAX_ITEMS = 500;
-    private static final int PROFILE_VERSION = 1;
+    private static final int PROFILE_VERSION = 2;
     private static final BigDecimal ONE = BigDecimal.ONE;
     private static final BigDecimal ZERO = BigDecimal.ZERO;
 
@@ -48,6 +48,8 @@ public class MemoryConsolidationService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final MemoryPersonalizationService personalizationService;
+    private final MemoryFeedbackReactionReconciler feedbackReactionReconciler;
+    private final PersonalizedSkillProjectionService skillProjectionService;
 
     public MemoryConsolidationService(
             MemoryCandidateMapper candidateMapper,
@@ -57,7 +59,20 @@ public class MemoryConsolidationService {
             ObjectMapper objectMapper
     ) {
         this(candidateMapper, itemMapper, itemCandidateMapper, profileMapper,
-                objectMapper, Clock.systemDefaultZone(), null);
+                objectMapper, Clock.systemDefaultZone(), null, null);
+    }
+
+    public MemoryConsolidationService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryItemMapper itemMapper,
+            MemoryItemCandidateMapper itemCandidateMapper,
+            MemoryProfileMapper profileMapper,
+            ObjectMapper objectMapper,
+            MemoryPersonalizationService personalizationService,
+            MemoryFeedbackReactionReconciler feedbackReactionReconciler
+    ) {
+        this(candidateMapper, itemMapper, itemCandidateMapper, profileMapper, objectMapper,
+                personalizationService, feedbackReactionReconciler, null);
     }
 
     @Autowired
@@ -67,10 +82,13 @@ public class MemoryConsolidationService {
             MemoryItemCandidateMapper itemCandidateMapper,
             MemoryProfileMapper profileMapper,
             ObjectMapper objectMapper,
-            MemoryPersonalizationService personalizationService
+            MemoryPersonalizationService personalizationService,
+            MemoryFeedbackReactionReconciler feedbackReactionReconciler,
+            PersonalizedSkillProjectionService skillProjectionService
     ) {
         this(candidateMapper, itemMapper, itemCandidateMapper, profileMapper,
-                objectMapper, Clock.systemDefaultZone(), personalizationService);
+                objectMapper, Clock.systemDefaultZone(), personalizationService, feedbackReactionReconciler,
+                skillProjectionService);
     }
 
     MemoryConsolidationService(
@@ -82,7 +100,7 @@ public class MemoryConsolidationService {
             Clock clock
     ) {
         this(candidateMapper, itemMapper, itemCandidateMapper, profileMapper,
-                objectMapper, clock, null);
+                objectMapper, clock, null, null);
     }
 
     MemoryConsolidationService(
@@ -92,7 +110,23 @@ public class MemoryConsolidationService {
             MemoryProfileMapper profileMapper,
             ObjectMapper objectMapper,
             Clock clock,
-            MemoryPersonalizationService personalizationService
+            MemoryPersonalizationService personalizationService,
+            MemoryFeedbackReactionReconciler feedbackReactionReconciler
+    ) {
+        this(candidateMapper, itemMapper, itemCandidateMapper, profileMapper,
+                objectMapper, clock, personalizationService, feedbackReactionReconciler, null);
+    }
+
+    MemoryConsolidationService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryItemMapper itemMapper,
+            MemoryItemCandidateMapper itemCandidateMapper,
+            MemoryProfileMapper profileMapper,
+            ObjectMapper objectMapper,
+            Clock clock,
+            MemoryPersonalizationService personalizationService,
+            MemoryFeedbackReactionReconciler feedbackReactionReconciler,
+            PersonalizedSkillProjectionService skillProjectionService
     ) {
         this.candidateMapper = candidateMapper;
         this.itemMapper = itemMapper;
@@ -101,6 +135,8 @@ public class MemoryConsolidationService {
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.personalizationService = personalizationService;
+        this.feedbackReactionReconciler = feedbackReactionReconciler;
+        this.skillProjectionService = skillProjectionService;
     }
 
     @Transactional
@@ -108,6 +144,9 @@ public class MemoryConsolidationService {
         requireUser(userId);
         if (personalizationService != null && !personalizationService.isEnabled(userId)) {
             return new ConsolidationResult(0, 0, null, null);
+        }
+        if (feedbackReactionReconciler != null) {
+            feedbackReactionReconciler.reconcile(userId);
         }
         List<MemoryCandidate> candidates = candidateMapper.listForConsolidation(userId, MAX_CANDIDATES);
         Map<String, List<MemoryCandidate>> groups = candidates.stream()
@@ -125,7 +164,10 @@ public class MemoryConsolidationService {
             changedItems += result.changedItems();
         }
 
+        changedItems += reconcileSupersededCandidates(userId);
+
         MemoryProfile profile = rebuildProfile(userId);
+        if (skillProjectionService != null) skillProjectionService.rebuild(userId, profile);
         return new ConsolidationResult(
                 processed,
                 changedItems,
@@ -145,6 +187,21 @@ public class MemoryConsolidationService {
         return itemMapper.listActive(userId, safeLimit);
     }
 
+    public List<MemoryCandidate> listOwnedSourceCandidates(Long userId, List<MemoryItem> items) {
+        requireUser(userId);
+        if (items == null || items.isEmpty()) return List.of();
+        LinkedHashSet<Long> candidateIds = new LinkedHashSet<>();
+        for (MemoryItem item : items) {
+            List<Long> sourceIds = readIds(item.getSourceCandidateIdsJson());
+            int from = Math.max(0, sourceIds.size() - 20);
+            candidateIds.addAll(sourceIds.subList(from, sourceIds.size()));
+            if (candidateIds.size() >= 500) break;
+        }
+        if (candidateIds.isEmpty()) return List.of();
+        return candidateMapper.findOwnedByIds(userId, List.copyOf(candidateIds).subList(0,
+                Math.min(500, candidateIds.size())));
+    }
+
     public MemoryProfile getOwnedProfile(Long userId) {
         requireUser(userId);
         return profileMapper.findOwned(userId);
@@ -152,7 +209,8 @@ public class MemoryConsolidationService {
 
     public void refreshProfileForManagement(Long userId) {
         requireUser(userId);
-        rebuildProfile(userId);
+        MemoryProfile profile = rebuildProfile(userId);
+        if (skillProjectionService != null) skillProjectionService.rebuild(userId, profile);
     }
 
     private ConsolidatedGroupResult consolidateGroup(Long userId, List<MemoryCandidate> group) {
@@ -179,7 +237,11 @@ public class MemoryConsolidationService {
                 }
             }
         } else if (!unapplied.isEmpty()) {
-            mergeIntoExisting(userId, item, unapplied);
+            if (MemoryItemStatus.DELETED.name().equals(item.getStatus())) {
+                resetFromCandidates(userId, item, unapplied);
+            } else {
+                mergeIntoExisting(userId, item, unapplied);
+            }
         }
 
         for (MemoryCandidate candidate : group) {
@@ -280,6 +342,45 @@ public class MemoryConsolidationService {
         item.setVersion(item.getVersion() + 1);
     }
 
+    private int reconcileSupersededCandidates(Long userId) {
+        int changedItems = 0;
+        for (MemoryItem item : itemCandidateMapper.listUnmodifiedItemsWithSupersededCandidates(userId)) {
+            List<MemoryCandidate> activeCandidates = candidateMapper.listActiveForItem(userId, item.getId());
+            if (activeCandidates.isEmpty()) {
+                if (itemMapper.softDeleteOwned(userId, item.getId(), item.getVersion()) != 1) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT,
+                            "记忆版本已变化，请稍后重试");
+                }
+            } else {
+                resetFromCandidates(userId, item, activeCandidates);
+            }
+            itemCandidateMapper.deleteSupersededRelations(userId, item.getId());
+            changedItems++;
+        }
+        return changedItems;
+    }
+
+    private void resetFromCandidates(Long userId, MemoryItem item, List<MemoryCandidate> candidates) {
+        if (candidates.isEmpty()) return;
+        item.setStrength(weightedAverageStrength(candidates));
+        item.setConfidence(combinedConfidence(ZERO, candidates));
+        item.setEvidenceCount(sumEvidence(candidates));
+        item.setOccurrenceCount(candidates.size());
+        List<Long> candidateIds = candidates.stream().map(MemoryCandidate::getId).toList();
+        List<Long> episodeIds = distinctIds(candidates.stream().map(MemoryCandidate::getEpisodeId).toList());
+        item.setSourceCandidateIdsJson(writeIds(candidateIds));
+        item.setSourceEpisodeIdsJson(writeIds(episodeIds));
+        item.setSourceCount(episodeIds.size());
+        item.setFirstSeenAt(firstSeen(candidates));
+        item.setLastSeenAt(lastSeen(candidates));
+        item.setImportance(importance(item.getConfidence(), item.getEvidenceCount()));
+        if (itemMapper.updateConsolidated(userId, item, item.getVersion()) != 1) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "记忆版本已变化，请稍后重试");
+        }
+        item.setVersion(item.getVersion() + 1);
+    }
+
     private MemoryProfile rebuildProfile(Long userId) {
         List<MemoryItem> items = itemMapper.listActive(userId, MAX_ITEMS);
         Map<String, Object> document = new LinkedHashMap<>();
@@ -294,6 +395,13 @@ public class MemoryConsolidationService {
         document.put("ingredientPreferences", preferenceGroups(items, "INGREDIENT_PREFERENCE"));
         document.put("recipePreferences", preferenceGroups(items, "RECIPE_PREFERENCE"));
         document.put("behaviorPatterns", preferenceGroups(items, "RECIPE_BEHAVIOR"));
+        document.put("skillPreferences", items.stream()
+                .filter(item -> "SKILL_PREFERENCE".equals(item.getMemoryType()))
+                .sorted(Comparator.comparing(MemoryItem::getLastSeenAt,
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(MemoryItem::getId, Comparator.nullsLast(Comparator.reverseOrder())))
+                .map(this::itemView)
+                .toList());
         document.put("dietGoals", items.stream()
                 .filter(item -> "DIET_GOAL".equals(item.getMemoryType())
                         && "LONG_TERM".equalsIgnoreCase(item.getTemporalType()))
@@ -301,7 +409,8 @@ public class MemoryConsolidationService {
                 .map(this::itemView)
                 .toList());
         document.put("otherMemories", items.stream()
-                .filter(item -> !Set.of("INGREDIENT_PREFERENCE", "RECIPE_PREFERENCE", "RECIPE_BEHAVIOR")
+                .filter(item -> !Set.of("INGREDIENT_PREFERENCE", "RECIPE_PREFERENCE", "RECIPE_BEHAVIOR",
+                                "SKILL_PREFERENCE")
                         .contains(item.getMemoryType()))
                 .map(this::itemView)
                 .toList());

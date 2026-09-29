@@ -49,6 +49,9 @@ class AgentWriteServiceTest {
     private AgentKitchenActionService actionService;
 
     @Mock
+    private AgentMemoryToolService memoryToolService;
+
+    @Mock
     private AgentWriteOperationService operationService;
 
     @Mock
@@ -189,6 +192,25 @@ class AgentWriteServiceTest {
         verify(confirmationMapper).markConfirmed(7L, 9L, "食材已删除");
         verify(operationService).complete(eq(7L), eq("key-9"), eq("食材已删除"), isNull());
         verify(securityLogService).record(7L, "AGENT_PANTRY_DELETE", "/api/agent/chat/stream", "confirmationId=9");
+    }
+
+    @Test
+    void executesConfirmedMemoryWriteThroughMemoryServiceInsteadOfKitchenActions() {
+        AgentConfirmation confirmation = confirmation("PENDING", "{\"memoryId\":14,\"version\":2}");
+        confirmation.setActionType("MEMORY_PREFERENCE_UPDATE");
+        when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);
+        when(confirmationMapper.claim(7L, 9L)).thenReturn(1);
+        when(confirmationMapper.markConfirmed(7L, 9L, "偏好已修改")).thenReturn(1);
+        when(memoryToolService.executeConfirmed(eq("MEMORY_PREFERENCE_UPDATE"), any(), eq(7L), eq("key-9")))
+                .thenReturn(new AgentKitchenActionService.ActionResult("偏好已修改", null));
+        service.setMemoryToolService(memoryToolService);
+
+        AgentWriteService.ConfirmationResult result = service.execute(principal, 9L, "key-9");
+
+        assertThat(result.status()).isEqualTo("completed");
+        assertThat(result.message()).isEqualTo("偏好已修改");
+        verify(memoryToolService).executeConfirmed(eq("MEMORY_PREFERENCE_UPDATE"), any(), eq(7L), eq("key-9"));
+        verify(actionService, never()).execute(any(), any(), any(), anyString());
     }
 
     @Test

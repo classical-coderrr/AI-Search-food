@@ -67,6 +67,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 reject(request, response, new BadCredentialsException("User session is no longer valid"));
                 return;
             }
+            request.setAttribute(AuthPrincipal.class.getName(), principal);
             SecurityContextHolder.getContext().setAuthentication(authentication(principal));
         } catch (AuthenticationException exception) {
             reject(request, response, exception);

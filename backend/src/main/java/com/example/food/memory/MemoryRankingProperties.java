@@ -13,6 +13,9 @@ public class MemoryRankingProperties {
     private double confidenceWeight = 0.15;
     private double feedbackWeight = 0.10;
     private double contextWeight = 0.05;
+    private double vectorSemanticRatio = 0.70;
+    private double explicitUserFeedbackWeight = 0.20;
+    private int userFeedbackMaxAgeDays = 180;
     private double explicitPreferenceHalfLifeDays = 3650;
     private double implicitPreferenceHalfLifeDays = 180;
     private double shortTermTrendHalfLifeDays = 30;
@@ -33,6 +36,12 @@ public class MemoryRankingProperties {
     public void setFeedbackWeight(double value) { feedbackWeight = value; }
     public double contextWeight() { return contextWeight; }
     public void setContextWeight(double value) { contextWeight = value; }
+    public double vectorSemanticRatio() { return vectorSemanticRatio; }
+    public void setVectorSemanticRatio(double value) { vectorSemanticRatio = value; }
+    public double explicitUserFeedbackWeight() { return explicitUserFeedbackWeight; }
+    public void setExplicitUserFeedbackWeight(double value) { explicitUserFeedbackWeight = value; }
+    public int userFeedbackMaxAgeDays() { return userFeedbackMaxAgeDays; }
+    public void setUserFeedbackMaxAgeDays(int value) { userFeedbackMaxAgeDays = value; }
     public double explicitPreferenceHalfLifeDays() { return explicitPreferenceHalfLifeDays; }
     public void setExplicitPreferenceHalfLifeDays(double value) { explicitPreferenceHalfLifeDays = value; }
     public double implicitPreferenceHalfLifeDays() { return implicitPreferenceHalfLifeDays; }

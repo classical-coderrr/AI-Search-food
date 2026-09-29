@@ -32,13 +32,47 @@ mybatis-plus:
 
 app:
   memory:
+    mcp:
+      enabled: ${MEMORY_MCP_ENABLED:false}
+    session:
+      cleanup-interval: ${MEMORY_SESSION_CLEANUP_INTERVAL:PT5M}
+      cleanup-batch-size: ${MEMORY_SESSION_CLEANUP_BATCH_SIZE:200}
+    embedding:
+      enabled: ${MEMORY_VECTOR_ENABLED:true}
+      model: ${MEMORY_EMBEDDING_MODEL:text-embedding-v3}
+      dimensions: ${MEMORY_EMBEDDING_DIMENSIONS:1024}
+      batch-size: ${MEMORY_EMBEDDING_BATCH_SIZE:8}
+      recall-limit: ${MEMORY_VECTOR_RECALL_LIMIT:200}
+      scan-limit: ${MEMORY_VECTOR_SCAN_LIMIT:5000}
+      poll-batch-size: ${MEMORY_EMBEDDING_POLL_BATCH_SIZE:24}
+      poll-interval: ${MEMORY_EMBEDDING_POLL_INTERVAL:PT30S}
+      index-user-id: ${MEMORY_EMBEDDING_INDEX_USER_ID:0}
+      retry-base-delay: ${MEMORY_EMBEDDING_RETRY_BASE_DELAY:PT5S}
+      retry-max-delay: ${MEMORY_EMBEDDING_RETRY_MAX_DELAY:PT30M}
+      lease-duration: ${MEMORY_EMBEDDING_LEASE_DURATION:PT2M}
+    vector:
+      qdrant:
+        enabled: ${MEMORY_QDRANT_ENABLED:false}
+        url: ${MEMORY_QDRANT_URL:http://localhost:6333}
+        api-key: ${MEMORY_QDRANT_API_KEY:}
+        collection: ${MEMORY_QDRANT_COLLECTION:xiaochuling_memory_v1}
+        connect-timeout: ${MEMORY_QDRANT_CONNECT_TIMEOUT:PT2S}
+        read-timeout: ${MEMORY_QDRANT_READ_TIMEOUT:PT4S}
+        poll-interval: ${MEMORY_QDRANT_POLL_INTERVAL:PT5S}
+        poll-batch-size: ${MEMORY_QDRANT_POLL_BATCH_SIZE:100}
+        consistency-check-interval: ${MEMORY_QDRANT_CONSISTENCY_CHECK_INTERVAL:PT5M}
+        identity-audit-interval: ${MEMORY_QDRANT_IDENTITY_AUDIT_INTERVAL:PT5S}
+        identity-audit-batch-size: ${MEMORY_QDRANT_IDENTITY_AUDIT_BATCH_SIZE:500}
     ranking:
       semantic-weight: ${MEMORY_RANKING_SEMANTIC_WEIGHT:0.35}
       recency-weight: ${MEMORY_RANKING_RECENCY_WEIGHT:0.20}
       importance-weight: ${MEMORY_RANKING_IMPORTANCE_WEIGHT:0.15}
       confidence-weight: ${MEMORY_RANKING_CONFIDENCE_WEIGHT:0.15}
       feedback-weight: ${MEMORY_RANKING_FEEDBACK_WEIGHT:0.10}
+      explicit-user-feedback-weight: ${MEMORY_RANKING_USER_FEEDBACK_WEIGHT:0.20}
+      user-feedback-max-age-days: ${MEMORY_RANKING_USER_FEEDBACK_MAX_AGE_DAYS:180}
       context-weight: ${MEMORY_RANKING_CONTEXT_WEIGHT:0.05}
+      vector-semantic-ratio: ${MEMORY_RANKING_VECTOR_SEMANTIC_RATIO:0.70}
       explicit-preference-half-life-days: ${MEMORY_EXPLICIT_HALF_LIFE_DAYS:3650}
       implicit-preference-half-life-days: ${MEMORY_IMPLICIT_HALF_LIFE_DAYS:180}
       short-term-trend-half-life-days: ${MEMORY_SHORT_TERM_HALF_LIFE_DAYS:30}
@@ -49,6 +83,17 @@ app:
     observability:
       trace-retention: ${MEMORY_TRACE_RETENTION:P30D}
       trace-cleanup-interval: ${MEMORY_TRACE_CLEANUP_INTERVAL:PT6H}
+    processing:
+      poll-interval: ${MEMORY_PROCESSING_POLL_INTERVAL:PT2S}
+      batch-size: ${MEMORY_PROCESSING_BATCH_SIZE:10}
+      lease-duration: ${MEMORY_PROCESSING_LEASE_DURATION:PT2M}
+      retry-base-delay: ${MEMORY_PROCESSING_RETRY_BASE_DELAY:PT5S}
+      retry-max-delay: ${MEMORY_PROCESSING_RETRY_MAX_DELAY:PT30M}
+      max-attempts: ${MEMORY_PROCESSING_MAX_ATTEMPTS:8}
+    prompts:
+      agent-context-version: ${MEMORY_AGENT_CONTEXT_PROMPT_VERSION:memory-agent-context-v1}
+    evaluation:
+      minimum-online-label-count: ${MEMORY_ONLINE_EVALUATION_MINIMUM_LABEL_COUNT:20}
   agent:
     state-store: ${AGENT_STATE_STORE:redis}
     intent-recognition:

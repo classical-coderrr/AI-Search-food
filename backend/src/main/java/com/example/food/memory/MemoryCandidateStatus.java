@@ -5,5 +5,6 @@ public enum MemoryCandidateStatus {
     AWAITING_CONFIRMATION,
     ACCEPTED,
     REJECTED,
+    SUPERSEDED,
     CONSOLIDATED
 }

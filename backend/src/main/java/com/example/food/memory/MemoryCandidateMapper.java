@@ -50,6 +50,75 @@ public interface MemoryCandidateMapper extends BaseMapper<MemoryCandidate> {
     );
 
     @Select("""
+            <script>
+            SELECT * FROM memory_candidates
+            WHERE user_id = #{userId}
+              AND deleted_at IS NULL
+              AND id IN
+              <foreach collection='candidateIds' item='candidateId' open='(' separator=',' close=')'>
+                #{candidateId}
+              </foreach>
+            ORDER BY extracted_at DESC, id DESC
+            LIMIT 500
+            </script>
+            """)
+    List<MemoryCandidate> findOwnedByIds(
+            @Param("userId") Long userId,
+            @Param("candidateIds") List<Long> candidateIds
+    );
+
+    @Select("""
+            SELECT c.* FROM memory_candidates c
+            JOIN memory_episodes e ON e.id = c.episode_id AND e.user_id = c.user_id
+            WHERE c.user_id = #{userId}
+              AND e.episode_type = 'RECIPE_FEEDBACK'
+              AND e.source_id = #{sourceId}
+              AND c.candidate_type = 'RECIPE_PREFERENCE'
+              AND c.source_type = 'EXPLICIT_FEEDBACK'
+              AND c.deleted_at IS NULL
+            ORDER BY e.occurred_at DESC, c.id DESC
+            """)
+    List<MemoryCandidate> listOwnedRecipeFeedbackCandidatesBySource(
+            @Param("userId") Long userId,
+            @Param("sourceId") String sourceId
+    );
+
+    @Select("""
+            SELECT DISTINCT e.source_id
+            FROM memory_candidates c
+            JOIN memory_episodes e ON e.id = c.episode_id AND e.user_id = c.user_id
+            WHERE c.user_id = #{userId}
+              AND e.episode_type = 'RECIPE_FEEDBACK'
+              AND e.source_id IS NOT NULL
+              AND c.candidate_type = 'RECIPE_PREFERENCE'
+              AND c.source_type = 'EXPLICIT_FEEDBACK'
+              AND c.status IN ('PENDING', 'AWAITING_CONFIRMATION', 'ACCEPTED', 'CONSOLIDATED')
+              AND (c.user_decision IS NULL OR c.user_decision <> 'CONFIRM')
+              AND c.deleted_at IS NULL
+              AND e.deleted_at IS NULL
+            ORDER BY e.source_id
+            LIMIT #{limit}
+            """)
+    List<String> listOwnedRecipeFeedbackSourcesForReconciliation(
+            @Param("userId") Long userId,
+            @Param("limit") int limit
+    );
+
+    @Select("""
+            SELECT c.* FROM memory_candidates c
+            JOIN memory_item_candidates r ON r.candidate_id = c.id AND r.user_id = c.user_id
+            WHERE c.user_id = #{userId}
+              AND r.memory_item_id = #{memoryItemId}
+              AND c.status IN ('PENDING', 'ACCEPTED', 'CONSOLIDATED')
+              AND c.deleted_at IS NULL
+            ORDER BY c.extracted_at, c.id
+            """)
+    List<MemoryCandidate> listActiveForItem(
+            @Param("userId") Long userId,
+            @Param("memoryItemId") Long memoryItemId
+    );
+
+    @Select("""
             SELECT * FROM memory_candidates
             WHERE user_id = #{userId}
               AND deleted_at IS NULL
@@ -180,6 +249,24 @@ public interface MemoryCandidateMapper extends BaseMapper<MemoryCandidate> {
               AND status IN ('PENDING', 'ACCEPTED')
             """)
     int markConsolidated(
+            @Param("userId") Long userId,
+            @Param("candidateId") Long candidateId,
+            @Param("version") Integer version
+    );
+
+    @Update("""
+            UPDATE memory_candidates
+            SET status = 'SUPERSEDED',
+                version = version + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = #{candidateId}
+              AND user_id = #{userId}
+              AND version = #{version}
+              AND status IN ('PENDING', 'AWAITING_CONFIRMATION', 'ACCEPTED', 'CONSOLIDATED')
+              AND (user_decision IS NULL OR user_decision <> 'CONFIRM')
+              AND deleted_at IS NULL
+            """)
+    int markSuperseded(
             @Param("userId") Long userId,
             @Param("candidateId") Long candidateId,
             @Param("version") Integer version

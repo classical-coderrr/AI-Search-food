@@ -5,8 +5,10 @@ import {
   clearManagedMemories,
   deleteManagedMemory,
   getMemoryFeedbackStatus,
+  getMemoryFeedbackTargets,
   getMemoryManagement,
   submitMemoryFeedback,
+  submitMemoryTargetFeedback,
   updateManagedMemory,
   updateMemoryPersonalization
 } from './memory.js'
@@ -35,6 +37,8 @@ test('memory management actions call their authenticated API endpoints with vers
     await clearManagedMemories()
     await getMemoryFeedbackStatus('run/with spaces')
     await submitMemoryFeedback('run-1', 'HELPFUL')
+    await getMemoryFeedbackTargets('run-1')
+    await submitMemoryTargetFeedback('run-1', 'MEMORY_ITEM', 17, 'INCORRECT')
   } finally {
     http.get = originalMethods.get
     http.put = originalMethods.put
@@ -50,6 +54,10 @@ test('memory management actions call their authenticated API endpoints with vers
     ['delete', '/memory/management/items/17', { params: { version: 5 } }],
     ['delete', '/memory/management/all'],
     ['get', '/memory/feedback/run%2Fwith%20spaces'],
-    ['post', '/memory/feedback', { traceId: 'run-1', feedbackType: 'HELPFUL' }]
+    ['post', '/memory/feedback', { traceId: 'run-1', feedbackType: 'HELPFUL' }],
+    ['get', '/memory/feedback/run-1/targets'],
+    ['post', '/memory/feedback/targets', {
+      traceId: 'run-1', sourceKind: 'MEMORY_ITEM', sourceId: 17, feedbackType: 'INCORRECT'
+    }]
   ])
 })

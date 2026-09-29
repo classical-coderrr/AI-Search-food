@@ -57,6 +57,7 @@ class QwenAgentClientTest {
                               }]
                             }
                           }]
+                          ,"usage":{"prompt_tokens":31,"completion_tokens":7,"total_tokens":38}
                         }
                         """, MediaType.APPLICATION_JSON));
 
@@ -68,9 +69,40 @@ class QwenAgentClientTest {
         assertThat(turn.content()).isEmpty();
         assertThat(turn.provider()).isEqualTo("qwen");
         assertThat(turn.model()).isEqualTo("qwen-plus");
+        assertThat(turn.tokenUsage()).isEqualTo(new QwenAgentClient.TokenUsage(31L, 7L, 38L));
         assertThat(turn.toolCalls()).containsExactly(
                 new QwenAgentClient.ToolCall("call_inventory_1", "pantry_list", "{}")
         );
+        server.verify();
+    }
+
+    @Test
+    void forcesTheRequestedMemoryToolWhenTheUserExplicitlyAsksToRememberAPreference() {
+        RestTemplate restTemplate = new RestTemplateBuilder().build();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        QwenProperties properties = properties("test-api-key");
+        QwenAgentClient client = new QwenAgentClient(restTemplate, new ObjectMapper(), properties);
+        AgentToolRegistry registry = new AgentToolRegistry();
+        String functionName = AgentToolRegistry.Tool.MEMORY_EPISODE_SAVE.functionName();
+
+        server.expect(once(), requestTo(properties.endpoint()))
+                .andExpect(jsonPath("$.tool_choice.type").value("function"))
+                .andExpect(jsonPath("$.tool_choice.function.name").value(functionName))
+                .andExpect(jsonPath("$.messages[0].content")
+                        .value(org.hamcrest.Matchers.containsString("必须调用 memory_episode_save")))
+                .andRespond(withSuccess("""
+                        {"choices":[{"message":{"tool_calls":[{"id":"call_memory_1","type":"function",
+                          "function":{"name":"memory_episode_save","arguments":"{}"}}]}}]}
+                        """, MediaType.APPLICATION_JSON));
+
+        QwenAgentClient.AgentTurn turn = client.complete(
+                List.of(QwenAgentClient.ConversationMessage.user("我喜欢鸡胸肉，记下来作为长期偏好")),
+                List.of(registry.functionDefinition(AgentToolRegistry.Tool.MEMORY_EPISODE_SAVE)),
+                functionName
+        );
+
+        assertThat(turn.toolCalls()).containsExactly(new QwenAgentClient.ToolCall(
+                "call_memory_1", "memory_episode_save", "{}"));
         server.verify();
     }
 
@@ -98,6 +130,7 @@ class QwenAgentClientTest {
         ), List.of());
 
         assertThat(turn.content()).isEqualTo("收到");
+        assertThat(turn.tokenUsage().hasUsage()).isFalse();
         server.verify();
     }
 
@@ -172,6 +205,7 @@ class QwenAgentClientTest {
                 .andRespond(withSuccess("""
                         {
                           "output_text": "",
+                          "usage": {"input_tokens": 41, "output_tokens": 9, "total_tokens": 50},
                           "output": [{
                             "type": "function_call",
                             "call_id": "call_response_1",
@@ -189,6 +223,7 @@ class QwenAgentClientTest {
         assertThat(turn.toolCalls()).containsExactly(
                 new QwenAgentClient.ToolCall("call_response_1", "pantry_list", "{}")
         );
+        assertThat(turn.tokenUsage()).isEqualTo(new QwenAgentClient.TokenUsage(41L, 9L, 50L));
         server.verify();
     }
 
@@ -435,6 +470,7 @@ class QwenAgentClientTest {
                 .andExpect(jsonPath("$.tools[0].input_schema.type").value("object"))
                 .andRespond(withSuccess("""
                         {
+                          "usage": {"input_tokens": 23, "output_tokens": 6},
                           "content": [
                             {"type": "text", "text": ""},
                             {"type": "tool_use", "id": "call_inventory_1", "name": "pantry_list", "input": {}}
@@ -454,6 +490,7 @@ class QwenAgentClientTest {
         assertThat(turn.toolCalls()).containsExactly(
                 new QwenAgentClient.ToolCall("call_inventory_1", "pantry_list", "{}")
         );
+        assertThat(turn.tokenUsage()).isEqualTo(new QwenAgentClient.TokenUsage(23L, 6L, 29L));
         server.verify();
     }
 

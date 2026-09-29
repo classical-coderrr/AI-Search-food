@@ -7,3 +7,7 @@ export function getAdminMemoryEvaluation() {
 export function runAdminMemoryEvaluation() {
   return http.post('/admin/dashboard/memory-evaluation/run')
 }
+
+export function getAdminMemoryObservability(range = '30d') {
+  return http.get('/admin/dashboard/memory-observability', { params: { range } })
+}

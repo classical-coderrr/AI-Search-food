@@ -374,7 +374,8 @@ class AgentServiceRecoveryTest {
         AgentKitchenToolService kitchenToolService = mock(AgentKitchenToolService.class);
         when(kitchenToolService.isMutation(any(), any())).thenReturn(true);
         when(kitchenToolService.actionType(any(), any())).thenReturn("PANTRY_ADD");
-        when(kitchenToolService.actionPayload(any())).thenReturn(com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode());
+        when(kitchenToolService.actionPayload(any(), any()))
+                .thenReturn(com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode());
         when(kitchenToolService.impact(any(), any())).thenReturn("会新增一条库存记录");
         AgentConfirmationMapper confirmationMapper = mock(AgentConfirmationMapper.class);
         AgentFaultInjector crashingInjector = mock(AgentFaultInjector.class);

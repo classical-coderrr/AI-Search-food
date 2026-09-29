@@ -15,6 +15,7 @@ import org.springframework.test.context.ActiveProfiles;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -83,6 +84,34 @@ class WeeklyMenuPersistenceIntegrationTest {
                 .containsExactly("番茄", "鸡蛋", "食用油");
         assertThat(saved.shoppingItems().get(0).alreadyOwned()).isTrue();
         assertThat(saved.shoppingItems().get(1).amount()).isEqualTo("5个");
+
+        List<Map<String, Object>> recordedEpisodes = jdbcTemplate.queryForList(
+                "SELECT episode_type, source_type, source_id, idempotency_key, payload_json "
+                        + "FROM memory_episodes WHERE user_id = ? AND episode_type = ?",
+                userId,
+                "WEEKLY_MENU_SELECTED"
+        );
+        assertThat(recordedEpisodes).hasSize(1);
+        assertThat(recordedEpisodes.get(0).get("source_type")).isEqualTo("WEEKLY_MENU_PLAN");
+        assertThat(recordedEpisodes.get(0).get("source_id").toString()).isEqualTo(saved.id().toString());
+        assertThat(recordedEpisodes.get(0).get("idempotency_key").toString())
+                .startsWith("weekly-menu:" + saved.id() + ":");
+        assertThat(recordedEpisodes.get(0).get("payload_json").toString())
+                .contains("番茄炒蛋", "鸡蛋汤", "BREAKFAST", "DINNER");
+
+        weeklyMenuService.save(userId, new WeeklyMenuSaveRequest(
+                monday,
+                List.of(
+                        new WeeklyMenuItemRequest(monday, "BREAKFAST", firstRecipeId),
+                        new WeeklyMenuItemRequest(monday.plusDays(1), "DINNER", secondRecipeId)
+                )
+        ));
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_episodes WHERE user_id = ? AND episode_type = ?",
+                Integer.class,
+                userId,
+                "WEEKLY_MENU_SELECTED"
+        )).isEqualTo(1);
 
         WeeklyShoppingStatusResponse status = weeklyMenuService.saveShoppingStatus(
                 userId,

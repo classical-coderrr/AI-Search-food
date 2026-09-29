@@ -49,6 +49,7 @@ class AgentMemoryContextProviderTest {
                 Map.of(
                         "PERSONAL_MEMORY", List.of("用户明确不吃香菜"),
                         "PERSONALIZED_SKILL", List.of("[PERSONALIZED_SKILL: RECOMMEND_RECIPE]\n避开香菜"),
+                        "MEMORY_CONFLICTS", List.of("同一食材存在正反向记忆：鸡胸肉；本轮暂按‘不喜欢’处理。"),
                         "STRUCTURED_PROFILE", List.of("{\"ingredientPreferences\":{" 
                                 + "\"liked\":[{\"entity\":\"鸡胸肉\",\"preference\":\"LIKE\","
                                 + "\"temporalType\":\"RECENT\"}],"
@@ -73,7 +74,8 @@ class AgentMemoryContextProviderTest {
                 "已加载本轮任务对应的个性化执行策略",
                 "长期偏好：不喜欢香菜",
                 "近期行为推断：喜欢鸡胸肉",
-                "历史行为：收藏过清淡鸡肉晚餐",
+                "历史行为（发生于 2026-09-24T16:38:36）：收藏过清淡鸡肉晚餐",
+                "同一食材存在正反向记忆：鸡胸肉；本轮暂按‘不喜欢’处理。",
                 "食材偏好（近期行为推断）：喜欢鸡胸肉",
                 "食材偏好（长期）：不喜欢香菜");
         assertThat(result.traceSummaries()).noneMatch(summary -> summary.contains("internal-payload"));
@@ -148,7 +150,7 @@ class AgentMemoryContextProviderTest {
                 new MemorySearchHit("EPISODE", 44L, "RECIPE_SAVED", "收藏过清淡鸡肉晚餐",
                         "用户收藏菜谱", "{\"eventId\":\"internal-payload\"}", null,
                         "TEMPORARY_CONTEXT", BigDecimal.valueOf(0.5), BigDecimal.valueOf(0.8),
-                        java.time.LocalDateTime.now(), null),
+                        java.time.LocalDateTime.parse("2026-09-24T16:38:36"), null),
                 new MemorySearchHit("EPISODE", 45L, "RECIPE_SAVED", "未纳入上下文的记忆",
                         "未纳入上下文", "{}", null, "TEMPORARY_CONTEXT",
                         BigDecimal.valueOf(0.5), BigDecimal.valueOf(0.8),

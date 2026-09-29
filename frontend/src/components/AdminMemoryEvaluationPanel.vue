@@ -73,6 +73,64 @@
       </div>
     </section>
 
+    <section class="online-labels" aria-labelledby="online-labels-title" :aria-busy="onlineLoading">
+      <header class="memory-section-heading">
+        <div>
+          <p>线上观测 · 最近 30 天</p>
+          <h4 id="online-labels-title">用户主动标注的记忆使用情况</h4>
+        </div>
+        <el-button
+          size="small"
+          :loading="onlineLoading"
+          aria-label="刷新线上记忆标注指标"
+          @click="loadOnlineMetrics"
+        >
+          刷新数据
+        </el-button>
+      </header>
+      <el-alert
+        v-if="onlineError"
+        class="online-error"
+        type="warning"
+        :title="onlineError"
+        :closable="false"
+        show-icon
+      />
+      <p class="online-status" role="status" aria-live="polite">
+        {{ onlineStatusMessage }}
+      </p>
+      <div class="online-metric-grid" v-loading="onlineLoading">
+        <article class="online-metric-card">
+          <span>记忆目标使用次数</span>
+          <strong>{{ onlineLabels.usedTargetCount }}</strong>
+          <small>近 30 天实际注入上下文的记忆条目与事件</small>
+        </article>
+        <article class="online-metric-card">
+          <span>主动标注 / 覆盖率</span>
+          <strong>{{ onlineLabels.labeledTargetCount }} 条 · {{ formatPercent(onlineLabels.labelCoverageRate) }}</strong>
+          <small>用户对实际使用过的单条记忆提交的当前标注</small>
+        </article>
+        <article class="online-metric-card">
+          <span>错误标注率</span>
+          <strong>{{ onlineRate(onlineLabels.incorrectFeedbackRate) }}</strong>
+          <small>错误 {{ onlineLabels.incorrectCount }} 条 / 已标注 {{ onlineLabels.labeledTargetCount }} 条</small>
+        </article>
+        <article class="online-metric-card">
+          <span>不相关标注率</span>
+          <strong>{{ onlineRate(onlineLabels.notRelevantFeedbackRate) }}</strong>
+          <small>不相关 {{ onlineLabels.notRelevantCount }} 条 / 已标注 {{ onlineLabels.labeledTargetCount }} 条</small>
+        </article>
+        <article class="online-metric-card">
+          <span>过期标注率</span>
+          <strong>{{ onlineRate(onlineLabels.outdatedFeedbackRate) }}</strong>
+          <small>过期 {{ onlineLabels.outdatedCount }} 条 / 已标注 {{ onlineLabels.labeledTargetCount }} 条</small>
+        </article>
+      </div>
+      <p class="online-boundary">
+        指标只反映用户主动评价的记忆，不是随机抽样；覆盖率和样本量会同时展示。达到 {{ onlineLabels.minimumSampleCount }} 条标注前不显示比例，达到后也不能据此推断所有用户或全部记忆使用的真实错误率。
+      </p>
+    </section>
+
     <section class="memory-cases" aria-labelledby="memory-cases-title" v-loading="loading || running">
       <header class="memory-section-heading">
         <div>
@@ -130,7 +188,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getAdminMemoryEvaluation, runAdminMemoryEvaluation } from '../api/adminMemoryEvaluation'
+import { getAdminMemoryEvaluation, getAdminMemoryObservability, runAdminMemoryEvaluation } from '../api/adminMemoryEvaluation'
 
 const emptyEvaluation = () => ({
   id: null,
@@ -149,8 +207,11 @@ const emptyEvaluation = () => ({
 
 const loading = ref(false)
 const running = ref(false)
+const onlineLoading = ref(false)
 const errorMessage = ref('')
+const onlineError = ref('')
 const evaluation = ref(emptyEvaluation())
+const onlineLabels = ref(emptyOnlineLabels())
 
 const statusLabel = computed(() => ({ PASSED: '全部通过', FAILED: '存在未通过项', NEVER: '尚未评测' }[evaluation.value.status] || '状态未知'))
 const statusTone = computed(() => ({ PASSED: 'success', FAILED: 'danger', NEVER: 'neutral' }[evaluation.value.status] || 'neutral'))
@@ -163,6 +224,14 @@ const feedback = computed(() => {
   if (evaluation.value.status === 'FAILED') return '存在未通过的固定样例，请展开用例查看预期与实际结果。'
   return '固定离线样例全部通过；这不代表线上用户效果或真实胜率。'
 })
+const onlineStatusMessage = computed(() => {
+  if (onlineLoading.value) return '正在加载最近 30 天的线上标注统计。'
+  if (onlineError.value) return '线上统计暂不可用；离线评测结果不受影响。'
+  if (onlineLabels.value.sampleStatus === 'NO_MEMORY_USAGE') return '最近 30 天尚无实际注入上下文的记忆条目或事件。'
+  if (onlineLabels.value.sampleStatus === 'AWAITING_FEEDBACK') return `最近 30 天发生了 ${onlineLabels.value.usedTargetCount} 次记忆使用，尚无逐条用户标注。`
+  if (!onlineLabels.value.sampleSufficient) return `已收集 ${onlineLabels.value.labeledTargetCount} 条主动标注，尚未达到展示比例所需的 ${onlineLabels.value.minimumSampleCount} 条。`
+  return `已收集 ${onlineLabels.value.labeledTargetCount} 条主动标注，达到展示门槛；结果仍只代表自愿反馈样本。`
+})
 
 const metricCards = computed(() => {
   const metrics = evaluation.value.metrics || {}
@@ -171,13 +240,17 @@ const metricCards = computed(() => {
     { key: 'extractionRecall', label: '记忆提取召回率', value: metrics.extractionRecall, note: '预期记忆被找回的比例' },
     { key: 'rerankRecallAt3', label: '检索 Recall@3', value: metrics.rerankRecallAt3, note: '相关记忆进入前三的比例' },
     { key: 'canonicalDedupAccuracy', label: '标签归一与去重', value: metrics.canonicalDedupAccuracy, note: '同义标签归入同一组的比例' },
-    { key: 'conflictScenarioSelectionAccuracy', label: '冲突场景选择', value: metrics.conflictScenarioSelectionAccuracy, note: '场景选择正确且保留长期/近期记忆' },
+    { key: 'conflictScenarioSelectionAccuracy', label: '冲突记忆召回选择', value: metrics.conflictScenarioSelectionAccuracy, note: '召回排序正确且保留长期/近期记忆' },
+    { key: 'conflictAdjudicationAccuracy', label: '离线冲突裁决准确率', value: metrics.conflictAdjudicationAccuracy, note: '固定样例验证证据、场景与时间裁决，不代表线上用户准确率' },
     { key: 'staleMemoryTop3SelectionRate', label: '过期记忆 Top-3 命中', value: metrics.staleMemoryTop3SelectionRate, note: '越低越好；表示过期候选进入前三的比例' },
     { key: 'personalizationScenarioWinRate', label: '离线个性化场景胜率', value: metrics.personalizationScenarioWinRate, note: '固定场景比较，不等于真实用户胜率' }
   ]
 })
 
-onMounted(loadEvaluation)
+onMounted(() => {
+  loadEvaluation()
+  loadOnlineMetrics()
+})
 
 async function loadEvaluation() {
   loading.value = true
@@ -189,6 +262,19 @@ async function loadEvaluation() {
     errorMessage.value = error?.response?.data?.message || error?.message || '记忆评测结果加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function loadOnlineMetrics() {
+  onlineLoading.value = true
+  onlineError.value = ''
+  try {
+    const response = await getAdminMemoryObservability('30d')
+    onlineLabels.value = normalizeOnlineLabels(response?.data?.data?.onlineLabels)
+  } catch (error) {
+    onlineError.value = error?.response?.data?.message || error?.message || '线上记忆标注指标加载失败'
+  } finally {
+    onlineLoading.value = false
   }
 }
 
@@ -218,6 +304,32 @@ function normalizeEvaluation(value) {
   }
 }
 
+function emptyOnlineLabels() {
+  return {
+    usedTargetCount: 0,
+    labeledTargetCount: 0,
+    labelCoverageRate: 0,
+    helpfulCount: 0,
+    notRelevantCount: 0,
+    incorrectCount: 0,
+    outdatedCount: 0,
+    notRelevantFeedbackRate: 0,
+    incorrectFeedbackRate: 0,
+    outdatedFeedbackRate: 0,
+    minimumSampleCount: 20,
+    sampleSufficient: false,
+    sampleStatus: 'NO_MEMORY_USAGE'
+  }
+}
+
+function normalizeOnlineLabels(value) {
+  return { ...emptyOnlineLabels(), ...(value || {}) }
+}
+
+function onlineRate(value) {
+  return onlineLabels.value.sampleSufficient ? formatPercent(value) : '样本不足'
+}
+
 function formatPercent(value) {
   const numericValue = Number(value)
   return Number.isFinite(numericValue) ? `${(numericValue * 100).toFixed(1)}%` : '—'
@@ -239,7 +351,7 @@ function formatDateTime(value) {
 
 function unmeasuredLabel(metric) {
   return ({
-    conflictResolutionAccuracy: '冲突消解准确率',
+    conflictResolutionAccuracy: '线上冲突准确率',
     wrongMemoryUsageRate: '错误记忆使用率',
     staleMemoryUsageRate: '过期记忆实际使用率',
     personalizationWinRate: '真实个性化胜率'
@@ -255,7 +367,7 @@ function unmeasuredLabel(metric) {
 .memory-toolbar p, .memory-section-heading p, .eyebrow, .memory-stats dt, .case-key { color: var(--app-text-muted); font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 11px; font-weight: 800; }
 .memory-toolbar h3 { color: var(--app-text); font-size: 18px; line-height: 1.2; }
 .memory-toolbar > div > span { color: var(--app-text-muted); font-size: 12px; line-height: 1.5; }
-.memory-overview, .memory-feedback, .memory-metrics, .memory-cases, .unmeasured-panel { border: 1px solid var(--app-line); border-radius: 7px; background: var(--app-surface); }
+.memory-overview, .memory-feedback, .memory-metrics, .online-labels, .memory-cases, .unmeasured-panel { border: 1px solid var(--app-line); border-radius: 7px; background: var(--app-surface); }
 .memory-overview { display: grid; grid-template-columns: minmax(200px, 0.7fr) minmax(0, 1.7fr); align-items: stretch; gap: 12px; padding: 12px; }
 .memory-status { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }
 .status-mark { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid var(--app-line); border-radius: 8px; background: var(--app-surface-strong); font-size: 20px; font-weight: 800; }
@@ -271,7 +383,7 @@ function unmeasuredLabel(metric) {
 .memory-stats dd { overflow-wrap: anywhere; color: var(--app-text); font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 14px; font-variant-numeric: tabular-nums; }
 .memory-feedback { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 38px; margin: 0; padding: 8px 11px; color: var(--app-text-soft); font-size: 12px; }
 .memory-feedback time { color: var(--app-text-muted); font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 10px; white-space: nowrap; }
-.memory-metrics, .memory-cases, .unmeasured-panel { padding: 12px; }
+.memory-metrics, .online-labels, .memory-cases, .unmeasured-panel { padding: 12px; }
 .memory-section-heading { margin-bottom: 10px; }
 .memory-section-heading h4 { color: var(--app-text); font-size: 14px; }
 .memory-section-heading > span { color: var(--app-text-muted); font-size: 11px; }
@@ -280,6 +392,15 @@ function unmeasuredLabel(metric) {
 .metric-card > span { color: var(--app-text-soft); font-size: 11px; }
 .metric-card > strong { color: var(--app-text); font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 19px; font-variant-numeric: tabular-nums; }
 .metric-card > small { color: var(--app-text-muted); font-size: 10px; line-height: 1.4; }
+.online-status { margin: 0 0 9px; padding: 8px 10px; border-radius: 5px; background: var(--app-surface-strong); color: var(--app-text-soft); font-size: 12px; line-height: 1.5; }
+.online-metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.online-metric-card { display: grid; align-content: start; gap: 5px; min-width: 0; padding: 9px; border: 1px solid var(--app-line); border-radius: 5px; background: var(--app-surface-strong); }
+.online-metric-card > span { color: var(--app-text-soft); font-size: 12px; }
+.online-metric-card > strong { color: var(--app-text); font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.online-metric-card > small, .online-boundary { color: var(--app-text-muted); font-size: 12px; line-height: 1.5; }
+.online-boundary { margin: 9px 0 0; }
+.online-labels :deep(.el-button) { min-height: 44px; }
+.online-error { margin-bottom: 8px; }
 .memory-case-list, .unmeasured-list { display: grid; gap: 7px; }
 .memory-case, .unmeasured-list li { padding: 9px; border: 1px solid var(--app-line); border-radius: 5px; background: var(--app-surface-strong); }
 .memory-case.is-failed { border-color: color-mix(in srgb, #c2410c 45%, var(--app-line)); }
@@ -297,6 +418,6 @@ function unmeasuredLabel(metric) {
 .unmeasured-list li > div { display: flex; align-items: center; gap: 8px; }
 .unmeasured-list strong { color: var(--app-text); font-size: 11px; }
 .unmeasured-list p { margin: 5px 0 0; color: var(--app-text-muted); font-size: 11px; line-height: 1.5; }
-@media (max-width: 900px) { .memory-overview { grid-template-columns: 1fr; } .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 600px) { .memory-toolbar, .memory-feedback { align-items: flex-start; flex-direction: column; } .memory-toolbar :deep(.el-button) { width: 100%; } .memory-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .case-values { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .memory-overview { grid-template-columns: 1fr; } .metric-grid, .online-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .memory-toolbar, .memory-feedback { align-items: flex-start; flex-direction: column; } .memory-toolbar :deep(.el-button) { width: 100%; } .memory-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .case-values, .online-metric-grid { grid-template-columns: 1fr; } }
 </style>

@@ -13,6 +13,8 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -55,7 +57,7 @@ class MemoryManagementServiceTest {
         MemoryItem before = item(13L, 7L, "INGREDIENT_PREFERENCE", "香菜", "LIKE", 2);
         MemoryItem after = item(13L, 7L, "INGREDIENT_PREFERENCE", "香菜", "DISLIKE", 3);
         when(itemMapper.findActiveOwned(7L, 13L)).thenReturn(before, after);
-        when(itemMapper.updateUserManaged(7L, 13L, 2, "DISLIKE", new BigDecimal("0.9000")))
+        when(itemMapper.updateUserManaged(7L, 13L, 2, "DISLIKE", new BigDecimal("0.9000"), null))
                 .thenReturn(1);
 
         MemoryManagementItemResponse response = service().updateItem(7L, 13L,
@@ -68,6 +70,24 @@ class MemoryManagementServiceTest {
     }
 
     @Test
+    void userCanEditAnExecutionPreferenceAndItsConsolidationKeyTracksTheNewValue() {
+        MemoryItem before = item(13L, 7L, "SKILL_PREFERENCE", "CANDIDATE_COUNT", "3", 2);
+        before.setConsolidationKey("SKILL_PREFERENCE|old");
+        MemoryItem after = item(13L, 7L, "SKILL_PREFERENCE", "CANDIDATE_COUNT", "5", 3);
+        when(itemMapper.findActiveOwned(7L, 13L)).thenReturn(before, after);
+        when(itemMapper.updateUserManaged(eq(7L), eq(13L), eq(2), eq("5"),
+                eq(new BigDecimal("0.9000")), anyString())).thenReturn(1);
+
+        MemoryManagementItemResponse response = service().updateItem(7L, 13L,
+                new MemoryItemUpdateRequest("5", new BigDecimal("0.9"), 2));
+
+        assertThat(response.preference()).isEqualTo("5");
+        assertThat(response.editable()).isTrue();
+        verify(itemMapper).updateUserManaged(eq(7L), eq(13L), eq(2), eq("5"),
+                eq(new BigDecimal("0.9000")), anyString());
+    }
+
+    @Test
     void rejectsUnsupportedPreferenceAndStaleEditsWithoutWriting() {
         MemoryItem current = item(13L, 7L, "RECIPE_BEHAVIOR", "菜谱", "COOKED", 2);
         when(itemMapper.findActiveOwned(7L, 13L)).thenReturn(current);
@@ -76,7 +96,7 @@ class MemoryManagementServiceTest {
                 new MemoryItemUpdateRequest("LIKE", new BigDecimal("0.8"), 2)))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("不支持");
-        verify(itemMapper, never()).updateUserManaged(any(), any(), any(), any(), any());
+        verify(itemMapper, never()).updateUserManaged(any(), any(), any(), any(), any(), any());
     }
 
     @Test

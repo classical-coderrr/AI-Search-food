@@ -7,12 +7,16 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.apache.ibatis.annotations.Delete;
 
+import java.time.LocalDateTime;
+import java.util.List;
+
 @Mapper
 public interface MemorySessionMapper extends BaseMapper<MemorySession> {
 
     @Select("""
             SELECT * FROM agent_sessions
             WHERE id = #{sessionId} AND user_id = #{userId} AND deleted_at IS NULL
+              AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
             """)
     MemorySession findOwned(@Param("userId") Long userId, @Param("sessionId") Long sessionId);
 
@@ -91,6 +95,43 @@ public interface MemorySessionMapper extends BaseMapper<MemorySession> {
             @Param("sessionId") Long sessionId,
             @Param("version") Integer version
     );
+
+    @Select("""
+            SELECT id
+            FROM agent_sessions
+            WHERE deleted_at IS NULL
+              AND status != 'EXPIRED'
+              AND expires_at IS NOT NULL
+              AND NOT (expires_at > #{now})
+            ORDER BY expires_at, id
+            LIMIT #{limit}
+            """)
+    List<Long> findExpiredIds(@Param("now") LocalDateTime now, @Param("limit") int limit);
+
+    @Update("""
+            <script>
+            UPDATE agent_sessions
+            SET status = 'EXPIRED',
+                current_task = NULL,
+                current_goal = NULL,
+                context_json = NULL,
+                selected_memory_ids_json = NULL,
+                retrieved_knowledge_ids_json = NULL,
+                agent_state_json = NULL,
+                ended_at = COALESCE(ended_at, expires_at),
+                updated_at = CURRENT_TIMESTAMP,
+                version = version + 1
+            WHERE id IN
+            <foreach collection='ids' item='id' open='(' separator=',' close=')'>
+                #{id}
+            </foreach>
+              AND deleted_at IS NULL
+              AND status != 'EXPIRED'
+              AND expires_at IS NOT NULL
+              AND expires_at &lt;= #{now}
+            </script>
+            """)
+    int expireDue(@Param("ids") List<Long> ids, @Param("now") LocalDateTime now);
 
     @Delete("DELETE FROM agent_sessions WHERE user_id = #{userId}")
     int deleteAllOwned(@Param("userId") Long userId);

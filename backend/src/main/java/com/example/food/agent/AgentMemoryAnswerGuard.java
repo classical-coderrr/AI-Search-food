@@ -12,6 +12,17 @@ public final class AgentMemoryAnswerGuard {
             "(?:你|用户)[^。！？!?\\n]{0,160}(?:从未|从来没有|从不|从没)[^。！？!?\\n]{0,220}[。！？!?]?"
     );
     private static final Pattern SENTENCE_BOUNDARY = Pattern.compile("(?<=[。！？!?\\n])");
+    private static final Pattern TIMELINE_CONTRADICTION = Pattern.compile("时间线(?:存在|上)?(?:明确的)?矛盾");
+    private static final Pattern EVENT_TIMESTAMP = Pattern.compile(
+            "(?<!\\d)(?:\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(?::\\d{2})?"
+                    + "|\\d{1,2}/\\d{1,2}\\s+\\d{1,2}:\\d{2}(?::\\d{2})?)(?!\\d)"
+    );
+    private static final Pattern SHORT_DATE_TIMESTAMP = Pattern.compile(
+            "(\\d{1,2})/(\\d{1,2})\\s+(\\d{1,2}:\\d{2}(?::\\d{2})?)"
+    );
+    private static final Pattern DATED_EPISODE_SUMMARY = Pattern.compile(
+            "^历史行为（发生于 \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}）："
+    );
     private static final List<String> NEGATIVE_PREFERENCE_TERMS = List.of(
             "不喜欢", "不爱", "不吃", "忌口", "避免", "避开", "不想吃", "省略", "不添加", "不放"
     );
@@ -32,6 +43,10 @@ public final class AgentMemoryAnswerGuard {
             "行为习惯：喜欢", "行为习惯（近期行为推断）：喜欢", "行为习惯（长期）：喜欢"
     );
     private static final List<String> NEGATIVE_EVIDENCE_TERMS = List.of("不喜欢", "不吃", "忌口", "DISLIKE");
+    private static final List<String> EVENT_FACT_TERMS = List.of(
+            "历史行为", "记忆事件", "库存", "入库", "消耗", "撤销", "操作记录", "收藏记录",
+            "烹饪记录", "评价记录", "Episode", "episode"
+    );
 
     private AgentMemoryAnswerGuard() { }
 
@@ -43,6 +58,8 @@ public final class AgentMemoryAnswerGuard {
         }
 
         String guarded = softenAbsoluteHistoryClaims(answer);
+        guarded = clarifyTimelineConflict(guarded, traceSummaries);
+        guarded = guardUnsupportedEventTimestamps(guarded, traceSummaries);
         List<String> positiveEntities = positiveEntities(traceSummaries);
         if (positiveEntities.isEmpty()) return guarded;
 
@@ -51,6 +68,83 @@ public final class AgentMemoryAnswerGuard {
             corrected.add(correctContradictoryClaim(sentence, positiveEntities, traceSummaries));
         }
         return String.join("", corrected);
+    }
+
+    private static String guardUnsupportedEventTimestamps(String answer, List<String> traceSummaries) {
+        List<String> verifiedEpisodeTimestamps = traceSummaries == null ? List.of() : traceSummaries.stream()
+                .filter(summary -> summary != null && summary.startsWith("历史行为（发生于 "))
+                .flatMap(summary -> {
+                    Matcher matcher = EVENT_TIMESTAMP.matcher(summary);
+                    List<String> timestamps = new ArrayList<>();
+                    while (matcher.find()) timestamps.add(normalizeTimestamp(matcher.group()));
+                    return timestamps.stream();
+                })
+                .toList();
+        List<String> guarded = new ArrayList<>();
+        for (String sentence : SENTENCE_BOUNDARY.split(answer, -1)) {
+            Matcher matcher = EVENT_TIMESTAMP.matcher(sentence);
+            boolean containsUnsupportedTime = false;
+            while (matcher.find()) {
+                String claimed = normalizeTimestamp(matcher.group());
+                if (containsAny(sentence, EVENT_FACT_TERMS)
+                        && verifiedEpisodeTimestamps.stream().noneMatch(value -> timestampMatches(value, claimed))) {
+                    containsUnsupportedTime = true;
+                    break;
+                }
+            }
+            guarded.add(containsUnsupportedTime
+                    ? "本轮检索到的记忆中没有这条事件时间依据，因此无法确认该记录。"
+                    : sentence);
+        }
+        return String.join("", guarded);
+    }
+
+    private static boolean timestampMatches(String verified, String claimed) {
+        if (claimed.startsWith("--")) {
+            String monthAndDay = claimed.substring(2);
+            return verified.length() >= 16
+                    && timestampPrefixMatches(verified.substring(5), monthAndDay);
+        }
+        return timestampPrefixMatches(verified, claimed);
+    }
+
+    private static boolean timestampPrefixMatches(String verified, String claimed) {
+        return verified.equals(claimed) || verified.startsWith(claimed + ":")
+                || verified.startsWith(claimed + " ");
+    }
+
+    private static String normalizeTimestamp(String value) {
+        String normalized = value.trim().replace('T', ' ').replaceAll("\\s+", " ");
+        Matcher shortDate = SHORT_DATE_TIMESTAMP.matcher(normalized);
+        if (shortDate.matches()) {
+            return "--" + String.format(java.util.Locale.ROOT, "%02d-%02d %s",
+                    Integer.parseInt(shortDate.group(1)), Integer.parseInt(shortDate.group(2)), shortDate.group(3));
+        }
+        return normalized;
+    }
+
+    private static String clarifyTimelineConflict(String answer, List<String> traceSummaries) {
+        if (traceSummaries == null || traceSummaries.stream()
+                .filter(summary -> summary != null && DATED_EPISODE_SUMMARY.matcher(summary).find())
+                .limit(2).count() < 2) {
+            return answer;
+        }
+        Matcher matcher = TIMELINE_CONTRADICTION.matcher(answer);
+        StringBuffer result = new StringBuffer();
+        while (matcher.find()) {
+            int sentenceStart = Math.max(Math.max(answer.lastIndexOf('。', matcher.start()),
+                            answer.lastIndexOf('！', matcher.start())),
+                    Math.max(answer.lastIndexOf('？', matcher.start()), answer.lastIndexOf('\n', matcher.start()))) + 1;
+            String prefix = answer.substring(sentenceStart, matcher.start());
+            if (containsAny(prefix, List.of("并非", "不是", "不构成", "不存在", "并不", "没有"))) {
+                matcher.appendReplacement(result, Matcher.quoteReplacement(matcher.group()));
+            } else {
+                matcher.appendReplacement(result,
+                        Matcher.quoteReplacement("正反反馈方向冲突（事件先后以记录时间为准）"));
+            }
+        }
+        matcher.appendTail(result);
+        return result.toString();
     }
 
     private static String softenAbsoluteHistoryClaims(String answer) {

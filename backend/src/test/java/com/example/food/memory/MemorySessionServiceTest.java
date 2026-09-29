@@ -6,9 +6,14 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.LocalDateTime;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -78,6 +83,30 @@ class MemorySessionServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("记忆会话不存在");
         verify(mapper, never()).updateOwned(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void expiresOnlyDueSessionsInABoundedBatch() {
+        LocalDateTime now = LocalDateTime.of(2026, 9, 29, 12, 0);
+        List<Long> dueIds = List.of(12L, 13L);
+        when(mapper.findExpiredIds(now, 1000)).thenReturn(dueIds);
+        when(mapper.expireDue(dueIds, now)).thenReturn(2);
+
+        MemorySessionService service = new MemorySessionService(mapper);
+
+        assertThat(service.expireDue(now, 5000)).isEqualTo(2);
+        verify(mapper).findExpiredIds(now, 1000);
+        verify(mapper).expireDue(dueIds, now);
+    }
+
+    @Test
+    void skipsExpiryWhenThereIsNoValidBatch() {
+        MemorySessionService service = new MemorySessionService(mapper);
+
+        assertThat(service.expireDue(null, 10)).isZero();
+        assertThat(service.expireDue(LocalDateTime.now(), 0)).isZero();
+        verify(mapper, never()).findExpiredIds(any(), anyInt());
+        verify(mapper, never()).expireDue(anyList(), any());
     }
 
     private MemorySession session(Long id, Long userId, int version) {

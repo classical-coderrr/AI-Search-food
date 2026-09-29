@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Extracts bounded, explainable memory candidates from an Episode.
@@ -27,10 +28,14 @@ public class MemoryExtractor {
     private static final BigDecimal SAVED_CONFIDENCE = new BigDecimal("0.4500");
     private static final BigDecimal FEEDBACK_STRENGTH = new BigDecimal("0.9000");
     private static final BigDecimal FEEDBACK_CONFIDENCE = new BigDecimal("0.8500");
+    private static final BigDecimal FINISHED_REVIEW_LIKE_THRESHOLD = new BigDecimal("80");
+    private static final BigDecimal FINISHED_REVIEW_DISLIKE_THRESHOLD = new BigDecimal("40");
+    private static final BigDecimal FINISHED_REVIEW_MAX_SCORE = new BigDecimal("100");
     private static final BigDecimal COOKED_STRENGTH = new BigDecimal("0.6500");
     private static final BigDecimal COOKED_CONFIDENCE = new BigDecimal("0.6500");
-    private static final int MAX_INGREDIENT_CANDIDATES = 30;
     private static final int MAX_TEXT_LENGTH = 512;
+    private static final Set<String> DECLARABLE_TYPES = Set.of(
+            "INGREDIENT_PREFERENCE", "DIET_GOAL", "SKILL_PREFERENCE");
 
     private final ObjectMapper objectMapper;
 
@@ -79,25 +84,6 @@ public class MemoryExtractor {
                     "收藏菜谱：" + title,
                     false,
                     evidence(episode, "SAVE", title)
-            ));
-        }
-
-        int count = 0;
-        for (String ingredient : texts(payload.path("ingredients"))) {
-            if (count++ >= MAX_INGREDIENT_CANDIDATES) {
-                break;
-            }
-            drafts.add(draft(
-                    "INGREDIENT_PREFERENCE",
-                    ingredient,
-                    "LIKE",
-                    new BigDecimal("0.4500"),
-                    new BigDecimal("0.4000"),
-                    "IMPLICIT_BEHAVIOR",
-                    "RECENT",
-                    "收藏菜谱中的食材：" + ingredient,
-                    false,
-                    evidence(episode, "SAVE", ingredient)
             ));
         }
 
@@ -184,12 +170,13 @@ public class MemoryExtractor {
     ) {
         String title = firstText(payload, "recipeTitle", "title", "recipeName");
         BigDecimal score = decimal(payload.path("overallScore"));
-        if (title == null || score == null) {
+        if (title == null || score == null || score.compareTo(BigDecimal.ZERO) < 0
+                || score.compareTo(FINISHED_REVIEW_MAX_SCORE) > 0) {
             return List.of();
         }
-        String preference = score.compareTo(new BigDecimal("4.0")) >= 0
+        String preference = score.compareTo(FINISHED_REVIEW_LIKE_THRESHOLD) >= 0
                 ? "LIKE"
-                : score.compareTo(new BigDecimal("2.0")) <= 0 ? "DISLIKE" : null;
+                : score.compareTo(FINISHED_REVIEW_DISLIKE_THRESHOLD) <= 0 ? "DISLIKE" : null;
         if (preference == null) {
             return List.of();
         }
@@ -201,7 +188,7 @@ public class MemoryExtractor {
                 FEEDBACK_CONFIDENCE,
                 "EXPLICIT_FEEDBACK",
                 "LONG_TERM",
-                "成品评价 " + score.stripTrailingZeros().toPlainString() + " 星：" + title,
+                "成品评价 " + score.stripTrailingZeros().toPlainString() + "/100 分：" + title,
                 true,
                 evidence(episode, "RATING_" + preference, title)
         ));
@@ -220,6 +207,32 @@ public class MemoryExtractor {
         if (candidateType == null) {
             candidateType = "INGREDIENT_PREFERENCE";
         }
+        if (!DECLARABLE_TYPES.contains(candidateType)) return List.of();
+
+        String quotedEvidence = firstText(payload, "evidence", "quotedText");
+        Map<String, Object> provenance = evidence(episode, "EXPLICIT", entity);
+        if (StringUtils.hasText(quotedEvidence)) provenance.put("quotedText", quotedEvidence);
+
+        if ("SKILL_PREFERENCE".equals(candidateType)) {
+            String key = SkillPreferenceCatalog.normalizeKey(entity);
+            String value = SkillPreferenceCatalog.normalizeValue(key, preference);
+            if (key == null || value == null
+                    || !SkillPreferenceCatalog.evidenceSupports(key, value, quotedEvidence)) {
+                return List.of();
+            }
+            return List.of(draft(
+                    candidateType,
+                    key,
+                    value,
+                    new BigDecimal("0.9500"),
+                    new BigDecimal("0.9500"),
+                    "EXPLICIT",
+                    "LONG_TERM",
+                    quotedEvidence,
+                    true,
+                    provenance
+            ));
+        }
         return List.of(draft(
                 candidateType,
                 entity,
@@ -228,9 +241,10 @@ public class MemoryExtractor {
                 new BigDecimal("0.9500"),
                 "EXPLICIT",
                 "LONG_TERM",
-                episode.getSummary() == null ? "用户明确表达偏好：" + entity : episode.getSummary(),
+                StringUtils.hasText(quotedEvidence) ? quotedEvidence
+                        : episode.getSummary() == null ? "用户明确表达偏好：" + entity : episode.getSummary(),
                 true,
-                evidence(episode, "EXPLICIT", entity)
+                provenance
         ));
     }
 
@@ -270,20 +284,6 @@ public class MemoryExtractor {
         values.put("action", action);
         values.put("entity", entity);
         return values;
-    }
-
-    private List<String> texts(JsonNode node) {
-        if (node == null || !node.isArray()) {
-            return List.of();
-        }
-        List<String> values = new ArrayList<>();
-        node.forEach(item -> {
-            String value = limitToText(item.asText());
-            if (StringUtils.hasText(value) && !values.contains(value)) {
-                values.add(value);
-            }
-        });
-        return List.copyOf(values);
     }
 
     private String firstText(JsonNode node, String... names) {

@@ -6,9 +6,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
+
+import java.util.Locale;
+import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Adapts existing business events to the Episode persistence boundary.
@@ -19,12 +26,17 @@ import org.springframework.util.StringUtils;
 public class MemoryBehaviorEpisodeRecorder {
 
     private static final Logger log = LoggerFactory.getLogger(MemoryBehaviorEpisodeRecorder.class);
+    private static final Set<String> EXTRACTABLE_EPISODE_TYPES = Set.of(
+            "RECIPE_SAVED", "RECIPE_UNSAVED", "RECIPE_FEEDBACK", "FINISHED_DISH_REVIEW",
+            "USER_PREFERENCE_DECLARED", "USER_PREFERENCE_CONFIRMED"
+    );
 
     private final MemoryEpisodeService episodeService;
     private final ObjectMapper objectMapper;
-    private final MemoryCandidateService candidateService;
-    private final MemoryConsolidationService consolidationService;
     private final MemoryPersonalizationService personalizationService;
+    private final MemoryProcessingJobService jobService;
+    private final TransactionTemplate episodeTransaction;
+    private final TransactionTemplate queueTransaction;
 
     public MemoryBehaviorEpisodeRecorder(MemoryEpisodeService episodeService, ObjectMapper objectMapper) {
         this(episodeService, objectMapper, null, null, null);
@@ -33,33 +45,26 @@ public class MemoryBehaviorEpisodeRecorder {
     MemoryBehaviorEpisodeRecorder(
             MemoryEpisodeService episodeService,
             ObjectMapper objectMapper,
-            MemoryCandidateService candidateService
+            MemoryPersonalizationService personalizationService,
+            MemoryProcessingJobService jobService
     ) {
-        this(episodeService, objectMapper, candidateService, null, null);
-    }
-
-    MemoryBehaviorEpisodeRecorder(
-            MemoryEpisodeService episodeService,
-            ObjectMapper objectMapper,
-            MemoryCandidateService candidateService,
-            MemoryConsolidationService consolidationService
-    ) {
-        this(episodeService, objectMapper, candidateService, consolidationService, null);
+        this(episodeService, objectMapper, personalizationService, jobService, null);
     }
 
     @Autowired
     MemoryBehaviorEpisodeRecorder(
             MemoryEpisodeService episodeService,
             ObjectMapper objectMapper,
-            MemoryCandidateService candidateService,
-            MemoryConsolidationService consolidationService,
-            MemoryPersonalizationService personalizationService
+            MemoryPersonalizationService personalizationService,
+            MemoryProcessingJobService jobService,
+            PlatformTransactionManager transactionManager
     ) {
         this.episodeService = episodeService;
         this.objectMapper = objectMapper;
-        this.candidateService = candidateService;
-        this.consolidationService = consolidationService;
         this.personalizationService = personalizationService;
+        this.jobService = jobService;
+        this.episodeTransaction = newTransactionTemplate(transactionManager);
+        this.queueTransaction = newTransactionTemplate(transactionManager);
     }
 
     public void record(MemoryBehaviorEpisodeEvent event) {
@@ -74,11 +79,27 @@ public class MemoryBehaviorEpisodeRecorder {
             return;
         }
 
+        if (episodeTransaction != null
+                && TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    recordAfterBusinessCommit(event);
+                }
+            });
+            return;
+        }
+        recordAfterBusinessCommit(event);
+    }
+
+    private void recordAfterBusinessCommit(MemoryBehaviorEpisodeEvent event) {
+        MemoryEpisodeService.RecordResult result;
         try {
             if (personalizationService != null && !personalizationService.isEnabled(event.userId())) {
                 return;
             }
-            MemoryEpisodeService.RecordResult result = episodeService.record(event.userId(), new MemoryEpisodeCommand(
+            MemoryEpisodeCommand command = new MemoryEpisodeCommand(
                     event.sessionId(),
                     event.conversationId(),
                     event.episodeType(),
@@ -90,48 +111,43 @@ public class MemoryBehaviorEpisodeRecorder {
                     objectMapper.writeValueAsString(event.payload()),
                     event.occurredAt(),
                     event.importance()
-            ));
-            scheduleCandidateExtraction(event.userId(), result);
+            );
+            result = inTransaction(episodeTransaction, () -> episodeService.record(event.userId(), command));
         } catch (JsonProcessingException exception) {
             log.error("记忆行为事件序列化失败 userId={}, episodeType={}, sourceId={}",
                     event.userId(), event.episodeType(), event.sourceId(), exception);
+            return;
         } catch (RuntimeException exception) {
             log.error("记忆行为事件保存失败 userId={}, episodeType={}, sourceId={}",
                     event.userId(), event.episodeType(), event.sourceId(), exception);
+            return;
+        }
+
+        String recordedType = result == null || result.episode() == null ? null : result.episode().getEpisodeType();
+        if (jobService == null || result == null || result.episode() == null || recordedType == null
+                || !EXTRACTABLE_EPISODE_TYPES.contains(recordedType.trim().toUpperCase(Locale.ROOT))) {
+            return;
+        }
+        try {
+            inTransaction(queueTransaction, () -> {
+                jobService.enqueue(event.userId(), result.episode().getId());
+                return null;
+            });
+        } catch (RuntimeException exception) {
+            log.error("记忆任务入队失败，后台恢复扫描会尝试补捞 userId={}, episodeId={}",
+                    event.userId(), result.episode().getId(), exception);
         }
     }
 
-    private void scheduleCandidateExtraction(Long userId, MemoryEpisodeService.RecordResult result) {
-        if (candidateService == null || result == null || result.episode() == null
-                || result.episode().getId() == null) {
-            return;
-        }
-        Runnable extraction = () -> {
-            try {
-                candidateService.extractAndPersistAfterCommit(userId, result.episode().getId());
-            } catch (RuntimeException exception) {
-                log.error("记忆候选提取失败 userId={}, episodeId={}", userId,
-                        result.episode().getId(), exception);
-                return;
-            }
-            if (consolidationService != null) {
-                try {
-                    consolidationService.consolidateAfterCommit(userId);
-                } catch (RuntimeException exception) {
-                    log.error("记忆合并或画像重建失败 userId={}, episodeId={}", userId,
-                            result.episode().getId(), exception);
-                }
-            }
-        };
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            extraction.run();
-            return;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                extraction.run();
-            }
-        });
+    private <T> T inTransaction(TransactionTemplate template, Supplier<T> work) {
+        return template == null ? work.get() : template.execute(status -> work.get());
     }
+
+    private TransactionTemplate newTransactionTemplate(PlatformTransactionManager transactionManager) {
+        if (transactionManager == null) return null;
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        return template;
+    }
+
 }

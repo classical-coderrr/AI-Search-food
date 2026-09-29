@@ -8,6 +8,8 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Objects;
 
 @Service
@@ -113,6 +115,15 @@ public class MemorySessionService {
     public MemorySession findOwned(Long userId, Long sessionId) {
         requireUser(userId);
         return requireOwned(userId, sessionId);
+    }
+
+    @Transactional
+    public int expireDue(LocalDateTime now, int batchLimit) {
+        if (now == null || batchLimit <= 0) return 0;
+        int safeLimit = Math.min(batchLimit, 1000);
+        List<Long> expiredIds = mapper.findExpiredIds(now, safeLimit);
+        if (expiredIds == null || expiredIds.isEmpty()) return 0;
+        return mapper.expireDue(expiredIds, now);
     }
 
     private MemorySession updateExisting(Long userId, MemorySession current, MemorySessionUpdate update) {

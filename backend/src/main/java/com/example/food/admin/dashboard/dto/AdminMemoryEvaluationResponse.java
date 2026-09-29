@@ -28,6 +28,7 @@ public record AdminMemoryEvaluationResponse(
             double rerankRecallAt3,
             double canonicalDedupAccuracy,
             double conflictScenarioSelectionAccuracy,
+            double conflictAdjudicationAccuracy,
             double staleMemoryTop3SelectionRate,
             double personalizationScenarioWinRate
     ) { }

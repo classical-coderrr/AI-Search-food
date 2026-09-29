@@ -6,7 +6,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -24,10 +27,19 @@ class MemoryPersistenceIntegrationTest {
     private JdbcTemplate jdbcTemplate;
 
     @Autowired
+    private PlatformTransactionManager transactionManager;
+
+    @Autowired
+    private MemoryBehaviorEpisodeRecorder behaviorEpisodeRecorder;
+
+    @Autowired
     private MemorySessionService sessionService;
 
     @Autowired
     private MemoryEpisodeService episodeService;
+
+    @Autowired
+    private MemoryProcessingJobService processingJobService;
 
     @Autowired
     private MemoryRetrievalTraceService retrievalTraceService;
@@ -44,10 +56,15 @@ class MemoryPersistenceIntegrationTest {
         assertThat(tableExists("memory_episodes")).isTrue();
         assertThat(tableExists("memory_retrieval_traces")).isTrue();
         assertThat(tableExists("memory_feedback")).isTrue();
+        assertThat(tableExists("memory_processing_jobs")).isTrue();
         assertThat(tableExists("memory_evaluation_runs")).isTrue();
         assertThat(columnExists("memory_episodes", "payload_json")).isTrue();
+        assertThat(columnExists("memory_retrieval_traces", "llm_input_tokens")).isTrue();
+        assertThat(columnExists("memory_retrieval_traces", "llm_output_tokens")).isTrue();
+        assertThat(columnExists("memory_retrieval_traces", "llm_total_tokens")).isTrue();
         assertThat(indexExists("uq_memory_episodes_user_key")).isTrue();
         assertThat(indexExists("uq_memory_retrieval_traces_trace")).isTrue();
+        assertThat(indexExists("uq_memory_processing_jobs_user_episode")).isTrue();
         assertThat(uniqueConstraintExists("memory_feedback", "uq_memory_feedback_trace")).isTrue();
 
         Long userId = insertUser("13900000901", "记忆测试用户");
@@ -87,11 +104,62 @@ class MemoryPersistenceIntegrationTest {
         assertThat(episodeService.listOwned(userId, session.getId(), "RECIPE_EXPERIENCE", 20))
                 .extracting(MemoryEpisode::getId)
                 .containsExactly(first.episode().getId());
+
+        processingJobService.enqueue(userId, first.episode().getId());
+        processingJobService.enqueue(userId, first.episode().getId());
+        processingJobService.enqueue(otherUserId, first.episode().getId());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_processing_jobs WHERE user_id = ? AND episode_id = ?",
+                Integer.class, userId, first.episode().getId())).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_processing_jobs WHERE user_id = ? AND episode_id = ?",
+                Integer.class, otherUserId, first.episode().getId())).isZero();
+
+        MemoryProcessingJob claimedJob = processingJobService.claimNext();
+        assertThat(claimedJob).isNotNull();
+        assertThat(claimedJob.getUserId()).isEqualTo(userId);
+        assertThat(claimedJob.getEpisodeId()).isEqualTo(first.episode().getId());
+        assertThat(claimedJob.getAttempts()).isEqualTo(1);
+        assertThat(processingJobService.complete(claimedJob)).isTrue();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT status FROM memory_processing_jobs WHERE user_id = ? AND episode_id = ?",
+                String.class, userId, first.episode().getId())).isEqualTo("COMPLETED");
+    }
+
+    @Test
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+    void recordsBehaviorOnlyAfterBusinessTransactionCommitsAndQueuesItDurably() {
+        String phone = "139" + Long.toUnsignedString(System.nanoTime()).substring(0, 8);
+        Long userId = insertUser(phone, "事务边界测试用户");
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
+
+        transaction.executeWithoutResult(status -> {
+            behaviorEpisodeRecorder.record(behaviorEvent(userId, "rolled-back-memory-event"));
+            status.setRollbackOnly();
+        });
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_episodes WHERE idempotency_key = ?",
+                Integer.class, "rolled-back-memory-event")).isZero();
+
+        transaction.executeWithoutResult(status ->
+                behaviorEpisodeRecorder.record(behaviorEvent(userId, "committed-memory-event")));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM memory_episodes WHERE idempotency_key = ?",
+                Integer.class, "committed-memory-event")).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM memory_processing_jobs j
+                JOIN memory_episodes e ON e.id = j.episode_id AND e.user_id = j.user_id
+                WHERE e.idempotency_key = ? AND j.user_id = ?
+                """, Integer.class, "committed-memory-event", userId)).isEqualTo(1);
     }
 
     @Test
     void retrievalTraceStoresScoreAndUsageWithoutRawQueryAndSupportsAggregates() {
         Long userId = insertUser("13900000903", "记忆追踪测试用户");
+        Long otherUserId = insertUser("13900000904", "其他追踪用户");
         String query = "这句个人问题不得明文进入追踪记录";
         MemoryQueryPlan plan = new MemoryQueryPlan(query, "GENERAL_MEMORY_RECALL", query, null,
                 List.of(), List.of(), List.of(), List.of(), null, null, List.of(), List.of(),
@@ -111,6 +179,10 @@ class MemoryPersistenceIntegrationTest {
                 context, "SUCCESS", null, 31)).isTrue();
         assertThat(retrievalTraceService.record(userId, "trace-memory-test", query, retrieval,
                 context, "SUCCESS", null, 31)).isFalse();
+        assertThat(retrievalTraceService.recordLlmUsage(userId, "trace-memory-test", 12L, 5L, 17L)).isTrue();
+        assertThat(retrievalTraceService.recordLlmUsage(otherUserId, "trace-memory-test", 99L, 99L, 198L))
+                .isFalse();
+        assertThat(retrievalTraceService.recordLlmUsage(userId, "trace-memory-test", 20L, 7L, 27L)).isTrue();
 
         String queryHash = jdbcTemplate.queryForObject(
                 "SELECT query_hash FROM memory_retrieval_traces WHERE trace_id = ?", String.class,
@@ -121,6 +193,15 @@ class MemoryPersistenceIntegrationTest {
         assertThat(queryHash).hasSize(64).doesNotContain(query);
         assertThat(ranking).contains("MEMORY_ITEM", "13", "0.87", "true")
                 .doesNotContain(query, "敏感标题", "个人记忆文本");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT llm_input_tokens FROM memory_retrieval_traces WHERE trace_id = ?", Long.class,
+                "trace-memory-test")).isEqualTo(32L);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT llm_output_tokens FROM memory_retrieval_traces WHERE trace_id = ?", Long.class,
+                "trace-memory-test")).isEqualTo(12L);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT llm_total_tokens FROM memory_retrieval_traces WHERE trace_id = ?", Long.class,
+                "trace-memory-test")).isEqualTo(44L);
 
         MemoryFeedbackRequest helpfulRequest = new MemoryFeedbackRequest("trace-memory-test", MemoryFeedbackType.HELPFUL);
         MemoryFeedbackResponse helpful = memoryFeedbackService.submit(userId, helpfulRequest);
@@ -141,6 +222,10 @@ class MemoryPersistenceIntegrationTest {
         assertThat(metrics.successCount()).isEqualTo(1);
         assertThat(metrics.averageCandidates()).isEqualTo(3D);
         assertThat(metrics.averageEstimatedTokens()).isEqualTo(120D);
+        assertThat(metrics.llmInputTokens()).isEqualTo(32L);
+        assertThat(metrics.llmOutputTokens()).isEqualTo(12L);
+        assertThat(metrics.llmTotalTokens()).isEqualTo(44L);
+        assertThat(metrics.llmUsageCallCount()).isEqualTo(2L);
         assertThat(metrics.feedbackCount()).isEqualTo(1);
         assertThat(metrics.outdatedFeedbackCount()).isEqualTo(1);
         assertThat(metrics.outdatedFeedbackRate()).isEqualTo(1D);
@@ -149,6 +234,13 @@ class MemoryPersistenceIntegrationTest {
     private Long insertUser(String phone, String nickname) {
         jdbcTemplate.update("INSERT INTO users (phone, nickname) VALUES (?, ?)", phone, nickname);
         return jdbcTemplate.queryForObject("SELECT id FROM users WHERE phone = ?", Long.class, phone);
+    }
+
+    private MemoryBehaviorEpisodeEvent behaviorEvent(Long userId, String idempotencyKey) {
+        return new MemoryBehaviorEpisodeEvent(userId, null, null,
+                "RECIPE_SAVED", "RECIPE_RECORD", "transaction-boundary-recipe", idempotencyKey,
+                idempotencyKey, "保存了测试菜谱", Map.of("recipeId", 501),
+                LocalDateTime.now(), new BigDecimal("0.8000"));
     }
 
     private boolean tableExists(String tableName) {

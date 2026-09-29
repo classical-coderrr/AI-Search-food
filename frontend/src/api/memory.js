@@ -12,6 +12,14 @@ export function submitMemoryFeedback(traceId, feedbackType) {
   return http.post('/memory/feedback', { traceId, feedbackType })
 }
 
+export function getMemoryFeedbackTargets(traceId) {
+  return http.get(`/memory/feedback/${encodeURIComponent(traceId)}/targets`)
+}
+
+export function submitMemoryTargetFeedback(traceId, sourceKind, sourceId, feedbackType) {
+  return http.post('/memory/feedback/targets', { traceId, sourceKind, sourceId, feedbackType })
+}
+
 export function decideMemoryConfirmation(candidateId, payload) {
   return http.post(`/memory/confirmations/${encodeURIComponent(candidateId)}/decision`, payload)
 }

@@ -20,6 +20,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Objects;
+import java.util.Set;
 
 @Service
 public class AgentWriteService {
@@ -40,6 +41,7 @@ public class AgentWriteService {
     private final ObjectMapper objectMapper;
     private final AgentWriteDrill writeDrill;
     private final AgentMetrics metrics;
+    private AgentMemoryToolService memoryToolService;
 
     public AgentWriteService(
             AgentConfirmationMapper confirmationMapper,
@@ -103,6 +105,11 @@ public class AgentWriteService {
         this.metrics = metrics == null ? AgentMetrics.disabled() : metrics;
     }
 
+    @Autowired
+    void setMemoryToolService(AgentMemoryToolService memoryToolService) {
+        this.memoryToolService = memoryToolService;
+    }
+
     @Transactional
     public ConfirmationResult execute(AuthPrincipal principal, Long confirmationId, String idempotencyKey) {
         String normalizedIdempotencyKey = idempotencyKey == null ? null : idempotencyKey.trim();
@@ -150,6 +157,15 @@ public class AgentWriteService {
                 RecipeHistoryDetailResponse detail = saveRecipePayload(
                         principal, confirmation.getPayloadJson(), normalizedIdempotencyKey);
                 result = ConfirmationResult.completed(detail, "菜谱已保存到我的菜谱");
+            } else if (Set.of("MEMORY_PREFERENCE_DECLARATION", "MEMORY_PREFERENCE_UPDATE")
+                    .contains(confirmation.getActionType())) {
+                if (memoryToolService == null) {
+                    throw new IllegalStateException("记忆工具当前不可用");
+                }
+                AgentKitchenActionService.ActionResult action = memoryToolService.executeConfirmed(
+                        confirmation.getActionType(), readPayload(confirmation.getPayloadJson()),
+                        principal.id(), normalizedIdempotencyKey);
+                result = ConfirmationResult.completed(action.detail(), action.message());
             } else {
                 AgentKitchenActionService.ActionResult action = actionService.execute(
                         confirmation.getActionType(), readPayload(confirmation.getPayloadJson()), principal, normalizedIdempotencyKey);

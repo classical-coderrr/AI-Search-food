@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 public record MemorySearchHit(
         String sourceKind,
         Long id,
+        Integer version,
         String memoryType,
         String title,
         String content,
@@ -18,6 +19,24 @@ public record MemorySearchHit(
         LocalDateTime occurredAt,
         ScoreBreakdown scores
 ) {
+    public MemorySearchHit(
+            String sourceKind,
+            Long id,
+            String memoryType,
+            String title,
+            String content,
+            String payload,
+            String preference,
+            String temporalType,
+            BigDecimal confidence,
+            BigDecimal importance,
+            LocalDateTime occurredAt,
+            ScoreBreakdown scores
+    ) {
+        this(sourceKind, id, null, memoryType, title, content, payload, preference, temporalType,
+                confidence, importance, occurredAt, scores);
+    }
+
     public record ScoreBreakdown(
             double semantic,
             double recency,
@@ -25,6 +44,12 @@ public record MemorySearchHit(
             double confidence,
             double feedback,
             double contextMatch,
-            double total
-    ) { }
+            double total,
+            double explicitFeedbackAdjustment
+    ) {
+        public ScoreBreakdown(double semantic, double recency, double importance,
+                              double confidence, double feedback, double contextMatch, double total) {
+            this(semantic, recency, importance, confidence, feedback, contextMatch, total, 0);
+        }
+    }
 }

@@ -15,9 +15,12 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/memory/feedback")
 public class MemoryFeedbackController {
     private final MemoryFeedbackService feedbackService;
+    private final MemoryTargetFeedbackService targetFeedbackService;
 
-    public MemoryFeedbackController(MemoryFeedbackService feedbackService) {
+    public MemoryFeedbackController(MemoryFeedbackService feedbackService,
+                                    MemoryTargetFeedbackService targetFeedbackService) {
         this.feedbackService = feedbackService;
+        this.targetFeedbackService = targetFeedbackService;
     }
 
     @GetMapping("/{traceId}")
@@ -34,5 +37,21 @@ public class MemoryFeedbackController {
             @Valid @RequestBody MemoryFeedbackRequest request
     ) {
         return ApiResponse.ok(feedbackService.submit(principal.id(), request));
+    }
+
+    @GetMapping("/{traceId}/targets")
+    public ApiResponse<java.util.List<MemoryTargetFeedbackTargetResponse>> targets(
+            @AuthenticationPrincipal AuthPrincipal principal,
+            @PathVariable String traceId
+    ) {
+        return ApiResponse.ok(targetFeedbackService.targets(principal.id(), traceId));
+    }
+
+    @PostMapping("/targets")
+    public ApiResponse<MemoryTargetFeedbackResponse> submitTarget(
+            @AuthenticationPrincipal AuthPrincipal principal,
+            @Valid @RequestBody MemoryTargetFeedbackRequest request
+    ) {
+        return ApiResponse.ok(targetFeedbackService.submit(principal.id(), request));
     }
 }

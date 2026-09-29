@@ -17,6 +17,8 @@ public class MemoryRetrievalTrace {
     private String queryHash;
     private Integer memoryItemCandidates;
     private Integer episodeCandidates;
+    private Integer usedMemoryItemCount = 0;
+    private Integer usedEpisodeCount = 0;
     private String retrievedMemoryItemIdsJson;
     private String retrievedEpisodeIdsJson;
     private String usedMemoryItemIdsJson;
@@ -48,6 +50,10 @@ public class MemoryRetrievalTrace {
     public void setMemoryItemCandidates(Integer memoryItemCandidates) { this.memoryItemCandidates = memoryItemCandidates; }
     public Integer getEpisodeCandidates() { return episodeCandidates; }
     public void setEpisodeCandidates(Integer episodeCandidates) { this.episodeCandidates = episodeCandidates; }
+    public Integer getUsedMemoryItemCount() { return usedMemoryItemCount; }
+    public void setUsedMemoryItemCount(Integer usedMemoryItemCount) { this.usedMemoryItemCount = usedMemoryItemCount; }
+    public Integer getUsedEpisodeCount() { return usedEpisodeCount; }
+    public void setUsedEpisodeCount(Integer usedEpisodeCount) { this.usedEpisodeCount = usedEpisodeCount; }
     public String getRetrievedMemoryItemIdsJson() { return retrievedMemoryItemIdsJson; }
     public void setRetrievedMemoryItemIdsJson(String retrievedMemoryItemIdsJson) { this.retrievedMemoryItemIdsJson = retrievedMemoryItemIdsJson; }
     public String getRetrievedEpisodeIdsJson() { return retrievedEpisodeIdsJson; }

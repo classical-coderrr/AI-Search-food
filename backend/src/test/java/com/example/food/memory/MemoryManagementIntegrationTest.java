@@ -48,7 +48,7 @@ class MemoryManagementIntegrationTest {
     void userEditSurvivesLaterConsolidationAndDoesNotCrossAccounts() {
         Long userId = insertUser("13900000801", "记忆管理用户");
         Long otherUserId = insertUser("13900000802", "其他记忆用户");
-        MemoryEpisode first = saveRecipeEpisode(userId, "management-save-1", "鸡胸肉沙拉");
+        MemoryEpisode first = declaredIngredientPreference(userId, "management-pref-1", "鸡胸肉", "LIKE");
         candidateService.extractAndPersist(userId, first.getId());
         consolidationService.consolidate(userId);
 
@@ -58,7 +58,7 @@ class MemoryManagementIntegrationTest {
         assertThat(edited.preference()).isEqualTo("DISLIKE");
         assertThat(edited.userModified()).isTrue();
 
-        MemoryEpisode second = saveRecipeEpisode(userId, "management-save-2", "鸡胸肉汤");
+        MemoryEpisode second = declaredIngredientPreference(userId, "management-pref-2", "鸡胸肉", "LIKE");
         candidateService.extractAndPersist(userId, second.getId());
         consolidationService.consolidate(userId);
 
@@ -67,7 +67,7 @@ class MemoryManagementIntegrationTest {
         assertThat(afterConsolidation.getStrength()).isEqualByComparingTo("0.9200");
         assertThat(afterConsolidation.getUserModified()).isTrue();
 
-        MemoryEpisode otherEpisode = saveRecipeEpisode(otherUserId, "management-other", "鸡胸肉饭");
+        MemoryEpisode otherEpisode = declaredIngredientPreference(otherUserId, "management-other", "鸡胸肉", "LIKE");
         candidateService.extractAndPersist(otherUserId, otherEpisode.getId());
         consolidationService.consolidate(otherUserId);
         assertThat(managementService.getOverview(otherUserId).memories())
@@ -77,7 +77,7 @@ class MemoryManagementIntegrationTest {
     @Test
     void deletedMemoryStaysHiddenUntilNewEvidenceArrives() {
         Long userId = insertUser("13900000803", "删除记忆用户");
-        MemoryEpisode first = saveRecipeEpisode(userId, "delete-save-1", "鸡胸肉沙拉");
+        MemoryEpisode first = declaredIngredientPreference(userId, "delete-pref-1", "鸡胸肉", "LIKE");
         candidateService.extractAndPersist(userId, first.getId());
         consolidationService.consolidate(userId);
         MemoryItem item = ingredientMemory(userId, "鸡胸肉");
@@ -89,7 +89,7 @@ class MemoryManagementIntegrationTest {
                 "SELECT COUNT(*) FROM memory_candidates WHERE user_id = ? AND user_decision = 'REJECT'",
                 Integer.class, userId)).isGreaterThan(0);
 
-        MemoryEpisode freshEvidence = saveRecipeEpisode(userId, "delete-save-2", "鸡胸肉汤");
+        MemoryEpisode freshEvidence = declaredIngredientPreference(userId, "delete-pref-2", "鸡胸肉", "LIKE");
         candidateService.extractAndPersist(userId, freshEvidence.getId());
         consolidationService.consolidate(userId);
         assertThat(consolidationService.listOwnedItems(userId, 500))
@@ -163,6 +163,15 @@ class MemoryManagementIntegrationTest {
                 sessionId, null, "RECIPE_SAVED", "RECIPE_RECORD", key, key, key,
                 "收藏菜谱：" + title,
                 "{\"recipeTitle\":\"" + title + "\",\"ingredients\":[\"鸡胸肉\"]}", null, null
+        )).episode();
+    }
+
+    private MemoryEpisode declaredIngredientPreference(Long userId, String key, String ingredient, String preference) {
+        return episodeService.record(userId, new MemoryEpisodeCommand(
+                null, null, "USER_PREFERENCE_DECLARED", "USER_INPUT", key, key, key,
+                "用户明确表达食材偏好：" + ingredient,
+                "{\"candidateType\":\"INGREDIENT_PREFERENCE\",\"entity\":\"" + ingredient
+                        + "\",\"preference\":\"" + preference + "\"}", null, null
         )).episode();
     }
 

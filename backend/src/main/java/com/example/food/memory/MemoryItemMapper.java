@@ -55,6 +55,16 @@ public interface MemoryItemMapper extends BaseMapper<MemoryItem> {
     @Select("""
             <script>
             SELECT * FROM memory_items
+            WHERE user_id = #{userId} AND status = 'ACTIVE' AND deleted_at IS NULL
+              AND id IN
+              <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>
+            </script>
+            """)
+    List<MemoryItem> findActiveOwnedByIds(@Param("userId") Long userId, @Param("ids") List<Long> ids);
+
+    @Select("""
+            <script>
+            SELECT * FROM memory_items
             WHERE user_id = #{userId}
               AND status = 'ACTIVE'
               AND deleted_at IS NULL
@@ -124,10 +134,12 @@ public interface MemoryItemMapper extends BaseMapper<MemoryItem> {
             UPDATE memory_items
             SET preference = #{preference},
                 strength = #{strength},
+                consolidation_key = #{consolidationKey},
                 confidence = 0.9900,
                 importance = 0.9900,
                 user_modified = TRUE,
                 version = version + 1,
+                last_seen_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = #{memoryId}
               AND user_id = #{userId}
@@ -140,7 +152,8 @@ public interface MemoryItemMapper extends BaseMapper<MemoryItem> {
             @Param("memoryId") Long memoryId,
             @Param("version") Integer version,
             @Param("preference") String preference,
-            @Param("strength") java.math.BigDecimal strength
+            @Param("strength") java.math.BigDecimal strength,
+            @Param("consolidationKey") String consolidationKey
     );
 
     @Update("""

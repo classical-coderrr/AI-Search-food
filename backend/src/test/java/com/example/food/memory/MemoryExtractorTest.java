@@ -24,7 +24,7 @@ class MemoryExtractorTest {
     }
 
     @Test
-    void keepsSavedBehaviorAsAnImplicitLowConfidenceCandidate() {
+    void treatsASingleSavedRecipeAsRecipePreferenceButNotIngredientPreferences() {
         MemoryEpisode episode = episode(
                 "RECIPE_SAVED",
                 "{\"title\":\"黑椒鸡胸肉饭\",\"ingredients\":[\"鸡胸肉\",\"西兰花\"]}"
@@ -33,7 +33,7 @@ class MemoryExtractorTest {
         List<MemoryCandidateDraft> drafts = extractor.extract(episode);
 
         assertThat(drafts).extracting(MemoryCandidateDraft::candidateType)
-                .contains("RECIPE_PREFERENCE", "INGREDIENT_PREFERENCE");
+                .containsExactly("RECIPE_PREFERENCE");
         MemoryCandidateDraft recipeDraft = drafts.stream()
                 .filter(item -> "RECIPE_PREFERENCE".equals(item.candidateType()))
                 .findFirst()
@@ -41,6 +41,7 @@ class MemoryExtractorTest {
         assertThat(recipeDraft.sourceType()).isEqualTo("IMPLICIT_BEHAVIOR");
         assertThat(recipeDraft.confidence()).isEqualByComparingTo(new BigDecimal("0.4500"));
         assertThat(recipeDraft.explicitConfirmed()).isFalse();
+        assertThat(drafts).noneMatch(item -> "鸡胸肉".equals(item.entity()) || "西兰花".equals(item.entity()));
     }
 
     @Test
@@ -90,6 +91,30 @@ class MemoryExtractorTest {
     }
 
     @Test
+    void classifiesFinishedDishReviewUsingItsZeroToOneHundredPointScale() {
+        MemoryCandidateDraft positive = extractor.extract(episode("FINISHED_DISH_REVIEW",
+                "{\"recipeTitle\":\"番茄炒蛋\",\"overallScore\":85}"))
+                .get(0);
+        MemoryCandidateDraft negative = extractor.extract(episode("FINISHED_DISH_REVIEW",
+                "{\"recipeTitle\":\"番茄炒蛋\",\"overallScore\":35}"))
+                .get(0);
+
+        assertThat(positive.preference()).isEqualTo("LIKE");
+        assertThat(positive.evidenceText()).contains("85/100 分").doesNotContain("星");
+        assertThat(negative.preference()).isEqualTo("DISLIKE");
+    }
+
+    @Test
+    void doesNotInferARecipePreferenceFromMiddleOrOutOfRangeFinishedReviewScores() {
+        assertThat(extractor.extract(episode("FINISHED_DISH_REVIEW",
+                "{\"recipeTitle\":\"番茄炒蛋\",\"overallScore\":60}"))).isEmpty();
+        assertThat(extractor.extract(episode("FINISHED_DISH_REVIEW",
+                "{\"recipeTitle\":\"番茄炒蛋\",\"overallScore\":101}"))).isEmpty();
+        assertThat(extractor.extract(episode("FINISHED_DISH_REVIEW",
+                "{\"recipeTitle\":\"番茄炒蛋\",\"overallScore\":-1}"))).isEmpty();
+    }
+
+    @Test
     void supportsExplicitUserPreferenceEpisode() {
         MemoryEpisode episode = episode(
                 "USER_PREFERENCE_DECLARED",
@@ -102,6 +127,37 @@ class MemoryExtractorTest {
         assertThat(draft.entity()).isEqualTo("香菜");
         assertThat(draft.preference()).isEqualTo("DISLIKE");
         assertThat(draft.confidence()).isEqualByComparingTo(new BigDecimal("0.9500"));
+    }
+
+    @Test
+    void extractsOnlyAllowlistedExecutionPreferencesAndPreservesTheExactQuote() {
+        MemoryEpisode episode = episode(
+                "USER_PREFERENCE_DECLARED",
+                "{\"candidateType\":\"SKILL_PREFERENCE\",\"entity\":\"CANDIDATE_COUNT\","
+                        + "\"preference\":\"3\",\"evidence\":\"以后每次给我三个选项\"}"
+        );
+
+        MemoryCandidateDraft draft = extractor.extract(episode).get(0);
+
+        assertThat(draft.candidateType()).isEqualTo("SKILL_PREFERENCE");
+        assertThat(draft.entity()).isEqualTo("CANDIDATE_COUNT");
+        assertThat(draft.preference()).isEqualTo("3");
+        assertThat(draft.scope()).isEqualTo("USER");
+        assertThat(draft.temporalType()).isEqualTo("LONG_TERM");
+        assertThat(draft.confidence()).isEqualByComparingTo("0.9500");
+        assertThat(draft.evidenceText()).isEqualTo("以后每次给我三个选项");
+        assertThat(draft.evidence()).containsEntry("quotedText", "以后每次给我三个选项");
+    }
+
+    @Test
+    void rejectsExecutionPreferenceValuesNotSupportedByTheUserQuote() {
+        MemoryEpisode episode = episode(
+                "USER_PREFERENCE_DECLARED",
+                "{\"candidateType\":\"SKILL_PREFERENCE\",\"entity\":\"CANDIDATE_COUNT\","
+                        + "\"preference\":\"5\",\"evidence\":\"以后每次给我三个选项\"}"
+        );
+
+        assertThat(extractor.extract(episode)).isEmpty();
     }
 
     private MemoryEpisode episode(String type, String payload) {

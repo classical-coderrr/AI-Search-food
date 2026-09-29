@@ -13,6 +13,7 @@ import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -35,26 +36,59 @@ public class MemoryReranker {
     }
 
     public List<MemorySearchHit> rerank(MemoryQueryPlan plan, List<MemorySearchHit> candidates) {
+        return rerank(plan, candidates, Map.of());
+    }
+
+    public List<MemorySearchHit> rerank(MemoryQueryPlan plan, List<MemorySearchHit> candidates,
+                                        Map<MemoryVectorKey, Double> vectorScores) {
+        return rerank(plan, candidates, vectorScores, Map.of());
+    }
+
+    public List<MemorySearchHit> rerank(MemoryQueryPlan plan, List<MemorySearchHit> candidates,
+                                        Map<MemoryVectorKey, Double> vectorScores,
+                                        Map<MemoryVectorKey, MemoryFeedbackType> userFeedback) {
         List<MemorySearchHit> result = new ArrayList<>(candidates.size());
         for (MemorySearchHit candidate : candidates) {
-            double semantic = semanticScore(plan.rewrittenQuery(), candidate);
+            double lexical = semanticScore(plan.rewrittenQuery(), candidate);
+            Double vector = vectorScores.get(new MemoryVectorKey(candidate.sourceKind(), candidate.id()));
+            double vectorRatio = clamp(properties.vectorSemanticRatio());
+            double semantic = vector == null ? lexical
+                    : clamp(lexical * (1 - vectorRatio) + clamp(vector) * vectorRatio);
             double recency = recencyScore(candidate);
             double importance = unit(candidate.importance());
             double confidence = unit(candidate.confidence());
-            double feedback = feedbackScore(candidate, plan.originalQuery());
+            double inferredFeedback = feedbackScore(candidate, plan.originalQuery());
+            MemoryFeedbackType explicitFeedback = userFeedback.get(
+                    new MemoryVectorKey(candidate.sourceKind(), candidate.id()));
+            double feedback = explicitFeedback == null ? inferredFeedback : explicitFeedbackScore(explicitFeedback);
             double context = contextScore(plan, candidate);
-            double total = weighted(semantic, recency, importance, confidence, feedback, context);
-            result.add(new MemorySearchHit(candidate.sourceKind(), candidate.id(), candidate.memoryType(),
+            double baseTotal = weighted(semantic, recency, importance, confidence, inferredFeedback, context);
+            double adjustment = explicitFeedback == null ? 0 : explicitFeedbackAdjustment(explicitFeedback);
+            double total = clamp(baseTotal + adjustment);
+            result.add(new MemorySearchHit(candidate.sourceKind(), candidate.id(), candidate.version(), candidate.memoryType(),
                     candidate.title(), candidate.content(), candidate.payload(), candidate.preference(),
                     candidate.temporalType(), candidate.confidence(), candidate.importance(), candidate.occurredAt(),
                     new MemorySearchHit.ScoreBreakdown(semantic, recency, importance, confidence,
-                            feedback, context, total)));
+                            feedback, context, total, adjustment)));
         }
         result.sort(Comparator.comparingDouble((MemorySearchHit hit) -> hit.scores().total()).reversed()
                 .thenComparing(hit -> hit.occurredAt() == null ? LocalDateTime.MIN : hit.occurredAt(),
                         Comparator.reverseOrder())
                 .thenComparing(MemorySearchHit::id, Comparator.nullsLast(Comparator.reverseOrder())));
         return List.copyOf(result);
+    }
+
+    private double explicitFeedbackScore(MemoryFeedbackType feedback) {
+        return switch (feedback) {
+            case HELPFUL -> 1.0;
+            case NOT_RELEVANT -> 0.15;
+            case INCORRECT, OUTDATED -> 0.0;
+        };
+    }
+
+    private double explicitFeedbackAdjustment(MemoryFeedbackType feedback) {
+        double weight = clamp(properties.explicitUserFeedbackWeight());
+        return (explicitFeedbackScore(feedback) - 0.5) * 2 * weight;
     }
 
     private double weighted(double semantic, double recency, double importance,

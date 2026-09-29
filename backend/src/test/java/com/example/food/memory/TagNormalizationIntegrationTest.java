@@ -85,13 +85,14 @@ class TagNormalizationIntegrationTest {
         MemoryEpisode episode = episodeService.record(userId, new MemoryEpisodeCommand(
                 null,
                 null,
-                "RECIPE_SAVED",
-                "RECIPE_RECORD",
+                "USER_PREFERENCE_DECLARED",
+                "USER_INPUT",
                 key,
                 key,
                 key,
-                "收藏含有" + ingredient + "的菜谱",
-                "{\"recipeTitle\":\"测试菜谱\",\"ingredients\":[\"" + ingredient + "\"]}",
+                "用户明确表示喜欢" + ingredient,
+                "{\"candidateType\":\"INGREDIENT_PREFERENCE\",\"entity\":\"" + ingredient
+                        + "\",\"preference\":\"LIKE\"}",
                 null,
                 null
         )).episode();

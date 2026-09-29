@@ -35,6 +35,23 @@ services:
       retries: 12
       start_period: 30s
 
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - memory_vector_network
+    mem_limit: 768m
+    mem_reservation: 256m
+    cpus: 1.0
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
   backend:
     image: "${TCR_REGISTRY:?set TCR_REGISTRY}/${TCR_NAMESPACE:?set TCR_NAMESPACE}/${BACKEND_IMAGE_NAME:-ai-search-food-backend}:${IMAGE_TAG:?set immutable IMAGE_TAG}"
     pull_policy: always
@@ -77,6 +94,11 @@ services:
       BILIBILI_VIDEO_SEARCH_MAX_RESULTS: ${BILIBILI_VIDEO_SEARCH_MAX_RESULTS:-6}
       BILIBILI_VIDEO_SEARCH_RATE_LIMIT_WINDOW: ${BILIBILI_VIDEO_SEARCH_RATE_LIMIT_WINDOW:-PT1M}
       BILIBILI_VIDEO_SEARCH_RATE_LIMIT_MAX_REQUESTS: ${BILIBILI_VIDEO_SEARCH_RATE_LIMIT_MAX_REQUESTS:-12}
+      MEMORY_QDRANT_ENABLED: ${MEMORY_QDRANT_ENABLED:-true}
+      MEMORY_QDRANT_URL: http://qdrant:6333
+      MEMORY_QDRANT_COLLECTION: ${MEMORY_QDRANT_COLLECTION:-xiaochuling_memory_v1}
+      MEMORY_QDRANT_POLL_INTERVAL: ${MEMORY_QDRANT_POLL_INTERVAL:-PT5S}
+      MEMORY_QDRANT_POLL_BATCH_SIZE: ${MEMORY_QDRANT_POLL_BATCH_SIZE:-100}
     volumes:
       - review_uploads:/app/data/finished-dish-reviews
       - user_avatars:/app/data/user-avatars
@@ -85,9 +107,12 @@ services:
     networks:
       - app_network
       - database_network
+      - memory_vector_network
     depends_on:
       mysql:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     mem_limit: 1536m
     mem_reservation: 768m
     cpus: 2.5
@@ -135,11 +160,14 @@ services:
 
 volumes:
   mysql_data:
+  qdrant_data:
   review_uploads:
   user_avatars:
   feature_suggestions:
 
 networks:
   app_network:
+  memory_vector_network:
+    internal: true
   database_network:
     internal: true

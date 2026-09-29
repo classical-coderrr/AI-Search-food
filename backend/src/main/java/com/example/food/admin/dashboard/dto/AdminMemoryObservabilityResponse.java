@@ -5,7 +5,8 @@ import java.time.Instant;
 public record AdminMemoryObservabilityResponse(
         Instant generatedAt,
         String range,
-        Metrics metrics
+        Metrics metrics,
+        OnlineLabelMetrics onlineLabels
 ) {
     public record Metrics(
             long retrievalCount,
@@ -23,6 +24,26 @@ public record AdminMemoryObservabilityResponse(
             double helpfulFeedbackRate,
             double notRelevantFeedbackRate,
             double inaccurateFeedbackRate,
-            double outdatedFeedbackRate
+            double outdatedFeedbackRate,
+            long llmInputTokens,
+            long llmOutputTokens,
+            long llmTotalTokens,
+            long llmUsageCallCount
+    ) { }
+
+    public record OnlineLabelMetrics(
+            long usedTargetCount,
+            long labeledTargetCount,
+            double labelCoverageRate,
+            long helpfulCount,
+            long notRelevantCount,
+            long incorrectCount,
+            long outdatedCount,
+            double notRelevantFeedbackRate,
+            double incorrectFeedbackRate,
+            double outdatedFeedbackRate,
+            int minimumSampleCount,
+            boolean sampleSufficient,
+            String sampleStatus
     ) { }
 }

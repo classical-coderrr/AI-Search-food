@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.food.ai.config.AiModelRuntimeConfig;
 import com.example.food.ai.qwen.QwenRecipeClient;
 import com.example.food.ai.recipe.dto.RecipeGenerateResponse;
+import com.example.food.memory.MemoryBehaviorEpisodeEvent;
+import com.example.food.memory.MemoryBehaviorEpisodeRecorder;
 import com.example.food.pantry.UserPantryService;
 import com.example.food.recipe.RecipeIngredient;
 import com.example.food.recipe.RecipeIngredientMapper;
@@ -82,6 +84,9 @@ class WeeklyMenuServiceTest {
     @Mock
     private VideoSearchService videoSearchService;
 
+    @Mock
+    private MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
+
     private WeeklyMenuService service;
 
     @BeforeEach
@@ -99,7 +104,8 @@ class WeeklyMenuServiceTest {
                 userNutritionTargetService,
                 userDietPreferenceService,
                 new ObjectMapper(),
-                videoSearchService
+                videoSearchService,
+                memoryEpisodeRecorder
         );
     }
 
@@ -447,6 +453,44 @@ class WeeklyMenuServiceTest {
         assertThat(response.shoppingItems().get(0).status()).isEqualTo(ShoppingItemStatus.READY.name());
         assertThat(response.shoppingItems().get(1).amount()).isEqualTo("5个");
         assertThat(response.shoppingItems().get(1).alreadyOwned()).isFalse();
+
+        ArgumentCaptor<MemoryBehaviorEpisodeEvent> eventCaptor =
+                ArgumentCaptor.forClass(MemoryBehaviorEpisodeEvent.class);
+        verify(memoryEpisodeRecorder).record(eventCaptor.capture());
+        MemoryBehaviorEpisodeEvent event = eventCaptor.getValue();
+        assertThat(event.userId()).isEqualTo(7L);
+        assertThat(event.episodeType()).isEqualTo("WEEKLY_MENU_SELECTED");
+        assertThat(event.sourceType()).isEqualTo("WEEKLY_MENU_PLAN");
+        assertThat(event.sourceId()).isEqualTo("99");
+        assertThat(event.idempotencyKey()).startsWith("weekly-menu:99:");
+        assertThat(event.summary()).contains("2026-08-31", "2 餐");
+        assertThat(event.payload()).containsEntry("weekStart", monday).containsKey("meals");
+        assertThat((List<?>) event.payload().get("meals")).hasSize(2);
+    }
+
+    @Test
+    void repeatedSaveOfTheSameWeeklyMenuUsesTheSameMemoryIdempotencyKey() {
+        LocalDate monday = LocalDate.of(2026, 8, 31);
+        WeeklyMenuPlan plan = plan(99L, 7L, monday);
+        RecipeRecord recipe = recipe(1L, "番茄炒蛋");
+        WeeklyMenuItem menuItem = item(11L, 99L, monday, "DINNER", 1L);
+        when(planMapper.findByUserIdAndWeekStart(7L, monday)).thenReturn(plan);
+        when(itemMapper.findByPlanId(99L)).thenReturn(List.of(menuItem));
+        when(recipeRecordMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(recipe));
+        when(recipeIngredientMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of());
+        when(userPantryService.listIngredientNames(7L)).thenReturn(List.of());
+        when(shoppingCheckMapper.findByUserIdAndPlanId(7L, 99L)).thenReturn(List.of());
+        WeeklyMenuSaveRequest request = new WeeklyMenuSaveRequest(
+                monday, List.of(new WeeklyMenuItemRequest(monday, "DINNER", 1L)));
+
+        service.save(7L, request);
+        service.save(7L, request);
+
+        ArgumentCaptor<MemoryBehaviorEpisodeEvent> eventCaptor =
+                ArgumentCaptor.forClass(MemoryBehaviorEpisodeEvent.class);
+        verify(memoryEpisodeRecorder, times(2)).record(eventCaptor.capture());
+        assertThat(eventCaptor.getAllValues()).extracting(MemoryBehaviorEpisodeEvent::idempotencyKey)
+                .containsOnly(eventCaptor.getAllValues().get(0).idempotencyKey());
     }
 
     @Test

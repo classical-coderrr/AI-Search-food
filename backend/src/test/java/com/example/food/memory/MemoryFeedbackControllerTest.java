@@ -37,6 +37,9 @@ class MemoryFeedbackControllerTest {
     @MockBean
     private MemoryFeedbackService feedbackService;
 
+    @MockBean
+    private MemoryTargetFeedbackService targetFeedbackService;
+
     @Test
     void authenticatedUserCanSubmitFeedbackForOwnAgentRun() throws Exception {
         authenticate("user-token", new AuthPrincipal(7L, "13800138000", AppRole.USER));
@@ -77,6 +80,48 @@ class MemoryFeedbackControllerTest {
     }
 
     @Test
+    void authenticatedUserCanListOnlyActuallyUsedMemoryTargets() throws Exception {
+        authenticate("user-token", new AuthPrincipal(7L, "13800138000", AppRole.USER));
+        when(targetFeedbackService.targets(7L, "run-1")).thenReturn(java.util.List.of(
+                new MemoryTargetFeedbackTargetResponse(MemoryTargetFeedbackSource.MEMORY_ITEM,
+                        41L, "鸡胸肉", "LIKE · INGREDIENT_PREFERENCE", null)));
+
+        mockMvc.perform(get("/api/memory/feedback/run-1/targets")
+                        .header("Authorization", "Bearer user-token"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].sourceKind").value("MEMORY_ITEM"))
+                .andExpect(jsonPath("$.data[0].sourceId").value(41))
+                .andExpect(jsonPath("$.data[0].title").value("鸡胸肉"));
+
+        verify(targetFeedbackService).targets(7L, "run-1");
+    }
+
+    @Test
+    void authenticatedUserCanSubmitFeedbackForOneMemoryTarget() throws Exception {
+        authenticate("user-token", new AuthPrincipal(7L, "13800138000", AppRole.USER));
+        LocalDateTime now = LocalDateTime.of(2026, 9, 25, 10, 0);
+        when(targetFeedbackService.submit(7L, new MemoryTargetFeedbackRequest(
+                "run-1", MemoryTargetFeedbackSource.MEMORY_ITEM, 41L, MemoryFeedbackType.INCORRECT)))
+                .thenReturn(new MemoryTargetFeedbackResponse(82L, "run-1",
+                        MemoryTargetFeedbackSource.MEMORY_ITEM, 41L, MemoryFeedbackType.INCORRECT,
+                        false, now, now));
+
+        mockMvc.perform(post("/api/memory/feedback/targets")
+                        .header("Authorization", "Bearer user-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"traceId":"run-1","sourceKind":"MEMORY_ITEM","sourceId":41,"feedbackType":"INCORRECT"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.sourceKind").value("MEMORY_ITEM"))
+                .andExpect(jsonPath("$.data.sourceId").value(41))
+                .andExpect(jsonPath("$.data.feedbackType").value("INCORRECT"));
+
+        verify(targetFeedbackService).submit(7L, new MemoryTargetFeedbackRequest(
+                "run-1", MemoryTargetFeedbackSource.MEMORY_ITEM, 41L, MemoryFeedbackType.INCORRECT));
+    }
+
+    @Test
     void requiresAuthenticatedUser() throws Exception {
         mockMvc.perform(post("/api/memory/feedback")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -112,6 +157,25 @@ class MemoryFeedbackControllerTest {
                 .andExpect(status().isForbidden());
 
         verify(feedbackService, never()).status(any(), any());
+    }
+
+    @Test
+    void requiresUserRoleForTargetFeedbackEndpoints() throws Exception {
+        authenticate("admin-token", new AuthPrincipal(3L, "admin", AppRole.ADMIN));
+
+        mockMvc.perform(get("/api/memory/feedback/run-1/targets")
+                        .header("Authorization", "Bearer admin-token"))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/memory/feedback/targets")
+                        .header("Authorization", "Bearer admin-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"traceId":"run-1","sourceKind":"EPISODE","sourceId":31,"feedbackType":"HELPFUL"}
+                                """))
+                .andExpect(status().isForbidden());
+
+        verify(targetFeedbackService, never()).targets(any(), any());
+        verify(targetFeedbackService, never()).submit(any(), any());
     }
 
     @Test

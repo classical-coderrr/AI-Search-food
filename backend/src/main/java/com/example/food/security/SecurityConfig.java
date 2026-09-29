@@ -1,6 +1,8 @@
 package com.example.food.security;
 
 import com.example.food.common.ApiResponse;
+import com.example.food.memory.mcp.MemoryMcpSessionOwnershipFilter;
+import com.example.food.memory.mcp.MemoryMcpSessionOwnershipRegistry;
 import com.example.food.user.UserMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
@@ -40,9 +42,10 @@ public class SecurityConfig {
             HttpSecurity http,
             AuthenticationEntryPoint authenticationEntryPoint,
             AccessDeniedHandler accessDeniedHandler,
-            ObjectProvider<UserMapper> userMapperProvider
+            ObjectProvider<UserMapper> userMapperProvider,
+            ObjectProvider<MemoryMcpSessionOwnershipRegistry> mcpSessionOwnershipRegistryProvider
     ) throws Exception {
-        return http
+        HttpSecurity security = http
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(exception -> exception
@@ -75,16 +78,15 @@ public class SecurityConfig {
                         .requestMatchers("/api/stats/hot-ingredients", "/api/stats/hot-recipes").permitAll()
                         .requestMatchers("/api/ingredients/images/**").permitAll()
                         .anyRequest().authenticated()
-                )
-                .addFilterBefore(
-                        new JwtAuthenticationFilter(
-                                jwtService,
-                                authenticationEntryPoint,
-                                userMapperProvider.getIfAvailable()
-                        ),
-                        UsernamePasswordAuthenticationFilter.class
-                )
-                .build();
+                );
+        JwtAuthenticationFilter jwtAuthenticationFilter = new JwtAuthenticationFilter(
+                jwtService, authenticationEntryPoint, userMapperProvider.getIfAvailable());
+        security.addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+        MemoryMcpSessionOwnershipRegistry registry = mcpSessionOwnershipRegistryProvider.getIfAvailable();
+        if (registry != null) {
+            security.addFilterAfter(new MemoryMcpSessionOwnershipFilter(registry), JwtAuthenticationFilter.class);
+        }
+        return security.build();
     }
 
     @Bean

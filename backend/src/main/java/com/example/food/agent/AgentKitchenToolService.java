@@ -19,6 +19,7 @@ import com.example.food.stats.HotIngredientStatsService;
 import com.example.food.user.character.UserKitchenCharacterNamesService;
 import com.example.food.video.VideoSearchService;
 import com.example.food.weekly.WeeklyMenuService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -68,6 +69,7 @@ public class AgentKitchenToolService {
     private final UserKitchenCharacterNamesService characterNamesService;
     private final FinishedDishReviewService finishedDishReviewService;
     private final ObjectMapper objectMapper;
+    private AgentMemoryToolService memoryToolService;
 
     public AgentKitchenToolService(
             UserPantryService pantryService,
@@ -103,7 +105,15 @@ public class AgentKitchenToolService {
         this.objectMapper = objectMapper;
     }
 
+    @Autowired
+    void setMemoryToolService(AgentMemoryToolService memoryToolService) {
+        this.memoryToolService = memoryToolService;
+    }
+
     public boolean isMutation(Tool tool, JsonNode arguments) {
+        if (memoryToolService != null && memoryToolService.isMutation(tool)) {
+            return true;
+        }
         return switch (tool) {
             case PANTRY_MANAGE -> PANTRY_MUTATIONS.contains(action(arguments));
             case MEAL_PLAN_MANAGE -> MENU_MUTATIONS.contains(action(arguments));
@@ -116,6 +126,9 @@ public class AgentKitchenToolService {
     }
 
     public String actionType(Tool tool, JsonNode arguments) {
+        if (memoryToolService != null && memoryToolService.isMutation(tool)) {
+            return memoryToolService.actionType(tool);
+        }
         String action = action(arguments);
         return switch (tool) {
             case PANTRY_MANAGE -> switch (action) {
@@ -175,6 +188,13 @@ public class AgentKitchenToolService {
     }
 
     public String impact(Tool tool, JsonNode arguments) {
+        return impact(tool, arguments, null);
+    }
+
+    public String impact(Tool tool, JsonNode arguments, Long userId) {
+        if (memoryToolService != null && memoryToolService.isMutation(tool)) {
+            return memoryToolService.impact(tool, arguments, userId);
+        }
         String action = action(arguments);
         return switch (tool) {
             case PANTRY_MANAGE -> "将执行库存操作“" + action + "”，库存数量或记录可能发生变化。";
@@ -322,7 +342,12 @@ public class AgentKitchenToolService {
         return payload == null || !payload.isObject() ? objectMapper.createObjectNode() : payload;
     }
 
-    public JsonNode actionPayload(JsonNode arguments) {
+    public JsonNode actionPayload(Tool tool, JsonNode arguments) {
+        if (tool == Tool.MEMORY_EPISODE_SAVE || tool == Tool.MEMORY_PREFERENCE_UPDATE) {
+            return arguments == null || !arguments.isObject()
+                    ? objectMapper.createObjectNode()
+                    : arguments;
+        }
         return payload(arguments);
     }
 

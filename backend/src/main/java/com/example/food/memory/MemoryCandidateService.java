@@ -1,6 +1,7 @@
 package com.example.food.memory;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
@@ -18,11 +19,12 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.List;
 import java.util.HexFormat;
+import java.util.Locale;
 
 @Service
 public class MemoryCandidateService {
 
-    public static final String DEFAULT_EXTRACTION_MODEL = "rule-based-v1";
+    public static final String DEFAULT_EXTRACTION_MODEL = "rule-based-v2";
     public static final String DEFAULT_PROMPT_VERSION = "memory-extraction-v1";
     private static final int MAX_LIMIT = 100;
     private static final int MAX_KEY_LENGTH = 192;
@@ -35,6 +37,8 @@ public class MemoryCandidateService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final MemoryPersonalizationService personalizationService;
+    private final MemoryBehaviorPatternExtractor behaviorPatternExtractor;
+    private final MemoryUnsavedBehaviorReconciler unsavedBehaviorReconciler;
 
     public MemoryCandidateService(
             MemoryCandidateMapper candidateMapper,
@@ -45,10 +49,9 @@ public class MemoryCandidateService {
             ObjectMapper objectMapper
     ) {
         this(candidateMapper, evidenceMapper, episodeService, extractor, tagNormalizationService,
-                objectMapper, Clock.systemDefaultZone(), null);
+                objectMapper, Clock.systemDefaultZone(), null, null);
     }
 
-    @Autowired
     public MemoryCandidateService(
             MemoryCandidateMapper candidateMapper,
             MemoryEvidenceMapper evidenceMapper,
@@ -59,7 +62,38 @@ public class MemoryCandidateService {
             MemoryPersonalizationService personalizationService
     ) {
         this(candidateMapper, evidenceMapper, episodeService, extractor, tagNormalizationService,
-                objectMapper, Clock.systemDefaultZone(), personalizationService);
+                objectMapper, Clock.systemDefaultZone(), personalizationService, null);
+    }
+
+    public MemoryCandidateService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryEvidenceMapper evidenceMapper,
+            MemoryEpisodeService episodeService,
+            MemoryExtractor extractor,
+            TagNormalizationService tagNormalizationService,
+            ObjectMapper objectMapper,
+            MemoryPersonalizationService personalizationService,
+            MemoryBehaviorPatternExtractor behaviorPatternExtractor
+    ) {
+        this(candidateMapper, evidenceMapper, episodeService, extractor, tagNormalizationService,
+                objectMapper, Clock.systemDefaultZone(), personalizationService, behaviorPatternExtractor, null);
+    }
+
+    @Autowired
+    public MemoryCandidateService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryEvidenceMapper evidenceMapper,
+            MemoryEpisodeService episodeService,
+            MemoryExtractor extractor,
+            TagNormalizationService tagNormalizationService,
+            ObjectMapper objectMapper,
+            MemoryPersonalizationService personalizationService,
+            MemoryBehaviorPatternExtractor behaviorPatternExtractor,
+            MemoryUnsavedBehaviorReconciler unsavedBehaviorReconciler
+    ) {
+        this(candidateMapper, evidenceMapper, episodeService, extractor, tagNormalizationService,
+                objectMapper, Clock.systemDefaultZone(), personalizationService, behaviorPatternExtractor,
+                unsavedBehaviorReconciler);
     }
 
     MemoryCandidateService(
@@ -72,7 +106,7 @@ public class MemoryCandidateService {
             Clock clock
     ) {
         this(candidateMapper, evidenceMapper, episodeService, extractor, tagNormalizationService,
-                objectMapper, clock, null);
+                objectMapper, clock, null, null);
     }
 
     MemoryCandidateService(
@@ -85,6 +119,37 @@ public class MemoryCandidateService {
             Clock clock,
             MemoryPersonalizationService personalizationService
     ) {
+        this(candidateMapper, evidenceMapper, episodeService, extractor, tagNormalizationService,
+                objectMapper, clock, personalizationService, null);
+    }
+
+    MemoryCandidateService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryEvidenceMapper evidenceMapper,
+            MemoryEpisodeService episodeService,
+            MemoryExtractor extractor,
+            TagNormalizationService tagNormalizationService,
+            ObjectMapper objectMapper,
+            Clock clock,
+            MemoryPersonalizationService personalizationService,
+            MemoryBehaviorPatternExtractor behaviorPatternExtractor
+    ) {
+        this(candidateMapper, evidenceMapper, episodeService, extractor, tagNormalizationService,
+                objectMapper, clock, personalizationService, behaviorPatternExtractor, null);
+    }
+
+    MemoryCandidateService(
+            MemoryCandidateMapper candidateMapper,
+            MemoryEvidenceMapper evidenceMapper,
+            MemoryEpisodeService episodeService,
+            MemoryExtractor extractor,
+            TagNormalizationService tagNormalizationService,
+            ObjectMapper objectMapper,
+            Clock clock,
+            MemoryPersonalizationService personalizationService,
+            MemoryBehaviorPatternExtractor behaviorPatternExtractor,
+            MemoryUnsavedBehaviorReconciler unsavedBehaviorReconciler
+    ) {
         this.candidateMapper = candidateMapper;
         this.evidenceMapper = evidenceMapper;
         this.episodeService = episodeService;
@@ -93,6 +158,8 @@ public class MemoryCandidateService {
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.personalizationService = personalizationService;
+        this.behaviorPatternExtractor = behaviorPatternExtractor;
+        this.unsavedBehaviorReconciler = unsavedBehaviorReconciler;
     }
 
     @Transactional
@@ -119,18 +186,34 @@ public class MemoryCandidateService {
             return new ExtractionResult(List.of(), 0, 0);
         }
         MemoryEpisode episode = episodeService.findOwned(userId, episodeId);
-        List<MemoryCandidateDraft> drafts = extractor.extract(episode);
+        if (unsavedBehaviorReconciler != null) {
+            unsavedBehaviorReconciler.reconcile(userId, episode);
+        }
+        List<MemoryCandidateDraft> episodeDrafts = extractor.extract(episode);
+        if (!prepareRecipeFeedbackReaction(userId, episode, episodeDrafts)) {
+            return new ExtractionResult(List.of(), 0, 0);
+        }
+
+        List<EpisodeDraft> drafts = new java.util.ArrayList<>();
+        episodeDrafts.forEach(draft -> drafts.add(new EpisodeDraft(episode, draft)));
+        if (behaviorPatternExtractor != null) {
+            behaviorPatternExtractor.extract(userId, episode).stream()
+                    .map(support -> new EpisodeDraft(support.episode(), support.draft()))
+                    .forEach(drafts::add);
+        }
 
         int duplicateCount = 0;
         List<MemoryCandidate> candidates = new java.util.ArrayList<>();
-        for (MemoryCandidateDraft draft : drafts) {
+        for (EpisodeDraft supportedDraft : drafts) {
+            MemoryEpisode candidateEpisode = supportedDraft.episode();
+            MemoryCandidateDraft draft = supportedDraft.draft();
             TagNormalizationResult normalization = tagNormalizationService.normalize(
                     draft.candidateType(), draft.entity());
-            String extractionKey = extractionKey(episode, draft, normalization, prompt);
+            String extractionKey = extractionKey(candidateEpisode, draft, normalization, prompt);
             MemoryCandidate candidate = candidateMapper.findOwnedByExtractionKey(userId, extractionKey);
             boolean duplicate = candidate != null;
             if (!duplicate) {
-                candidate = newCandidate(userId, episode, draft, normalization, extractionKey, model, prompt);
+                candidate = newCandidate(userId, candidateEpisode, draft, normalization, extractionKey, model, prompt);
                 try {
                     candidateMapper.insert(candidate);
                 } catch (DuplicateKeyException exception) {
@@ -144,10 +227,62 @@ public class MemoryCandidateService {
             if (duplicate) {
                 duplicateCount++;
             }
-            persistEvidence(userId, episode, candidate, draft, extractionKey);
+            persistEvidence(userId, candidateEpisode, candidate, draft, extractionKey);
             candidates.add(candidate);
         }
+        // Recheck after persistence so a newer reaction committed during extraction
+        // cannot leave this older event as the active candidate.
+        prepareRecipeFeedbackReaction(userId, episode, episodeDrafts);
         return new ExtractionResult(candidates, duplicateCount, drafts.size());
+    }
+
+    private boolean prepareRecipeFeedbackReaction(
+            Long userId,
+            MemoryEpisode episode,
+            List<MemoryCandidateDraft> drafts
+    ) {
+        String action = recipeFeedbackReactionAction(episode);
+        if (action == null || !StringUtils.hasText(episode.getSourceId())) {
+            return true;
+        }
+        if ("REACTION".equals(action)
+                && drafts.stream().noneMatch(draft -> "RECIPE_PREFERENCE".equals(draft.candidateType()))) {
+            return true;
+        }
+
+        MemoryEpisode latestReaction = episodeService.listOwnedRecipeFeedbackBySource(
+                        userId, episode.getSourceId()).stream()
+                .filter(candidateEpisode -> recipeFeedbackReactionAction(candidateEpisode) != null)
+                .findFirst()
+                .orElse(null);
+        boolean isLatest = latestReaction != null && episode.getId().equals(latestReaction.getId());
+
+        for (MemoryCandidate previous : candidateMapper.listOwnedRecipeFeedbackCandidatesBySource(
+                userId, episode.getSourceId())) {
+            boolean latestCandidate = isLatest && "REACTION".equals(action)
+                    && episode.getId().equals(previous.getEpisodeId());
+            if (!latestCandidate) {
+                candidateMapper.markSuperseded(userId, previous.getId(), previous.getVersion());
+            }
+        }
+        return isLatest;
+    }
+
+    private String recipeFeedbackReactionAction(MemoryEpisode episode) {
+        if (episode == null || !"RECIPE_FEEDBACK".equalsIgnoreCase(episode.getEpisodeType())
+                || !StringUtils.hasText(episode.getPayloadJson())) {
+            return null;
+        }
+        try {
+            JsonNode payload = objectMapper.readTree(episode.getPayloadJson());
+            String action = payload == null ? null : payload.path("action").asText(null);
+            if (!StringUtils.hasText(action)) return null;
+            String normalized = action.trim().toUpperCase(Locale.ROOT);
+            return "REACTION".equals(normalized) || "REACTION_CLEARED".equals(normalized)
+                    ? normalized : null;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     public MemoryCandidate findOwned(Long userId, Long candidateId) {
@@ -325,4 +460,6 @@ public class MemoryCandidateService {
             return !candidates.isEmpty();
         }
     }
+
+    private record EpisodeDraft(MemoryEpisode episode, MemoryCandidateDraft draft) { }
 }

@@ -49,6 +49,8 @@ public class MemoryRetrievalTraceService {
                 ? List.of() : retrieval.trace().selectedEpisodeIds()));
         trace.setUsedMemoryItemIdsJson(json(context == null ? List.of() : context.usedMemoryItemIds()));
         trace.setUsedEpisodeIdsJson(json(context == null ? List.of() : context.usedEpisodeIds()));
+        trace.setUsedMemoryItemCount(distinctIdCount(context == null ? null : context.usedMemoryItemIds()));
+        trace.setUsedEpisodeCount(distinctIdCount(context == null ? null : context.usedEpisodeIds()));
         trace.setKnowledgeIdsJson(json(context == null ? List.of() : context.knowledgeIds()));
         trace.setRankingJson(json(ranking(retrieval, context)));
         trace.setContextSectionsJson(json(context == null ? List.of() : context.sections().keySet()));
@@ -85,6 +87,14 @@ public class MemoryRetrievalTraceService {
         return summary == null ? Map.of() : summary;
     }
 
+    public boolean recordLlmUsage(Long userId, String traceId, Long inputTokens, Long outputTokens,
+                                  Long totalTokens) {
+        if (userId == null || userId <= 0 || traceId == null || traceId.isBlank()
+                || !validTokenCount(inputTokens) || !validTokenCount(outputTokens) || !validTokenCount(totalTokens)
+                || inputTokens == null && outputTokens == null && totalTokens == null) return false;
+        return mapper.addLlmUsage(userId, traceId, inputTokens, outputTokens, totalTokens) == 1;
+    }
+
     private List<Map<String, Object>> ranking(MemoryRetrievalResult retrieval, ContextBuildResult context) {
         if (retrieval == null) return List.of();
         List<Long> usedItems = context == null ? List.of() : context.usedMemoryItemIds();
@@ -109,6 +119,15 @@ public class MemoryRetrievalTraceService {
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("Memory trace serialization failed", exception);
         }
+    }
+
+    private int distinctIdCount(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return 0;
+        return (int) ids.stream().filter(id -> id != null && id > 0).distinct().count();
+    }
+
+    private boolean validTokenCount(Long value) {
+        return value == null || value >= 0 && value <= 1_000_000_000L;
     }
 
     private String sha256(String value) {

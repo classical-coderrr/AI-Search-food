@@ -16,7 +16,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -24,6 +23,8 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -210,7 +211,8 @@ class AgentServiceTest {
 
         QwenAgentClient qwenAgentClient = mock(QwenAgentClient.class);
         when(qwenAgentClient.complete(anyList(), anyList())).thenReturn(new QwenAgentClient.AgentTurn(
-                "我会避开香菜，并按你过去明确表达的偏好推荐。", List.of(), "qwen", "qwen-plus"));
+                "我会避开香菜，并按你过去明确表达的偏好推荐。", List.of(), "qwen", "qwen-plus",
+                new QwenAgentClient.TokenUsage(120L, 35L, 155L)));
         AgentIntentRecognizer intentRecognizer = mock(AgentIntentRecognizer.class);
         when(intentRecognizer.recognize(eq(query), anyList())).thenReturn(
                 new AgentIntentRecognizer.RecognitionResult(false, false, "OTHER", 0.99d,
@@ -269,6 +271,7 @@ class AgentServiceTest {
                 && message.content().contains("近期行为推断：LIKE 生姜")
                 && message.content().contains("不能说“你最近反馈不想吃生姜”"));
         verify(memoryContextProvider).prepare(eq(7L), eq(42L), anyString(), eq(query));
+        verify(memoryContextProvider).recordModelUsage(eq(7L), anyString(), eq(120L), eq(35L), eq(155L));
         assertThat(runStore.steps).filteredOn(step -> "memory.context".equals(step.action()))
                 .singleElement().satisfies(step -> {
             assertThat(step.status()).isEqualTo("SUCCESS");
@@ -278,6 +281,195 @@ class AgentServiceTest {
             assertThat(event.event()).isEqualTo("tool.result");
             assertThat(event.dataJson()).contains("长期偏好：不喜欢香菜");
         });
+    }
+
+    @Test
+    void explicitRememberRequestForcesMemoryToolAndCreatesConfirmationInsteadOfPlainText() throws Exception {
+        String userMessage = "我喜欢清淡少辣鸡胸肉，尤其柠檬鸡胸肉，请记下来作为长期偏好";
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConfirmationMapper confirmationMapper = mock(AgentConfirmationMapper.class);
+        AgentConversation conversation = new AgentConversation();
+        conversation.setId(42L);
+        conversation.setUserId(7L);
+        conversation.setTitle("厨房助手对话");
+        when(conversationMapper.findOwned(7L, 42L)).thenReturn(conversation);
+        when(conversationMapper.selectById(42L)).thenReturn(conversation);
+        when(messageMapper.findRecentTextMessages(7L, 42L, 12)).thenReturn(List.of());
+
+        AgentToolRegistry registry = new AgentToolRegistry();
+        QwenAgentClient qwenAgentClient = mock(QwenAgentClient.class);
+        when(qwenAgentClient.complete(anyList(), anyList(), eq("memory_episode_save")))
+                .thenReturn(new QwenAgentClient.AgentTurn("", List.of(new QwenAgentClient.ToolCall(
+                        "call_memory_1", "memory_episode_save",
+                        "{\"entity\":\"鸡胸肉\",\"preference\":\"LIKE\",\"evidence\":\"我喜欢清淡少辣鸡胸肉\"}"
+                )), "qwen", "qwen-plus"));
+        AgentIntentRecognizer intentRecognizer = mock(AgentIntentRecognizer.class);
+        when(intentRecognizer.recognize(eq(userMessage), anyList())).thenReturn(
+                new AgentIntentRecognizer.RecognitionResult(false, false, "OTHER", 1d, "NONE", "not_candidate"));
+        AgentKitchenToolService kitchenToolService = mock(AgentKitchenToolService.class);
+        when(kitchenToolService.isMutation(eq(AgentToolRegistry.Tool.MEMORY_EPISODE_SAVE), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(true);
+        when(kitchenToolService.actionType(eq(AgentToolRegistry.Tool.MEMORY_EPISODE_SAVE), org.mockito.ArgumentMatchers.any()))
+                .thenReturn("MEMORY_PREFERENCE_DECLARATION");
+        when(kitchenToolService.actionPayload(eq(AgentToolRegistry.Tool.MEMORY_EPISODE_SAVE), org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(invocation -> invocation.getArgument(1));
+        when(kitchenToolService.impact(eq(AgentToolRegistry.Tool.MEMORY_EPISODE_SAVE),
+                org.mockito.ArgumentMatchers.any(), eq(7L))).thenReturn("将记录你明确表达的偏好。");
+        AgentMemoryToolService memoryToolService = mock(AgentMemoryToolService.class);
+        when(memoryToolService.isMutation(AgentToolRegistry.Tool.MEMORY_EPISODE_SAVE)).thenReturn(true);
+        when(memoryToolService.isPersonalizationEnabled(7L)).thenReturn(true);
+
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentService service = new AgentService(
+                conversationMapper, messageMapper, confirmationMapper, registry, kitchenToolService,
+                null, null, null, null, null, null, null, null, null, null, null,
+                qwenAgentClient, intentRecognizer, new AgentIntentAuditService(runStore, objectMapper),
+                objectMapper, runStore);
+        service.setMemoryRuntime(memoryToolService, new com.example.food.memory.PromptTemplateManager(),
+                "memory-agent-context-v1");
+
+        service.stream(new AgentChatRequest(42L, userMessage, null, null),
+                new AuthPrincipal(7L, "13800138000", AppRole.USER));
+
+        verify(qwenAgentClient, timeout(3000)).complete(anyList(), anyList(), eq("memory_episode_save"));
+        verify(qwenAgentClient, never()).complete(anyList(), anyList());
+        verify(memoryToolService, timeout(3000)).validateDeclaration(org.mockito.ArgumentMatchers.any(), eq(userMessage));
+        verify(confirmationMapper, timeout(3000)).insert(org.mockito.ArgumentMatchers.any(AgentConfirmation.class));
+        assertThat(runStore.steps).anySatisfy(step -> {
+            assertThat(step.action()).isEqualTo("tool.started");
+            assertThat(step.toolName()).isEqualTo("memory.episode.save");
+        });
+    }
+
+    @Test
+    void disabledPersonalizationDoesNotCallModelOrCreateMemoryConfirmation() throws Exception {
+        String userMessage = "我喜欢紫薯，请记住";
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConfirmationMapper confirmationMapper = mock(AgentConfirmationMapper.class);
+        AgentConversation conversation = new AgentConversation();
+        conversation.setId(42L);
+        conversation.setUserId(7L);
+        conversation.setTitle("厨房助手对话");
+        when(conversationMapper.findOwned(7L, 42L)).thenReturn(conversation);
+        when(conversationMapper.selectById(42L)).thenReturn(conversation);
+        when(messageMapper.findRecentTextMessages(7L, 42L, 12)).thenReturn(List.of());
+
+        QwenAgentClient qwenAgentClient = mock(QwenAgentClient.class);
+        AgentMemoryToolService memoryToolService = mock(AgentMemoryToolService.class);
+        when(memoryToolService.isPersonalizationEnabled(7L)).thenReturn(false);
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentService service = new AgentService(
+                conversationMapper, messageMapper, confirmationMapper, new AgentToolRegistry(),
+                mock(AgentKitchenToolService.class), null, null, null, null, null, null,
+                null, null, null, null, null, qwenAgentClient, mock(AgentIntentRecognizer.class),
+                new AgentIntentAuditService(runStore, objectMapper), objectMapper, runStore);
+        service.setMemoryRuntime(memoryToolService, new com.example.food.memory.PromptTemplateManager(),
+                "memory-agent-context-v1");
+
+        service.stream(new AgentChatRequest(42L, userMessage, null, null),
+                new AuthPrincipal(7L, "13800138000", AppRole.USER));
+
+        verify(qwenAgentClient, never()).complete(anyList(), anyList());
+        verify(confirmationMapper, never()).insert(org.mockito.ArgumentMatchers.any(AgentConfirmation.class));
+        verify(memoryToolService, never()).validateDeclaration(org.mockito.ArgumentMatchers.any(), anyString());
+        verify(messageMapper, timeout(3000)).insert(org.mockito.ArgumentMatchers.argThat(
+                (com.example.food.agent.AgentMessage message) ->
+                "ASSISTANT".equals(message.getRole()) && message.getContent().contains("本次没有记录")));
+    }
+
+    @Test
+    void disabledPersonalMemoryQuestionDoesNotLookLikeAWriteOrClaimRetrieval() throws Exception {
+        String userMessage = "仅根据个人长期记忆回答：我是否喜欢鸡胸肉？不要依据聊天记录推断。";
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConversation conversation = new AgentConversation();
+        conversation.setId(42L);
+        conversation.setUserId(7L);
+        conversation.setTitle("厨房助手对话");
+        when(conversationMapper.findOwned(7L, 42L)).thenReturn(conversation);
+        when(conversationMapper.selectById(42L)).thenReturn(conversation);
+        when(messageMapper.findRecentTextMessages(7L, 42L, 12)).thenReturn(List.of());
+
+        QwenAgentClient qwenAgentClient = mock(QwenAgentClient.class);
+        AgentMemoryContextProvider memoryContextProvider = mock(AgentMemoryContextProvider.class);
+        when(memoryContextProvider.prepare(eq(7L), eq(42L), anyString(), eq(userMessage)))
+                .thenReturn(AgentMemoryContextProvider.PreparedContext.disabled());
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentService service = new AgentService(
+                conversationMapper, messageMapper, null, new AgentToolRegistry(),
+                mock(AgentKitchenToolService.class), null, null, null, null, null, null,
+                null, null, null, null, null, qwenAgentClient, mock(AgentIntentRecognizer.class),
+                new AgentIntentAuditService(runStore, objectMapper), objectMapper, runStore,
+                new com.example.food.agent.state.AgentFaultInjector(),
+                new RecordingEventStore(objectMapper), AgentMetrics.disabled(), memoryContextProvider);
+        AgentMemoryToolService memoryToolService = mock(AgentMemoryToolService.class);
+        when(memoryToolService.isPersonalizationEnabled(7L)).thenReturn(false);
+        service.setMemoryRuntime(memoryToolService, new com.example.food.memory.PromptTemplateManager(),
+                "memory-agent-context-v1");
+
+        service.stream(new AgentChatRequest(42L, userMessage, null, null),
+                new AuthPrincipal(7L, "13800138000", AppRole.USER));
+
+        verify(qwenAgentClient, never()).complete(anyList(), anyList());
+        verify(messageMapper, timeout(3000)).insert(org.mockito.ArgumentMatchers.argThat(
+                (com.example.food.agent.AgentMessage message) -> "ASSISTANT".equals(message.getRole())
+                        && message.getContent().contains("个性化记忆已关闭，本轮不会读取个人长期记忆")));
+        verify(memoryToolService, never()).validateDeclaration(org.mockito.ArgumentMatchers.any(), anyString());
+    }
+
+    @Test
+    void disabledContextInstructsModelAndHidesMemoryToolsForOrdinaryTasks() throws Exception {
+        String userMessage = "我以前喜欢鸡胸肉，今晚推荐晚餐";
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConversation conversation = new AgentConversation();
+        conversation.setId(42L);
+        conversation.setUserId(7L);
+        conversation.setTitle("厨房助手对话");
+        when(conversationMapper.findOwned(7L, 42L)).thenReturn(conversation);
+        when(conversationMapper.selectById(42L)).thenReturn(conversation);
+        when(messageMapper.findRecentTextMessages(7L, 42L, 12)).thenReturn(List.of());
+
+        QwenAgentClient qwenAgentClient = mock(QwenAgentClient.class);
+        when(qwenAgentClient.complete(anyList(), anyList())).thenReturn(new QwenAgentClient.AgentTurn(
+                "可以考虑一份普通鸡胸肉晚餐。", List.of(), "qwen", "qwen-plus"));
+        AgentMemoryContextProvider memoryContextProvider = mock(AgentMemoryContextProvider.class);
+        when(memoryContextProvider.prepare(eq(7L), eq(42L), anyString(), eq(userMessage)))
+                .thenReturn(AgentMemoryContextProvider.PreparedContext.disabled());
+        AgentIntentRecognizer intentRecognizer = mock(AgentIntentRecognizer.class);
+        when(intentRecognizer.recognize(eq(userMessage), anyList())).thenReturn(
+                new AgentIntentRecognizer.RecognitionResult(false, false, "OTHER", 1d, "NONE", "test"));
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentService service = new AgentService(
+                conversationMapper, messageMapper, null, new AgentToolRegistry(),
+                mock(AgentKitchenToolService.class), null, null, null, null, null, null,
+                null, null, null, null, null, qwenAgentClient, intentRecognizer,
+                new AgentIntentAuditService(runStore, objectMapper), objectMapper, runStore,
+                new com.example.food.agent.state.AgentFaultInjector(),
+                new RecordingEventStore(objectMapper), AgentMetrics.disabled(), memoryContextProvider);
+        AgentMemoryToolService memoryToolService = mock(AgentMemoryToolService.class);
+        when(memoryToolService.isPersonalizationEnabled(7L)).thenReturn(false);
+        service.setMemoryRuntime(memoryToolService, new com.example.food.memory.PromptTemplateManager(),
+                "memory-agent-context-v1");
+
+        service.stream(new AgentChatRequest(42L, userMessage, null, null),
+                new AuthPrincipal(7L, "13800138000", AppRole.USER));
+
+        org.mockito.ArgumentCaptor<List<QwenAgentClient.ConversationMessage>> messages =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        org.mockito.ArgumentCaptor<List<java.util.Map<String, Object>>> definitions =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(qwenAgentClient, timeout(3000)).complete(messages.capture(), definitions.capture());
+        assertThat(messages.getValue()).anyMatch(message -> "system".equals(message.role())
+                && message.content().contains("已关闭个性化记忆")
+                && message.content().contains("不得读取、检索、引用或使用个人长期记忆"));
+        assertThat(definitions.getValue()).allSatisfy(definition -> {
+            java.util.Map<?, ?> function = (java.util.Map<?, ?>) definition.get("function");
+            assertThat(function.get("name").toString()).doesNotStartWith("memory_");
+        });
+        assertThat(definitions.getValue()).isNotEmpty();
     }
 
     private static final class RecordingEventStore extends InMemoryAgentEventStore {
@@ -296,7 +488,7 @@ class AgentServiceTest {
     }
 
     private static final class RecordingRunStore extends InMemoryAgentRunStore {
-        private final List<AgentStep> steps = new ArrayList<>();
+        private final List<AgentStep> steps = new CopyOnWriteArrayList<>();
 
         @Override
         public synchronized void appendStep(AgentStep step) {

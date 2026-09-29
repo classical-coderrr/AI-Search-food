@@ -22,24 +22,39 @@ class ContextBuilderTest {
         MemoryProfile profile = new MemoryProfile();
         profile.setUserId(9L);
         profile.setProfileJson("{\"ingredientPreferences\":{"
-                + "\"liked\":[{\"entity\":\"鸡胸肉\",\"scope\":\"USER\","
-                + "\"temporalType\":\"LONG_TERM\",\"confidence\":0.91,\"evidenceCount\":3}],"
-                + "\"disliked\":[{\"entity\":\"香菜\",\"scope\":\"USER\","
-                + "\"temporalType\":\"LONG_TERM\",\"confidence\":0.96,\"evidenceCount\":2}]}}");
+                + "\"liked\":[{\"id\":1,\"entity\":\"鸡胸肉\",\"canonicalGroupId\":\"INGREDIENT_CHICKEN_BREAST\",\"scope\":\"USER\","
+                + "\"temporalType\":\"LONG_TERM\",\"lastSeenAt\":\"2025-01-01T10:00:00\",\"confidence\":0.91,\"evidenceCount\":3}],"
+                + "\"disliked\":[{\"id\":2,\"entity\":\"香菜\",\"scope\":\"USER\","
+                + "\"temporalType\":\"LONG_TERM\",\"confidence\":0.96,\"evidenceCount\":2},"
+                + "{\"id\":3,\"entity\":\"鸡胸肉\",\"canonicalGroupId\":\"INGREDIENT_CHICKEN_BREAST\",\"scope\":\"USER\","
+                + "\"temporalType\":\"RECENT\",\"lastSeenAt\":\"2026-09-20T10:00:00\",\"confidence\":0.70,\"evidenceCount\":1}]}}");
         when(consolidation.getOwnedProfile(9L)).thenReturn(profile);
+        MemoryItem recentDislike = new MemoryItem();
+        recentDislike.setId(3L);
+        recentDislike.setSourceEpisodeIdsJson("[44]");
+        when(consolidation.listOwnedItems(9L, 500)).thenReturn(List.of(recentDislike));
         MemorySession session = new MemorySession();
         session.setId(20L);
         session.setCurrentTask("训练后晚餐");
         session.setContextJson("20分钟内");
-        when(sessions.findOwned(9L, 20L)).thenReturn(session);
-        ContextBuilder builder = new ContextBuilder(consolidation, sessions, properties, budgetManager,
-                new ObjectMapper());
-
         MemorySearchHit hit = new MemorySearchHit("EPISODE", 31L, "RECIPE_SAVED", "鸡胸肉饭",
                 "用户曾收藏鸡胸肉饭", "{\"rating\":5}", null, "TEMPORARY_CONTEXT",
                 BigDecimal.valueOf(0.5), BigDecimal.valueOf(0.8), LocalDateTime.now(), null);
+        when(sessions.findOwned(9L, 20L)).thenReturn(session);
+        MemoryEpisode sourceEpisode = new MemoryEpisode();
+        sourceEpisode.setId(44L);
+        sourceEpisode.setEpisodeType("RECIPE_FEEDBACK");
+        sourceEpisode.setSummary("训练后鸡胸肉晚餐");
+        sourceEpisode.setPayloadJson("{\"scene\":\"POST_WORKOUT_DINNER\",\"mealType\":\"DINNER\"}");
+        sourceEpisode.setOccurredAt(LocalDateTime.now());
+        MemoryEpisodeService episodeService = mock(MemoryEpisodeService.class);
+        when(episodeService.findOwnedByIds(9L, List.of(44L))).thenReturn(List.of(sourceEpisode));
+        ObjectMapper objectMapper = new ObjectMapper();
+        ContextBuilder builder = new ContextBuilder(consolidation, sessions, properties, budgetManager,
+                objectMapper, new PersonalizedSkillService(objectMapper),
+                new MemoryConflictResolver(objectMapper), episodeService);
         MemoryQueryPlan plan = new MemoryQueryPlan("今晚吃什么", "DINNER_MEMORY_RECALL",
-                "今晚吃什么 晚餐", 20L, List.of(), List.of(), List.of(), List.of(),
+                "今晚吃什么 晚餐", 20L, List.of(), List.of(), List.of("POST_WORKOUT"), List.of("DINNER"),
                 null, null, List.of(), List.of(), null, null, 5);
         MemoryRetrievalResult retrieval = new MemoryRetrievalResult(plan, List.of(hit),
                 new MemoryRetrievalResult.RetrievalTrace(9L, 20L, LocalDateTime.now(),
@@ -50,11 +65,12 @@ class ContextBuilderTest {
                 List.of(new ContextBuilder.ExternalContext("RECIPE_TOOL", 5L, "可选鸡胸肉饭")), null);
 
         assertThat(result.sections()).containsKeys("SESSION", "PERSONAL_MEMORY", "STRUCTURED_PROFILE",
-                "PERSONALIZED_SKILL", "KNOWLEDGE_RAG", "TOOL_RESULTS");
+                "PERSONALIZED_SKILL", "KNOWLEDGE_RAG", "TOOL_RESULTS", "MEMORY_CONFLICTS");
         assertThat(result.usedEpisodeIds()).containsExactly(31L);
         assertThat(result.knowledgeIds()).containsExactly(91L);
         assertThat(result.promptContext()).contains("[PERSONAL_MEMORY]", "[PERSONALIZED_SKILL: RECOMMEND_RECIPE]",
-                "香菜", "鸡胸肉", "[KNOWLEDGE_RAG]");
+                "香菜", "鸡胸肉", "[KNOWLEDGE_RAG]", "[MEMORY_CONFLICTS]",
+                "本轮暂按“不喜欢”处理", "训练后晚餐");
         assertThat(result.estimatedTokens()).isLessThanOrEqualTo(result.tokenBudget());
     }
 
@@ -81,5 +97,183 @@ class ContextBuilderTest {
 
         assertThat(result.sections()).doesNotContainKey("STRUCTURED_PROFILE");
         assertThat(result.sections()).doesNotContainKey("PERSONALIZED_SKILL");
+    }
+
+    @Test
+    void focusedIngredientQuestionOnlyIncludesThatIngredientAndItsConflictingEvidence() {
+        MemoryConsolidationService consolidation = mock(MemoryConsolidationService.class);
+        MemorySessionService sessions = mock(MemorySessionService.class);
+        MemoryProfile profile = new MemoryProfile();
+        profile.setUserId(9L);
+        profile.setProfileJson("""
+                {
+                  "summary":{"memoryItemCount":6},
+                  "ingredientPreferences":{
+                    "liked":[{"id":1,"entity":"鸡胸肉","canonicalGroupId":"INGREDIENT_CHICKEN","preference":"LIKE"}],
+                    "disliked":[
+                      {"id":2,"entity":"鸡胸肉","canonicalGroupId":"INGREDIENT_CHICKEN","preference":"DISLIKE"},
+                      {"id":3,"entity":"芹菜","canonicalGroupId":"INGREDIENT_CELERY","preference":"DISLIKE"}
+                    ]
+                  },
+                  "recipePreferences":{"liked":[{"id":4,"entity":"西兰花鸡胸肉菜谱","preference":"LIKE"}]},
+                  "behaviorPatterns":{"other":[{"id":5,"entity":"简短解释","preference":"LIKE"}]},
+                  "skillPreferences":[{"id":6,"entity":"RESPONSE_STYLE","preference":"CONCISE"}],
+                  "dietGoals":[{"id":7,"entity":"MUSCLE_GAIN","preference":"PURSUE"}]
+                }
+                """);
+        when(consolidation.getOwnedProfile(9L)).thenReturn(profile);
+        ContextBuilder builder = new ContextBuilder(consolidation, sessions,
+                new MemoryRankingProperties(), new ContextBudgetManager(), new ObjectMapper());
+        String query = "我喜欢鸡胸肉吗？";
+        MemoryQueryPlan plan = new MemoryQueryPlan(query, "GENERAL_MEMORY_RECALL", query,
+                null, List.of(), List.of(), List.of(), List.of(), null, null,
+                List.of(), List.of(), null, null, 8);
+        MemoryRetrievalResult retrieval = new MemoryRetrievalResult(plan, List.of(),
+                new MemoryRetrievalResult.RetrievalTrace(9L, null, LocalDateTime.now(),
+                        1, 0, List.of(1L), List.of()));
+
+        ContextBuilder.ContextBuildResult result = builder.build(9L, null, retrieval,
+                List.of(), List.of(), null);
+
+        String focusedProfile = String.join("\n", result.sections().get("STRUCTURED_PROFILE"));
+        assertThat(focusedProfile).contains("鸡胸肉", "INGREDIENT_CHICKEN", "\"LIKE\"", "\"DISLIKE\"")
+                .doesNotContain("芹菜", "西兰花鸡胸肉菜谱", "简短解释", "RESPONSE_STYLE", "MUSCLE_GAIN");
+    }
+
+    @Test
+    void broadPreferenceOverviewStillIncludesAllProfileGroups() {
+        MemoryConsolidationService consolidation = mock(MemoryConsolidationService.class);
+        MemorySessionService sessions = mock(MemorySessionService.class);
+        MemoryProfile profile = new MemoryProfile();
+        profile.setUserId(9L);
+        profile.setProfileJson("""
+                {
+                  "ingredientPreferences":{"liked":[{"entity":"鸡胸肉"}]},
+                  "recipePreferences":{"liked":[{"entity":"番茄炒蛋"}]},
+                  "behaviorPatterns":{"other":[{"entity":"简洁回复"}]},
+                  "skillPreferences":[{"entity":"RESPONSE_STYLE"}],
+                  "dietGoals":[{"entity":"MUSCLE_GAIN"}],
+                  "otherMemories":[{"entity":"周末做饭"}]
+                }
+                """);
+        when(consolidation.getOwnedProfile(9L)).thenReturn(profile);
+        ContextBuilder builder = new ContextBuilder(consolidation, sessions,
+                new MemoryRankingProperties(), new ContextBudgetManager(), new ObjectMapper());
+        String query = "请告诉我我的偏好有哪些";
+        MemoryQueryPlan plan = new MemoryQueryPlan(query, "GENERAL_MEMORY_RECALL", query,
+                null, List.of(), List.of(), List.of(), List.of(), null, null,
+                List.of(), List.of(), null, null, 8);
+        MemoryRetrievalResult retrieval = new MemoryRetrievalResult(plan, List.of(),
+                new MemoryRetrievalResult.RetrievalTrace(9L, null, LocalDateTime.now(),
+                        0, 0, List.of(), List.of()));
+
+        ContextBuilder.ContextBuildResult result = builder.build(9L, null, retrieval,
+                List.of(), List.of(), null);
+
+        assertThat(result.sections().get("STRUCTURED_PROFILE").toString())
+                .contains("鸡胸肉", "番茄炒蛋", "简洁回复", "RESPONSE_STYLE", "MUSCLE_GAIN", "周末做饭");
+    }
+
+    @Test
+    void suppliesEpisodeTimesAndOrdersRetrievedEventsChronologically() {
+        MemoryConsolidationService consolidation = mock(MemoryConsolidationService.class);
+        MemorySessionService sessions = mock(MemorySessionService.class);
+        ContextBuilder builder = new ContextBuilder(consolidation, sessions,
+                new MemoryRankingProperties(), new ContextBudgetManager(), new ObjectMapper());
+        MemorySearchHit dislike = new MemorySearchHit("EPISODE", 42L, "RECIPE_FEEDBACK", "反馈",
+                "REACTION", "{\"action\":\"REACTION\",\"reaction\":\"DISLIKE\"}", null,
+                "TEMPORARY_CONTEXT", BigDecimal.valueOf(0.8), BigDecimal.valueOf(0.7),
+                LocalDateTime.parse("2026-09-24T16:38:42"), null);
+        MemorySearchHit cleared = new MemorySearchHit("EPISODE", 41L, "RECIPE_FEEDBACK", "反馈",
+                "REACTION_CLEARED", "{\"action\":\"REACTION_CLEARED\"}", null,
+                "TEMPORARY_CONTEXT", BigDecimal.valueOf(0.8), BigDecimal.valueOf(0.7),
+                LocalDateTime.parse("2026-09-24T16:38:36"), null);
+        MemorySearchHit review = new MemorySearchHit("EPISODE", 46L, "FINISHED_DISH_REVIEW", "成品评价",
+                "REVIEW", "{\"overallScore\":85}", null, "TEMPORARY_CONTEXT",
+                BigDecimal.valueOf(0.8), BigDecimal.valueOf(0.7),
+                LocalDateTime.parse("2026-09-24T17:18:20"), null);
+        MemoryQueryPlan plan = new MemoryQueryPlan("按时间回忆这道菜的反馈", "GENERAL_MEMORY_RECALL",
+                "按时间回忆", null, List.of(), List.of(), List.of(), List.of(), null, null,
+                List.of(), List.of(), null, null, 5);
+        MemoryRetrievalResult retrieval = new MemoryRetrievalResult(plan, List.of(dislike, cleared, review),
+                new MemoryRetrievalResult.RetrievalTrace(9L, null, LocalDateTime.now(),
+                        0, 3, List.of(), List.of(42L, 41L, 46L)));
+
+        ContextBuilder.ContextBuildResult result = builder.build(9L, null, retrieval,
+                List.of(), List.of(), 3000);
+
+        String personalMemory = String.join("\n", result.sections().get("PERSONAL_MEMORY"));
+        int clearedIndex = personalMemory.indexOf("事件发生时间：2026-09-24T16:38:36");
+        int dislikeIndex = personalMemory.indexOf("事件发生时间：2026-09-24T16:38:42");
+        int reviewIndex = personalMemory.indexOf("事件发生时间：2026-09-24T17:18:20");
+        assertThat(clearedIndex).isGreaterThanOrEqualTo(0).isLessThan(dislikeIndex);
+        assertThat(dislikeIndex).isLessThan(reviewIndex);
+    }
+
+    @Test
+    void addsTaskScopedRecipeConflictExplanationFromOwnedSourceEpisodes() {
+        MemoryConsolidationService consolidation = mock(MemoryConsolidationService.class);
+        MemorySessionService sessions = mock(MemorySessionService.class);
+        MemoryProfile profile = new MemoryProfile();
+        profile.setUserId(9L);
+        profile.setProfileJson("""
+                {"recipePreferences":{
+                  "liked":[{"id":42,"entity":"番茄黄瓜炒鸡丁","preference":"LIKE","scope":"USER",
+                    "temporalType":"LONG_TERM","lastSeenAt":"2026-09-24T17:18:20"}],
+                  "disliked":[{"id":41,"entity":"番茄黄瓜炒鸡丁","preference":"DISLIKE","scope":"USER",
+                    "temporalType":"LONG_TERM","lastSeenAt":"2026-09-24T16:38:42"}]}}
+                """);
+        MemoryItem liked = new MemoryItem();
+        liked.setId(42L);
+        liked.setSourceEpisodeIdsJson("[46]");
+        MemoryItem disliked = new MemoryItem();
+        disliked.setId(41L);
+        disliked.setSourceEpisodeIdsJson("[42]");
+        when(consolidation.getOwnedProfile(9L)).thenReturn(profile);
+        when(consolidation.listOwnedItems(9L, 500)).thenReturn(List.of(liked, disliked));
+        when(consolidation.listOwnedSourceCandidates(9L, List.of(liked, disliked))).thenReturn(List.of());
+
+        MemoryEpisode dislikeEvent = sourceEpisode(42L, "RECIPE_FEEDBACK",
+                "{\"action\":\"REACTION\",\"reaction\":\"DISLIKE\"}",
+                LocalDateTime.parse("2026-09-24T16:38:42"));
+        MemoryEpisode reviewEvent = sourceEpisode(46L, "FINISHED_DISH_REVIEW", "{\"overallScore\":85}",
+                LocalDateTime.parse("2026-09-24T17:18:20"));
+        MemoryEpisodeService episodeService = mock(MemoryEpisodeService.class);
+        when(episodeService.findOwnedByIds(9L, List.of(46L, 42L)))
+                .thenReturn(List.of(dislikeEvent, reviewEvent));
+        ObjectMapper objectMapper = new ObjectMapper();
+        ContextBuilder builder = new ContextBuilder(consolidation, sessions, new MemoryRankingProperties(),
+                new ContextBudgetManager(), objectMapper, new PersonalizedSkillService(objectMapper),
+                new MemoryConflictResolver(objectMapper), episodeService);
+        String query = "结合我对番茄黄瓜炒鸡丁的历史反馈，解释菜谱偏好";
+        MemoryQueryPlan plan = new MemoryQueryPlan(query, "GENERAL_MEMORY_RECALL", query, null,
+                List.of(), List.of(), List.of(), List.of(), null, null, List.of(), List.of(), null, null, 5);
+        MemoryRetrievalResult retrieval = new MemoryRetrievalResult(plan, List.of(),
+                new MemoryRetrievalResult.RetrievalTrace(9L, null, LocalDateTime.now(), 0, 0, List.of(), List.of()));
+
+        ContextBuilder.ContextBuildResult result = builder.build(9L, null, retrieval, List.of(), List.of(), 3000);
+
+        assertThat(result.sections()).containsKey("MEMORY_CONFLICTS");
+        assertThat(String.join("\n", result.sections().get("MEMORY_CONFLICTS")))
+                .contains("同一菜谱存在正反向记忆", "推荐反馈（不喜欢）", "实际制作后的成品评价（85/100分）",
+                        "2026-09-24 16:38:42", "2026-09-24 17:18:20");
+        assertThat(result.conflictResolutions()).hasSize(1);
+
+        ContextBuilder.ContextBuildResult truncated = builder.build(9L, null, retrieval,
+                List.of(), List.of(), 1);
+
+        assertThat(truncated.truncated()).isTrue();
+        assertThat(truncated.conflictResolutions()).isEmpty();
+    }
+
+    private MemoryEpisode sourceEpisode(Long id, String type, String payload, LocalDateTime occurredAt) {
+        MemoryEpisode episode = new MemoryEpisode();
+        episode.setId(id);
+        episode.setEpisodeType(type);
+        episode.setSummary("番茄黄瓜炒鸡丁历史行为");
+        episode.setPayloadJson(payload);
+        episode.setOccurredAt(occurredAt);
+        episode.setImportance(new BigDecimal("0.8000"));
+        return episode;
     }
 }
