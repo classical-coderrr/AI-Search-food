@@ -343,7 +343,7 @@ function formatChartLabel(value) {
 </script>
 
 <style scoped>
-.agent-observability-workspace { display: grid; align-content: start; gap: 12px; height: 100%; min-height: 0; padding-right: 2px; overflow: auto; }
+.agent-observability-workspace { display: grid; grid-auto-rows: max-content; align-content: start; gap: 12px; height: 100%; min-height: 0; padding-right: 2px; overflow: auto; }
 .observability-toolbar, .panel-header, .insight-strip, .config-list div, .rate-row dd { display: flex; align-items: center; }
 .observability-toolbar, .panel-header { justify-content: space-between; gap: 14px; }
 .toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
@@ -366,7 +366,10 @@ function formatChartLabel(value) {
 .chart-panel, .rate-panel, .config-panel { min-height: 0; padding: 14px; overflow: hidden; }
 .rate-panel { grid-column: 1 / -1; } .panel-header { min-height: 34px; } .panel-header h3 { color: var(--app-text); font-size: 16px; } .panel-header > span { color: var(--app-text-muted); font-size: 12px; }
 .chart-canvas { width: 100%; height: 228px; }
-.alert-panel, .history-panel { min-height: 0; padding: 14px; border: 1px solid var(--app-line); border-radius: 8px; background: var(--app-surface); box-shadow: inset 0 1px 0 var(--app-grid-line-strong); }
+.alert-panel, .history-panel { min-height: min-content; padding: 14px; border: 1px solid var(--app-line); border-radius: 8px; background: var(--app-surface); box-shadow: inset 0 1px 0 var(--app-grid-line-strong); }
+.alert-panel > .panel-header, .history-panel > .panel-header { align-items: flex-start; flex-wrap: wrap; }
+.alert-panel > .panel-header > div, .history-panel > .panel-header > div { min-width: 0; }
+.alert-panel > .panel-header > .el-tag, .history-panel > .panel-header > span { margin-left: auto; text-align: right; }
 .alert-list { display: grid; gap: 8px; margin-top: 12px; }
 .alert-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--app-line); border-radius: 6px; background: var(--app-surface-strong); }
 .alert-item.open { border-color: color-mix(in srgb, #c2410c 45%, var(--app-line)); }
@@ -387,6 +390,6 @@ function formatChartLabel(value) {
 .config-list { grid-template-columns: repeat(5, minmax(0, 1fr)); } .config-list div { justify-content: space-between; gap: 10px; min-height: 40px; padding: 8px 10px; border: 1px solid var(--app-line); border-radius: 6px; background: var(--app-surface-strong); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 980px) { .metric-grid, .config-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } .rate-panel { grid-column: auto; } }
-@media (max-width: 720px) { .observability-toolbar { align-items: flex-start; flex-direction: column; } .toolbar-actions { width: 100%; justify-content: flex-start; } .metric-grid, .observability-grid, .config-list { grid-template-columns: 1fr; } .rate-panel { grid-column: auto; } .rate-row { grid-template-columns: 1fr; gap: 6px; } .alert-item { grid-template-columns: auto minmax(0, 1fr); } .alert-meta { grid-column: 2; justify-items: start; grid-auto-flow: column; align-items: center; } .insight-strip { align-items: flex-start; flex-wrap: wrap; } .insight-strip time { width: 100%; margin-left: 24px; } }
+@media (max-width: 720px) { .observability-toolbar { align-items: flex-start; flex-direction: column; } .toolbar-actions { width: 100%; justify-content: flex-start; } .metric-grid, .observability-grid, .config-list { grid-template-columns: 1fr; } .rate-panel { grid-column: auto; } .rate-row { grid-template-columns: 1fr; gap: 6px; } .alert-item { grid-template-columns: auto minmax(0, 1fr); } .alert-meta { grid-column: 2; justify-items: start; grid-auto-flow: column; align-items: center; } .alert-panel > .panel-header > .el-tag, .history-panel > .panel-header > span { margin-left: 0; text-align: left; } .insight-strip { align-items: flex-start; flex-wrap: wrap; } .insight-strip time { width: 100%; margin-left: 24px; } }
 @media (prefers-reduced-motion: reduce) { .rate-track span { transition: none; } }
 </style>
