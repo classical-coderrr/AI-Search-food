@@ -430,6 +430,7 @@ function formatDateTime(value) {
 <style scoped>
 .operations-workspace {
   display: grid;
+  grid-auto-rows: max-content;
   align-content: start;
   gap: 12px;
   height: 100%;
