@@ -1522,8 +1522,8 @@ public class AgentService {
                 : recipeBySearchLogId(userId, conversationId, targetRecipeSearchLogId);
         if (recipe == null) {
             return new ToolExecution(
-                    Map.of("status", "no_recipe", "message", "当前会话还没有可保存的菜谱"),
-                    "当前会话没有可保存的菜谱"
+                    Map.of("status", "no_recipe", "message", "当前这轮对话没有可关联的菜谱卡片，请先生成菜谱后再保存"),
+                    "当前这轮对话没有可关联的菜谱卡片，请先生成菜谱后再保存"
             );
         }
         String idempotencyKey = recipeSaveIdempotencyKey(recipe);
@@ -1770,11 +1770,41 @@ public class AgentService {
     }
 
     private RecipeGenerateResponse latestRecipe(Long userId, Long conversationId) {
-        List<AgentMessage> messages = messageMapper.findRecentByBlockType(userId, conversationId, "recipe-card", 1);
-        if (messages.isEmpty()) {
+        List<AgentMessage> messages = messageMapper.findRecentMessages(userId, conversationId, 50);
+        return readRecipeCard(latestRecipeCardForCurrentTurn(messages));
+    }
+
+    static AgentMessage latestRecipeCardForCurrentTurn(List<AgentMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
             return null;
         }
-        return readRecipeCard(messages.get(0));
+
+        AgentMessage previousUserMessage = null;
+        AgentMessage latestUserMessage = null;
+        for (AgentMessage message : messages) {
+            if (message != null && ROLE_USER.equals(message.getRole())) {
+                previousUserMessage = latestUserMessage;
+                latestUserMessage = message;
+            }
+        }
+        AgentMessage requestBoundary = previousUserMessage == null ? latestUserMessage : previousUserMessage;
+        if (requestBoundary == null || requestBoundary.getId() == null) {
+            return null;
+        }
+
+        AgentMessage latestRecipeCard = null;
+        for (AgentMessage message : messages) {
+            if (message == null
+                    || !"recipe-card".equals(message.getBlockType())
+                    || message.getId() == null
+                    || message.getId() <= requestBoundary.getId()) {
+                continue;
+            }
+            if (latestRecipeCard == null || message.getId() > latestRecipeCard.getId()) {
+                latestRecipeCard = message;
+            }
+        }
+        return latestRecipeCard;
     }
 
     private RecipeGenerateResponse recipeBySearchLogId(

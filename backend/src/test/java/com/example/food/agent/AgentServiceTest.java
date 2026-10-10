@@ -137,6 +137,44 @@ class AgentServiceTest {
     }
 
     @Test
+    void implicitSaveSelectsRecipeGeneratedAfterTheMostRecentRecipeRequest() {
+        AgentMessage oldRequest = agentMessage(1L, "USER", "text", "推荐一道茄子菜");
+        AgentMessage eggplantCard = agentMessage(2L, "ASSISTANT", "recipe-card", "{\"title\":\"红烧茄子\"}");
+        AgentMessage oldAnswer = agentMessage(3L, "ASSISTANT", "text", "推荐红烧茄子");
+        AgentMessage chickenRequest = agentMessage(4L, "USER", "text", "推荐一道鸡翅菜");
+        AgentMessage chickenCard = agentMessage(5L, "ASSISTANT", "recipe-card", "{\"title\":\"蜜汁烤鸡翅\"}");
+        AgentMessage chickenAnswer = agentMessage(6L, "ASSISTANT", "text", "推荐蜜汁烤鸡翅");
+        AgentMessage saveRequest = agentMessage(7L, "USER", "text", "收藏这道菜");
+
+        assertThat(AgentService.latestRecipeCardForCurrentTurn(List.of(
+                oldRequest, eggplantCard, oldAnswer, chickenRequest, chickenCard, chickenAnswer, saveRequest
+        ))).isSameAs(chickenCard);
+    }
+
+    @Test
+    void implicitSaveDoesNotFallBackToARecipeCardOlderThanTheLatestRecommendationRequest() {
+        AgentMessage oldRequest = agentMessage(1L, "USER", "text", "推荐一道茄子菜");
+        AgentMessage eggplantCard = agentMessage(2L, "ASSISTANT", "recipe-card", "{\"title\":\"红烧茄子\"}");
+        AgentMessage oldAnswer = agentMessage(3L, "ASSISTANT", "text", "推荐红烧茄子");
+        AgentMessage chickenRequest = agentMessage(4L, "USER", "text", "推荐一道鸡翅菜");
+        AgentMessage chickenAnswer = agentMessage(5L, "ASSISTANT", "text", "推荐蜜汁烤鸡翅");
+        AgentMessage saveRequest = agentMessage(6L, "USER", "text", "收藏这道菜");
+
+        assertThat(AgentService.latestRecipeCardForCurrentTurn(List.of(
+                oldRequest, eggplantCard, oldAnswer, chickenRequest, chickenAnswer, saveRequest
+        ))).isNull();
+    }
+
+    @Test
+    void implicitSaveCanUseARecipeGeneratedEarlierInTheSameTurn() {
+        AgentMessage generateAndSaveRequest = agentMessage(1L, "USER", "text", "推荐并收藏一道鸡翅菜");
+        AgentMessage chickenCard = agentMessage(2L, "ASSISTANT", "recipe-card", "{\"title\":\"蜜汁烤鸡翅\"}");
+
+        assertThat(AgentService.latestRecipeCardForCurrentTurn(List.of(generateAndSaveRequest, chickenCard)))
+                .isSameAs(chickenCard);
+    }
+
+    @Test
     void persistsModelIntentResolutionAsTheFirstAgentStep() throws Exception {
         AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
         AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
@@ -506,5 +544,14 @@ class AgentServiceTest {
             super.appendStep(step);
             steps.add(step);
         }
+    }
+
+    private static AgentMessage agentMessage(Long id, String role, String blockType, String content) {
+        AgentMessage message = new AgentMessage();
+        message.setId(id);
+        message.setRole(role);
+        message.setBlockType(blockType);
+        message.setContent(content);
+        return message;
     }
 }
