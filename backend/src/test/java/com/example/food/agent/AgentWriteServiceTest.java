@@ -102,6 +102,22 @@ class AgentWriteServiceTest {
     }
 
     @Test
+    void duplicateDishAtConfirmationReturnsExistingCardAndExplicitNotice() throws Exception {
+        AgentConfirmation confirmation = confirmation("PENDING", objectMapper.writeValueAsString(recipe()));
+        RecipeHistoryDetailResponse detail = new RecipeHistoryDetailResponse(
+                88L, 41L, LocalDateTime.now(), "鸡蛋", "dinner", "balanced", recipe()).asAlreadySaved();
+        when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);
+        when(confirmationMapper.claim(7L, 9L)).thenReturn(1);
+        when(confirmationMapper.markConfirmed(7L, 9L, SavedRecipeService.ALREADY_SAVED_MESSAGE)).thenReturn(1);
+        when(savedRecipeService.save(any(SaveRecipeRequest.class), eq(principal), isNull(), eq("key-9")))
+                .thenReturn(detail);
+        var result = service.saveRecipe(principal, 9L, "key-9");
+        assertThat(result.detail()).isEqualTo(detail);
+        assertThat(result.message()).isEqualTo("该菜谱已经保存过，仅为您展示卡片信息");
+        verify(operationService).complete(7L, "key-9", SavedRecipeService.ALREADY_SAVED_MESSAGE, detail);
+    }
+
+    @Test
     void returnsAlreadySavedWithoutWritingAgain() throws Exception {
         AgentConfirmation confirmation = confirmation("CONFIRMED", objectMapper.writeValueAsString(recipe()));
         when(confirmationMapper.findOwned(7L, 9L)).thenReturn(confirmation);

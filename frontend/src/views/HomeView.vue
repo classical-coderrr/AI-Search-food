@@ -2081,7 +2081,14 @@ async function saveCurrentRecipe() {
       }
     }
     window.sessionStorage.removeItem(PENDING_RECIPE_KEY)
-    ElMessage.success('菜谱已保存到我的菜谱')
+    if (response.data.data?.alreadySaved) {
+      const savedDisplay = { ...recipe.value, ...response.data.data.recipe }
+      replaceRecommendationRecipe(activeRecipeId.value, savedDisplay)
+      recipe.value = savedDisplay
+      ElMessage.info('该菜谱已经保存过，仅为您展示卡片信息')
+    } else {
+      ElMessage.success('菜谱已保存到我的菜谱')
+    }
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {

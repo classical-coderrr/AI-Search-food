@@ -156,7 +156,8 @@ public class AgentWriteService {
             if (ACTION_SAVE_RECIPE.equals(confirmation.getActionType())) {
                 RecipeHistoryDetailResponse detail = saveRecipePayload(
                         principal, confirmation.getPayloadJson(), normalizedIdempotencyKey);
-                result = ConfirmationResult.completed(detail, "菜谱已保存到我的菜谱");
+                result = ConfirmationResult.completed(detail, detail.alreadySaved()
+                        ? SavedRecipeService.ALREADY_SAVED_MESSAGE : "菜谱已保存到我的菜谱");
             } else if (Set.of("MEMORY_PREFERENCE_DECLARATION", "MEMORY_PREFERENCE_UPDATE")
                     .contains(confirmation.getActionType())) {
                 if (memoryToolService == null) {

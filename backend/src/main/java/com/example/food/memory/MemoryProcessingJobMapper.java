@@ -98,7 +98,7 @@ public interface MemoryProcessingJobMapper extends BaseMapper<MemoryProcessingJo
             WHERE e.deleted_at IS NULL
               AND e.status = 'RAW'
               AND e.episode_type IN (
-                'RECIPE_SAVED', 'RECIPE_UNSAVED', 'RECIPE_FEEDBACK', 'FINISHED_DISH_REVIEW',
+                'RECIPE_SAVED', 'RECIPE_UNSAVED', 'RECIPE_FEEDBACK', 'FINISHED_DISH_REVIEW', 'USER_CHAT',
                 'USER_PREFERENCE_DECLARED', 'USER_PREFERENCE_CONFIRMED'
               )
               AND j.id IS NULL

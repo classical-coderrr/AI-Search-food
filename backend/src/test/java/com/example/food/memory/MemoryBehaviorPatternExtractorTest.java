@@ -142,9 +142,9 @@ class MemoryBehaviorPatternExtractorTest {
                 "{\"recipeId\":\"recipe-1\"}");
         MemoryEpisode savedAgain = episode(3L, USER_ID, 0, "RECIPE_SAVED", "鸡胸肉沙拉", "recipe-1",
                 "{\"recipeId\":\"recipe-1\",\"title\":\"鸡胸肉沙拉\",\"ingredients\":[\"鸡胸肉\"]}");
-        MemoryEpisode anotherSave = episode(4L, USER_ID, 0, "RECIPE_SAVED", "鸡胸肉意面", "recipe-2",
+        MemoryEpisode anotherSave = episode(4L, USER_ID, -2, "RECIPE_SAVED", "鸡胸肉意面", "recipe-2",
                 "{\"recipeId\":\"recipe-2\",\"title\":\"鸡胸肉意面\",\"ingredients\":[\"鸡胸肉\"]}");
-        MemoryEpisode current = episode(5L, USER_ID, 0, "RECIPE_FEEDBACK", "鸡胸肉饭", "feedback-5",
+        MemoryEpisode current = episode(5L, USER_ID, -1, "RECIPE_FEEDBACK", "鸡胸肉饭", "feedback-5",
                 "{\"action\":\"COOKED\",\"recipeTitle\":\"鸡胸肉饭\",\"ingredients\":[\"鸡胸肉\"]}");
         normalizeChicken();
 
@@ -184,6 +184,49 @@ class MemoryBehaviorPatternExtractorTest {
                 .thenReturn(chickenTag("鸡胸"));
         when(tagNormalizationService.normalize("INGREDIENT_PREFERENCE", "chicken breast"))
                 .thenReturn(chickenTag("chicken breast"));
+    }
+
+    @Test
+    void manySameDayActionsNeverBecomeThreeIndependentDates() {
+        normalizeChicken();
+        List<MemoryEpisode> actions = java.util.stream.IntStream.rangeClosed(1, 6).mapToObj(index ->
+                episode((long) index, USER_ID, 0, "RECIPE_SAVED", "鸡胸肉菜" + index, "recipe-" + index,
+                        "{\"recipeId\":\"recipe-" + index + "\",\"title\":\"鸡胸肉菜" + index + "\",\"ingredients\":[\"鸡胸肉\"]}"))
+                .toList();
+        assertThat(extractor.extractFromHistory(actions.get(5), actions)).isEmpty();
+    }
+
+    @Test
+    void repeatedChatRequestsAcrossDaysCanLearnWithoutAnySavedRecipe() {
+        normalizeChicken();
+        List<MemoryEpisode> requests = java.util.stream.IntStream.rangeClosed(1, 6).mapToObj(index -> {
+            String dish = index % 2 == 0 ? "鸡胸肉意面" : "鸡胸肉沙拉";
+            return episode((long) index, USER_ID, index - 6, "USER_CHAT", "主动想吃", "chat-" + index,
+                    "{\"chatFacts\":[{\"kind\":\"FOOD_REQUEST\",\"entity\":\"" + dish
+                            + "\",\"ingredients\":[\"鸡胸肉\"],\"evidenceText\":\"我想吃" + dish + "\"}]}");
+        }).toList();
+        assertThat(extractor.extractFromHistory(requests.get(5), requests)).hasSize(6)
+                .allSatisfy(support -> {
+                    assertThat(support.draft().sourceType()).isEqualTo("IMPLICIT_BEHAVIOR");
+                    assertThat(support.draft().temporalType()).isEqualTo("RECENT");
+                    assertThat(support.draft().evidence()).containsEntry("action", "REQUEST");
+                });
+    }
+
+    @Test
+    void differentActionsOnOneDishAndDayCountOnlyTheStrongest() {
+        normalizeChicken();
+        List<MemoryEpisode> actions = new java.util.ArrayList<>();
+        for (int day = -2; day <= 0; day++) {
+            String dish = day == -1 ? "鸡胸肉意面" : "鸡胸肉沙拉";
+            long id = (day + 2) * 3L;
+            actions.add(episode(id + 1, USER_ID, day, "RECIPE_SAVED", dish, "saved-" + day,
+                    "{\"title\":\"" + dish + "\",\"ingredients\":[\"鸡胸肉\"]}"));
+            actions.add(episode(id + 2, USER_ID, day, "RECIPE_FEEDBACK", dish, "like-" + day,
+                    "{\"action\":\"REACTION\",\"reaction\":\"LIKE\",\"recipeTitle\":\"" + dish + "\",\"ingredients\":[\"鸡胸肉\"]}"));
+        }
+        assertThat(extractor.extractFromHistory(actions.get(5), actions)).hasSize(3)
+                .extracting(support -> support.draft().evidence().get("action")).containsOnly("LIKE");
     }
 
     private TagNormalizationResult chickenTag(String raw) {

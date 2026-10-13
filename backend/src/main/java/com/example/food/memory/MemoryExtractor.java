@@ -60,6 +60,7 @@ public class MemoryExtractor {
 
         String episodeType = upper(episode.getEpisodeType());
         return switch (episodeType) {
+            case "USER_CHAT" -> extractChat(episode, payload);
             case "RECIPE_SAVED" -> extractSaved(episode, payload);
             case "RECIPE_FEEDBACK" -> extractFeedback(episode, payload);
             case "FINISHED_DISH_REVIEW" -> extractFinishedDishReview(episode, payload);
@@ -67,6 +68,19 @@ public class MemoryExtractor {
                     extractExplicitPreference(episode, payload);
             default -> List.of();
         };
+    }
+
+    private List<MemoryCandidateDraft> extractChat(MemoryEpisode episode, JsonNode payload) {
+        List<MemoryCandidateDraft> drafts = new ArrayList<>();
+        for (JsonNode fact : payload.path("chatFacts")) {
+            if (!"PREFERENCE".equals(fact.path("kind").asText())) continue;
+            Map<String, Object> provenance = evidence(episode, "EXPLICIT_CHAT", fact.path("entity").asText());
+            provenance.put("correction", fact.path("correction").asBoolean());
+            drafts.add(draft(fact.path("candidateType").asText(), fact.path("entity").asText(),
+                    fact.path("preference").asText(), new BigDecimal("0.9000"), new BigDecimal("0.8500"),
+                    "EXPLICIT", "LONG_TERM", fact.path("evidenceText").asText(), true, provenance));
+        }
+        return drafts;
     }
 
     private List<MemoryCandidateDraft> extractSaved(MemoryEpisode episode, JsonNode payload) {

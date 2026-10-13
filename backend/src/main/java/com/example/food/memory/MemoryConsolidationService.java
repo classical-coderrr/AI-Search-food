@@ -50,6 +50,14 @@ public class MemoryConsolidationService {
     private final MemoryPersonalizationService personalizationService;
     private final MemoryFeedbackReactionReconciler feedbackReactionReconciler;
     private final PersonalizedSkillProjectionService skillProjectionService;
+    private MemoryLearningGuard learningGuard;
+    private MemoryEvidencePolicy evidencePolicy;
+
+    @Autowired
+    void setEvidenceRuntime(MemoryLearningGuard guard, MemoryEvidencePolicy policy) {
+        this.learningGuard = guard;
+        this.evidencePolicy = policy;
+    }
 
     public MemoryConsolidationService(
             MemoryCandidateMapper candidateMapper,
@@ -142,12 +150,16 @@ public class MemoryConsolidationService {
     @Transactional
     public ConsolidationResult consolidate(Long userId) {
         requireUser(userId);
+        if (learningGuard != null) learningGuard.lock(userId);
         if (personalizationService != null && !personalizationService.isEnabled(userId)) {
             return new ConsolidationResult(0, 0, null, null);
         }
         if (feedbackReactionReconciler != null) {
             feedbackReactionReconciler.reconcile(userId);
         }
+        MemoryProfile previousProfile = profileMapper.findOwned(userId);
+        boolean legacyEvidence = previousProfile != null && evidencePolicy != null
+                && !hasEvidencePolicy(previousProfile.getProfileJson());
         List<MemoryCandidate> candidates = candidateMapper.listForConsolidation(userId, MAX_CANDIDATES);
         Map<String, List<MemoryCandidate>> groups = candidates.stream()
                 .collect(Collectors.groupingBy(
@@ -165,6 +177,13 @@ public class MemoryConsolidationService {
         }
 
         changedItems += reconcileSupersededCandidates(userId);
+        if (legacyEvidence) {
+            for (MemoryItem item : itemMapper.listActive(userId, MAX_ITEMS)) {
+                if (Boolean.TRUE.equals(item.getUserModified())) continue;
+                List<MemoryCandidate> active = candidateMapper.listActiveForItem(userId, item.getId());
+                if (!active.isEmpty()) resetFromCandidates(userId, item, active);
+            }
+        }
 
         MemoryProfile profile = rebuildProfile(userId);
         if (skillProjectionService != null) skillProjectionService.rebuild(userId, profile);
@@ -295,10 +314,11 @@ public class MemoryConsolidationService {
         item.setPreference(first.getPreference());
         item.setScope(first.getScope());
         item.setTemporalType(first.getTemporalType());
-        item.setStrength(weightedAverageStrength(candidates));
-        item.setConfidence(combinedConfidence(ZERO, candidates));
-        item.setEvidenceCount(sumEvidence(candidates));
-        item.setOccurrenceCount(candidates.size());
+        List<MemoryCandidate> effective = effectiveCandidates(userId, candidates);
+        item.setStrength(weightedAverageStrength(effective));
+        item.setConfidence(combinedConfidence(ZERO, effective));
+        item.setEvidenceCount(sumEvidence(effective));
+        item.setOccurrenceCount(effective.size());
         item.setSourceCandidateIdsJson(writeIds(candidates.stream().map(MemoryCandidate::getId).toList()));
         item.setSourceEpisodeIdsJson(writeIds(candidates.stream().map(MemoryCandidate::getEpisodeId).toList()));
         item.setSourceCount(distinctIds(candidates.stream().map(MemoryCandidate::getEpisodeId).toList()).size());
@@ -312,6 +332,13 @@ public class MemoryConsolidationService {
     }
 
     private void mergeIntoExisting(Long userId, MemoryItem item, List<MemoryCandidate> candidates) {
+        if (evidencePolicy != null && !Boolean.TRUE.equals(item.getUserModified())) {
+            Map<Long, MemoryCandidate> all = new LinkedHashMap<>();
+            candidateMapper.listActiveForItem(userId, item.getId()).forEach(candidate -> all.put(candidate.getId(), candidate));
+            candidates.forEach(candidate -> all.put(candidate.getId(), candidate));
+            resetFromCandidates(userId, item, new ArrayList<>(all.values()));
+            return;
+        }
         BigDecimal oldConfidence = safe(item.getConfidence());
         boolean userModified = Boolean.TRUE.equals(item.getUserModified());
         BigDecimal newConfidence = userModified ? oldConfidence : combinedConfidence(oldConfidence, candidates);
@@ -362,10 +389,11 @@ public class MemoryConsolidationService {
 
     private void resetFromCandidates(Long userId, MemoryItem item, List<MemoryCandidate> candidates) {
         if (candidates.isEmpty()) return;
-        item.setStrength(weightedAverageStrength(candidates));
-        item.setConfidence(combinedConfidence(ZERO, candidates));
-        item.setEvidenceCount(sumEvidence(candidates));
-        item.setOccurrenceCount(candidates.size());
+        List<MemoryCandidate> effective = effectiveCandidates(userId, candidates);
+        item.setStrength(weightedAverageStrength(effective));
+        item.setConfidence(combinedConfidence(ZERO, effective));
+        item.setEvidenceCount(sumEvidence(effective));
+        item.setOccurrenceCount(effective.size());
         List<Long> candidateIds = candidates.stream().map(MemoryCandidate::getId).toList();
         List<Long> episodeIds = distinctIds(candidates.stream().map(MemoryCandidate::getEpisodeId).toList());
         item.setSourceCandidateIdsJson(writeIds(candidateIds));
@@ -385,6 +413,7 @@ public class MemoryConsolidationService {
         List<MemoryItem> items = itemMapper.listActive(userId, MAX_ITEMS);
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("schemaVersion", PROFILE_VERSION);
+        document.put("evidencePolicyVersion", 1);
         document.put("updatedAt", LocalDateTime.now(clock));
         document.put("summary", Map.of(
                 "memoryItemCount", items.size(),
@@ -506,7 +535,24 @@ public class MemoryConsolidationService {
                             .multiply(new BigDecimal("0.20"))));
             remaining = remaining.multiply(ONE.subtract(clamp(contribution)));
         }
-        return scale(ONE.subtract(remaining));
+        BigDecimal combined = scale(ONE.subtract(remaining));
+        if (!candidates.isEmpty() && candidates.stream()
+                .allMatch(candidate -> "IMPLICIT_BEHAVIOR".equals(candidate.getSourceType()))) {
+            combined = combined.min(new BigDecimal("0.7000"));
+        }
+        return combined;
+    }
+
+    private List<MemoryCandidate> effectiveCandidates(Long userId, List<MemoryCandidate> candidates) {
+        return evidencePolicy == null ? candidates : evidencePolicy.effective(userId, candidates);
+    }
+
+    private boolean hasEvidencePolicy(String profileJson) {
+        try {
+            return objectMapper.readTree(profileJson).path("evidencePolicyVersion").asInt() == 1;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private BigDecimal sourceWeight(String sourceType) {

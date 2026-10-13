@@ -27,6 +27,7 @@ import java.util.Map;
 
 @Service
 public class SavedRecipeService {
+    public static final String ALREADY_SAVED_MESSAGE = "该菜谱已经保存过，仅为您展示卡片信息";
 
     private final SearchLogMapper searchLogMapper;
     private final RecipeRecordMapper recipeRecordMapper;
@@ -34,6 +35,12 @@ public class SavedRecipeService {
     private final RecipeStepMapper recipeStepMapper;
     private final ObjectMapper objectMapper;
     private final MemoryBehaviorEpisodeRecorder memoryEpisodeRecorder;
+    private SavedRecipeIdentityService identityService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setIdentityService(SavedRecipeIdentityService identityService) {
+        this.identityService = identityService;
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     public SavedRecipeService(
@@ -80,12 +87,14 @@ public class SavedRecipeService {
             String agentIdempotencyKey
     ) {
         requireUser(principal);
+        // Lock before consistent reads: MySQL must see the result committed by a concurrent save.
+        if (identityService != null) identityService.lockUser(principal.id());
         String normalizedIdempotencyKey = normalizeAgentIdempotencyKey(agentIdempotencyKey);
         if (normalizedIdempotencyKey != null) {
             RecipeRecord existing = recipeRecordMapper.findByUserIdAndAgentIdempotencyKey(
                     principal.id(), normalizedIdempotencyKey);
             if (existing != null) {
-                return detail(principal.id(), existing.getId());
+                return existingDetail(principal.id(), existing.getId());
             }
         }
         SearchLog searchLog = searchLogMapper.selectById(request.searchLogId());
@@ -101,16 +110,24 @@ public class SavedRecipeService {
         RecipeRecord existingForSearch = recipeRecordMapper.findByUserIdAndSearchLogId(
                 principal.id(), request.searchLogId());
         if (existingForSearch != null) {
-            return detail(principal.id(), existingForSearch.getId());
+            return existingDetail(principal.id(), existingForSearch.getId());
         }
 
         RecipeGenerateResponse recipe = recipeFromRequest(request);
+        String fingerprint = RecipeContentIdentity.fingerprint(request.title(), request.ingredients(), request.steps());
+        if (identityService != null) {
+            Long duplicate = identityService.reserve(principal.id(), request.searchLogId(), fingerprint,
+                    RecipeContentIdentity.groupKey(request.title()));
+            if (duplicate != null) return existingDetail(principal.id(), duplicate);
+        }
         RecipeGenerateResponse.NutritionEstimate nutrition = validNutrition(request.nutritionEstimate());
         RecipeRecord record = new RecipeRecord();
         record.setUserId(principal.id());
         record.setAgentIdempotencyKey(normalizedIdempotencyKey);
         record.setSearchLogId(request.searchLogId());
         record.setTitle(request.title().trim());
+        record.setDishGroupKey(RecipeContentIdentity.groupKey(request.title()));
+        record.setContentFingerprint(fingerprint);
         if (nutrition != null) {
             record.setServings(nutrition.servings());
             record.setCaloriesKcal(nutrition.caloriesKcal());
@@ -137,17 +154,40 @@ public class SavedRecipeService {
             if (existing == null) {
                 throw duplicate;
             }
-            return detail(principal.id(), existing.getId());
+            return existingDetail(principal.id(), existing.getId());
         }
 
         insertIngredients(record.getId(), request.ingredients());
         insertSteps(record.getId(), request.steps());
+        if (identityService != null) {
+            identityService.bind(principal.id(), request.searchLogId(), fingerprint, record.getId());
+            identityService.bindDish(principal.id(), request.searchLogId(), record.getDishGroupKey(), record.getId());
+        }
         recordRecipeSaved(record, searchLog, recipe);
         return detailResponse(record, searchLog, recipe);
     }
 
     public List<RecipeHistorySummaryResponse> list(Long userId, int limit, int offset) {
         return list(userId, null, null, null, limit, offset);
+    }
+
+    @Transactional
+    public RecipeHistoryDetailResponse findSavedByTitle(Long userId, String title) {
+        if (identityService == null || !StringUtils.hasText(title)) return null;
+        identityService.indexLegacyUser(userId);
+        Long existing = identityService.findByDish(userId, RecipeContentIdentity.groupKey(title));
+        return existing == null ? null : existingDetail(userId, existing);
+    }
+
+    private RecipeHistoryDetailResponse existingDetail(Long userId, Long recipeId) {
+        if (identityService == null) return detail(userId, recipeId).asAlreadySaved();
+        // The Agent confirmation may have established a MySQL snapshot before a concurrent save committed.
+        RecipeRecord record = recipeRecordMapper.findOwnedForUpdate(userId, recipeId);
+        if (record == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "菜谱不存在");
+        RecipeGenerateResponse recipe = recipeFromStoredResponse(record);
+        if (recipe == null) return detail(userId, recipeId).asAlreadySaved();
+        SearchLog search = record.getSearchLogId() == null ? null : searchLogMapper.selectById(record.getSearchLogId());
+        return detailResponse(record, search, recipe).asAlreadySaved();
     }
 
     public List<RecipeHistorySummaryResponse> list(
@@ -172,6 +212,7 @@ public class SavedRecipeService {
 
     @Transactional
     public void delete(Long userId, Long recipeId) {
+        if (identityService != null) identityService.lockUser(userId);
         RecipeRecord existing = recipeRecordMapper.selectById(recipeId);
         if (recipeRecordMapper.deleteOwnedRecipe(recipeId, userId) == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "菜谱不存在");

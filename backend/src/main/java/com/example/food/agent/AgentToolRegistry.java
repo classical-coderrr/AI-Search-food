@@ -69,6 +69,15 @@ public class AgentToolRegistry {
             boolean hasImage,
             boolean includeMemoryTools
     ) {
+        return functionDefinitions(message, hasImage, includeMemoryTools, true);
+    }
+
+    public List<Map<String, Object>> functionDefinitions(
+            String message,
+            boolean hasImage,
+            boolean includeMemoryTools,
+            boolean includeFastPathFallback
+    ) {
         String text = message == null ? "" : message.toLowerCase(Locale.ROOT);
         Set<Tool> selected = EnumSet.noneOf(Tool.class);
 
@@ -142,7 +151,7 @@ public class AgentToolRegistry {
             selected.add(Tool.FINISHED_DISH_MANAGE);
         }
 
-        if (selected.isEmpty()) {
+        if (selected.isEmpty() && includeFastPathFallback) {
             // Let the main Agent model answer ordinary language and choose a
             // read-only tool in one request. This avoids a separate semantic
             // routing request for messages such as “我想吃点清淡的”.

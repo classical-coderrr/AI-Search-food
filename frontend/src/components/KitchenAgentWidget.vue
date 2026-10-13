@@ -717,7 +717,7 @@ function resetPendingRecipeSave() {
 }
 
 function isSaveSuccessMessage(message) {
-  return typeof message === 'string' && /已保存|保存成功|不会重复保存/.test(message)
+  return typeof message === 'string' && /已保存|已经保存|保存成功|不会重复保存/.test(message)
 }
 
 function isSavedRecipeSource(source) {

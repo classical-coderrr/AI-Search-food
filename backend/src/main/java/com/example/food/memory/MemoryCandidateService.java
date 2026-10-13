@@ -39,6 +39,14 @@ public class MemoryCandidateService {
     private final MemoryPersonalizationService personalizationService;
     private final MemoryBehaviorPatternExtractor behaviorPatternExtractor;
     private final MemoryUnsavedBehaviorReconciler unsavedBehaviorReconciler;
+    private MemoryLearningGuard learningGuard;
+    private MemoryChatLearningService chatLearningService;
+
+    @Autowired
+    void setLearningRuntime(MemoryLearningGuard guard, MemoryChatLearningService chatLearningService) {
+        this.learningGuard = guard;
+        this.chatLearningService = chatLearningService;
+    }
 
     public MemoryCandidateService(
             MemoryCandidateMapper candidateMapper,
@@ -182,14 +190,24 @@ public class MemoryCandidateService {
         requireUser(userId);
         String model = requireText(extractionModel, "提取模型不能为空", 128);
         String prompt = requireText(promptVersion, "提取提示词版本不能为空", 64);
+        if (learningGuard != null) learningGuard.lock(userId);
         if (personalizationService != null && !personalizationService.isEnabled(userId)) {
             return new ExtractionResult(List.of(), 0, 0);
         }
         MemoryEpisode episode = episodeService.findOwned(userId, episodeId);
+        boolean extractEpisode = true;
+        if ("USER_CHAT".equals(episode.getEpisodeType()) && chatLearningService != null) {
+            try {
+                extractEpisode = chatLearningService.isCurrent(userId, objectMapper.readTree(episode.getPayloadJson()));
+            } catch (JsonProcessingException failure) {
+                throw new IllegalArgumentException("聊天记忆原始数据无效", failure);
+            }
+        }
         if (unsavedBehaviorReconciler != null) {
             unsavedBehaviorReconciler.reconcile(userId, episode);
         }
-        List<MemoryCandidateDraft> episodeDrafts = extractor.extract(episode);
+        // Stale chat cannot create new facts; previously learned behavior still needs expiry/retraction.
+        List<MemoryCandidateDraft> episodeDrafts = extractEpisode ? extractor.extract(episode) : List.of();
         if (!prepareRecipeFeedbackReaction(userId, episode, episodeDrafts)) {
             return new ExtractionResult(List.of(), 0, 0);
         }
@@ -203,13 +221,23 @@ public class MemoryCandidateService {
         }
 
         int duplicateCount = 0;
+        java.util.Set<String> activePatternKeys = new java.util.HashSet<>();
         List<MemoryCandidate> candidates = new java.util.ArrayList<>();
         for (EpisodeDraft supportedDraft : drafts) {
             MemoryEpisode candidateEpisode = supportedDraft.episode();
             MemoryCandidateDraft draft = supportedDraft.draft();
             TagNormalizationResult normalization = tagNormalizationService.normalize(
                     draft.candidateType(), draft.entity());
+            boolean pattern = "INGREDIENT_PREFERENCE".equals(draft.candidateType())
+                    && "IMPLICIT_BEHAVIOR".equals(draft.sourceType());
+            if (pattern && candidateMapper.listForEntity(userId, draft.candidateType(),
+                    normalization.canonicalName(), normalization.canonicalGroupId()).stream()
+                    .anyMatch(previous -> java.util.Set.of("EXPLICIT", "USER_CONFIRMED", "EXPLICIT_FEEDBACK")
+                            .contains(previous.getSourceType()) && !draft.preference().equals(previous.getPreference()))) {
+                continue;
+            }
             String extractionKey = extractionKey(candidateEpisode, draft, normalization, prompt);
+            if (pattern) activePatternKeys.add(extractionKey);
             MemoryCandidate candidate = candidateMapper.findOwnedByExtractionKey(userId, extractionKey);
             boolean duplicate = candidate != null;
             if (!duplicate) {
@@ -226,9 +254,30 @@ public class MemoryCandidateService {
             }
             if (duplicate) {
                 duplicateCount++;
+                if (pattern && "SUPERSEDED".equals(candidate.getStatus())) {
+                    candidateMapper.reactivatePattern(userId, candidate.getId());
+                }
             }
             persistEvidence(userId, candidateEpisode, candidate, draft, extractionKey);
+            if ("USER_CHAT".equals(candidateEpisode.getEpisodeType()) && "EXPLICIT".equals(draft.sourceType())) {
+                for (MemoryCandidate previous : candidateMapper.listForEntity(userId, candidate.getCandidateType(),
+                        candidate.getCanonicalEntity(), candidate.getCanonicalGroupId())) {
+                    if (previous.getId().equals(candidate.getId()) || previous.getPreference().equals(candidate.getPreference())) continue;
+                    boolean previousExplicit = java.util.Set.of("EXPLICIT", "USER_CONFIRMED", "EXPLICIT_FEEDBACK")
+                            .contains(previous.getSourceType());
+                    MemoryCandidate superseded = previousExplicit && occurredAfter(userId, previous, candidate)
+                            ? candidate : previous;
+                    candidateMapper.markSuperseded(userId, superseded.getId(), superseded.getVersion());
+                }
+            }
             candidates.add(candidate);
+        }
+        if (behaviorPatternExtractor != null) {
+            for (MemoryCandidate previous : candidateMapper.listBehaviorPatterns(userId)) {
+                if (!activePatternKeys.contains(previous.getExtractionKey())) {
+                    candidateMapper.markSuperseded(userId, previous.getId(), previous.getVersion());
+                }
+            }
         }
         // Recheck after persistence so a newer reaction committed during extraction
         // cannot leave this older event as the active candidate.
@@ -285,6 +334,13 @@ public class MemoryCandidateService {
         }
     }
 
+    private boolean occurredAfter(Long userId, MemoryCandidate previous, MemoryCandidate current) {
+        MemoryEpisode previousEpisode = episodeService.findOwned(userId, previous.getEpisodeId());
+        MemoryEpisode currentEpisode = episodeService.findOwned(userId, current.getEpisodeId());
+        int timeOrder = previousEpisode.getOccurredAt().compareTo(currentEpisode.getOccurredAt());
+        return timeOrder > 0 || timeOrder == 0 && previousEpisode.getId() > currentEpisode.getId();
+    }
+
     public MemoryCandidate findOwned(Long userId, Long candidateId) {
         requireUser(userId);
         MemoryCandidate candidate = candidateId == null ? null : candidateMapper.findOwned(userId, candidateId);
@@ -337,7 +393,8 @@ public class MemoryCandidateService {
         candidate.setExtractionKey(extractionKey);
         candidate.setExtractionModel(extractionModel);
         candidate.setPromptVersion(promptVersion);
-        candidate.setExtractedAt(LocalDateTime.now(clock));
+        candidate.setExtractedAt("USER_CHAT".equals(episode.getEpisodeType())
+                ? episode.getOccurredAt() : LocalDateTime.now(clock));
         candidate.setStatus(initialStatus(userId, draft, normalization).name());
         candidate.setVersion(0);
         return candidate;

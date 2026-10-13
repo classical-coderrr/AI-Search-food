@@ -30,6 +30,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -76,6 +80,83 @@ class RecipeRecommendationServiceTest {
 
         assertThat(result.searchLogId()).isEqualTo(88L);
         verify(searchLogService).record(request, generated, null, "anonymous-12345678");
+        verify(qwenRecipeClient, never()).checkRecipeRequirements(anyString(), any());
+    }
+
+    @Test
+    void retriesSemanticallyWrongRecipeWithoutReusingItsPlanAndPersistsOnlyAcceptedRecipe() {
+        RecipeGenerateRequest request = requestWithRequirement("三文鱼", "我想吃三文鱼寿司");
+        RecipeGenerateResponse wrong = recipeResponseWithTitle("香煎三文鱼", "煎鱼排", "三文鱼");
+        RecipeGenerateResponse accepted = recipeResponseWithTitle("三文鱼握寿司", "组装寿司", "三文鱼");
+        when(qwenRecipeClient.planRecipeSelection(anyString())).thenReturn(List.of(
+                new QwenRecipeClient.RecipePlan("香煎三文鱼", List.of("三文鱼"), List.of())));
+        when(qwenRecipeClient.generateRecipe(anyString())).thenReturn(wrong, accepted);
+        when(qwenRecipeClient.checkRecipeRequirements(request.userRequirement(), wrong)).thenReturn(
+                new QwenRecipeClient.RecipeRequirementCheck(false, List.of("只有煎鱼步骤，未制作寿司饭和寿司成品")));
+        when(qwenRecipeClient.checkRecipeRequirements(request.userRequirement(), accepted)).thenReturn(
+                new QwenRecipeClient.RecipeRequirementCheck(true, List.of()));
+
+        RecipeGenerateResponse result = recipeRecommendationService.generate(request);
+
+        assertThat(result.title()).isEqualTo("三文鱼握寿司");
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(qwenRecipeClient, times(2)).generateRecipe(prompts.capture());
+        assertThat(prompts.getAllValues()).allSatisfy(prompt -> assertThat(prompt).contains(request.userRequirement()));
+        assertThat(prompts.getAllValues().get(1)).contains("未制作寿司饭")
+                .doesNotContain("规划确定的标准菜名：香煎三文鱼");
+        ArgumentCaptor<String> planning = ArgumentCaptor.forClass(String.class);
+        verify(qwenRecipeClient).planRecipeSelection(planning.capture());
+        assertThat(planning.getValue()).contains(request.userRequirement());
+        verify(searchLogService, never()).record(eq(request), eq(wrong), any(), any());
+        verify(searchLogService).record(request, accepted, null, null);
+    }
+
+    @Test
+    void semanticCheckAcceptsSynonymsAndUserAlternativesWithoutKeywordRestrictions() {
+        RecipeGenerateRequest request = requestWithRequirement("猪肉", "不要饺子，云吞或抄手都行");
+        RecipeGenerateResponse accepted = recipeResponseWithTitle("鲜肉抄手", "包制抄手", "猪肉");
+        when(qwenRecipeClient.generateRecipe(anyString())).thenReturn(accepted);
+        when(qwenRecipeClient.checkRecipeRequirements(request.userRequirement(), accepted)).thenReturn(
+                new QwenRecipeClient.RecipeRequirementCheck(true, List.of()));
+
+        assertThat(recipeRecommendationService.generate(request).title()).isEqualTo("鲜肉抄手");
+
+        verify(qwenRecipeClient).generateRecipe(anyString());
+        verify(searchLogService).record(request, accepted, null, null);
+    }
+
+    @Test
+    void rejectsRepeatedSemanticMismatchEvenWhenTitleRepeatsRequestedFood() {
+        RecipeGenerateRequest request = requestWithRequirement("奶酪", "请做巴西奶酪面包");
+        RecipeGenerateResponse wrong = recipeResponseWithTitle("巴西奶酪面包", "炒奶酪", "奶酪");
+        when(qwenRecipeClient.generateRecipe(anyString())).thenReturn(wrong);
+        when(qwenRecipeClient.checkRecipeRequirements(request.userRequirement(), wrong)).thenReturn(
+                new QwenRecipeClient.RecipeRequirementCheck(false, List.of("只有炒制步骤，没有制作面团和烘烤成品")));
+
+        assertThatThrownBy(() -> recipeRecommendationService.generate(request)).hasMessageContaining("仍未满足你的要求");
+
+        verify(qwenRecipeClient, times(2)).generateRecipe(anyString());
+        verifyNoInteractions(searchLogService);
+    }
+
+    @Test
+    void verificationFailureDoesNotPublishRecipeOrTreatItAsMatching() {
+        RecipeGenerateRequest request = requestWithRequirement("牛肉", "我想吃牛肉威灵顿");
+        RecipeGenerateResponse candidate = recipeResponseWithTitle("牛肉威灵顿", "烘烤", "牛肉");
+        when(qwenRecipeClient.generateRecipe(anyString())).thenReturn(candidate);
+        when(qwenRecipeClient.checkRecipeRequirements(request.userRequirement(), candidate))
+                .thenThrow(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.BAD_GATEWAY, "AI 菜谱需求核对失败，请重试"));
+
+        assertThatThrownBy(() -> recipeRecommendationService.generate(request)).hasMessageContaining("需求核对失败");
+
+        verify(qwenRecipeClient).generateRecipe(anyString());
+        verifyNoInteractions(searchLogService);
+    }
+
+    private RecipeGenerateRequest requestWithRequirement(String ingredients, String requirement) {
+        return new RecipeGenerateRequest(ingredients, "dinner", "balanced", "agent",
+                null, null, null, false, false, false, requirement);
     }
 
     @Test

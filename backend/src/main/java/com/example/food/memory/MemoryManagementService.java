@@ -31,6 +31,12 @@ public class MemoryManagementService {
     private final MemoryPersonalizationService personalizationService;
     private final MemoryVectorStoreAdapter vectorStore;
     private final MemoryConflictDecisionMapper conflictDecisionMapper;
+    private MemoryLearningGuard learningGuard;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setLearningGuard(MemoryLearningGuard learningGuard) {
+        this.learningGuard = learningGuard;
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     public MemoryManagementService(
@@ -207,6 +213,10 @@ public class MemoryManagementService {
     @Transactional
     public MemoryClearResult clearAll(Long userId) {
         requireUser(userId);
+        if (learningGuard != null) {
+            learningGuard.lock(userId);
+            personalizationService.invalidatePendingLearning(userId);
+        }
         if (vectorStore != null) vectorStore.deleteAll(userId);
         if (conflictDecisionMapper != null) conflictDecisionMapper.deleteAllOwned(userId);
         itemCandidateMapper.deleteAllOwned(userId);

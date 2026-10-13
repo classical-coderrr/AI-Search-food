@@ -11,6 +11,9 @@ import java.util.List;
 @Mapper
 public interface RecipeRecordMapper extends BaseMapper<RecipeRecord> {
 
+    @Select("SELECT * FROM recipe_records WHERE user_id = #{userId} AND id = #{recipeId} FOR UPDATE")
+    RecipeRecord findOwnedForUpdate(@Param("userId") Long userId, @Param("recipeId") Long recipeId);
+
     @Select("""
             <script>
             SELECT rr.*, sl.meal_type AS meal_type
@@ -18,6 +21,10 @@ public interface RecipeRecordMapper extends BaseMapper<RecipeRecord> {
             LEFT JOIN search_logs sl ON sl.id = rr.search_log_id
             WHERE rr.user_id = #{userId}
               AND rr.weekly_menu_plan_id IS NULL
+              AND (rr.dish_group_key IS NULL OR rr.id = (
+                  SELECT MIN(original.id) FROM recipe_records original
+                  WHERE original.user_id = rr.user_id AND original.dish_group_key = rr.dish_group_key
+                    AND original.weekly_menu_plan_id IS NULL))
             <if test="keyword != null">
               AND rr.title LIKE CONCAT('%', #{keyword}, '%')
             </if>
@@ -58,7 +65,8 @@ public interface RecipeRecordMapper extends BaseMapper<RecipeRecord> {
                 SELECT 1
                 FROM recipe_records
                 WHERE user_id = #{userId}
-                  AND search_log_id = #{searchLogId}
+                  AND (search_log_id = #{searchLogId} OR id IN (
+                      SELECT recipe_id FROM recipe_saved_sources WHERE user_id = #{userId} AND search_log_id = #{searchLogId}))
             )
             """)
     boolean existsByUserIdAndSearchLogId(
@@ -70,9 +78,11 @@ public interface RecipeRecordMapper extends BaseMapper<RecipeRecord> {
             SELECT *
             FROM recipe_records
             WHERE user_id = #{userId}
-              AND search_log_id = #{searchLogId}
+              AND (search_log_id = #{searchLogId} OR id IN (
+                  SELECT recipe_id FROM recipe_saved_sources WHERE user_id = #{userId} AND search_log_id = #{searchLogId}))
             ORDER BY id DESC
             LIMIT 1
+            FOR UPDATE
             """)
     RecipeRecord findByUserIdAndSearchLogId(
             @Param("userId") Long userId,
@@ -85,6 +95,7 @@ public interface RecipeRecordMapper extends BaseMapper<RecipeRecord> {
             WHERE user_id = #{userId}
               AND agent_idempotency_key = #{idempotencyKey}
             LIMIT 1
+            FOR UPDATE
             """)
     RecipeRecord findByUserIdAndAgentIdempotencyKey(
             @Param("userId") Long userId,

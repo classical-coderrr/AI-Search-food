@@ -17,6 +17,12 @@ public class MemoryProcessingJobWorker {
     private final MemoryPersonalizationService personalizationService;
     private final MemoryEmbeddingIndexService embeddingIndexService;
     private final int batchSize;
+    private MemoryChatLearningService chatLearningService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setChatLearningService(MemoryChatLearningService chatLearningService) {
+        this.chatLearningService = chatLearningService;
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     public MemoryProcessingJobWorker(
@@ -68,6 +74,7 @@ public class MemoryProcessingJobWorker {
     private void process(MemoryProcessingJob job) {
         try {
             if (personalizationService.isEnabled(job.getUserId())) {
+                if (chatLearningService != null) chatLearningService.prepare(job.getUserId(), job.getEpisodeId());
                 candidateService.extractAndPersistAfterCommit(job.getUserId(), job.getEpisodeId());
                 consolidationService.consolidateAfterCommit(job.getUserId());
             }

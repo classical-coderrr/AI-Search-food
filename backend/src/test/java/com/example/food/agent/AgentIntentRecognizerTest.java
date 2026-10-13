@@ -149,6 +149,56 @@ class AgentIntentRecognizerTest {
     }
 
     @Test
+    void recognizesDifferentNaturalEatingPhrasesAsRecipeRequests() {
+        QwenAgentClient client = mock(QwenAgentClient.class);
+        when(client.complete(anyList(), anyList())).thenReturn(new QwenAgentClient.AgentTurn(
+                "",
+                List.of(new QwenAgentClient.ToolCall(
+                        "route-recipe",
+                        "agent_intent_classify",
+                        "{\"intent\":\"GENERATE_RECIPE\",\"confidence\":0.98,\"recipe_reference\":\"NONE\"}"
+                )),
+                "qwen",
+                "qwen-plus"
+        ));
+        AgentIntentRecognizer recognizer = new AgentIntentRecognizer(client, new ObjectMapper(), properties());
+
+        AgentIntentRecognizer.RecognitionResult wantsToEat = recognizer.recognizeRoute("我想吃宫保鸡丁", List.of());
+        AgentIntentRecognizer.RecognitionResult willEat = recognizer.recognizeRoute("我要吃红烧牛肉面", List.of());
+
+        assertThat(wantsToEat.intent()).isEqualTo(AgentIntentRecognizer.GENERATE_RECIPE);
+        assertThat(wantsToEat.isConfident(0.85d)).isTrue();
+        assertThat(willEat.intent()).isEqualTo(AgentIntentRecognizer.GENERATE_RECIPE);
+        assertThat(willEat.isConfident(0.85d)).isTrue();
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(2)).complete(anyList(), anyList());
+    }
+
+    @Test
+    void includesClarificationContextWhenClassifyingShortFollowUp() {
+        QwenAgentClient client = mock(QwenAgentClient.class);
+        when(client.complete(anyList(), anyList())).thenReturn(new QwenAgentClient.AgentTurn(
+                "",
+                List.of(new QwenAgentClient.ToolCall(
+                        "route-confirmed-recipe",
+                        "agent_intent_classify",
+                        "{\"intent\":\"GENERATE_RECIPE\",\"confidence\":0.96,\"recipe_reference\":\"NONE\"}"
+                )),
+                "qwen",
+                "qwen-plus"
+        ));
+        AgentIntentRecognizer recognizer = new AgentIntentRecognizer(client, new ObjectMapper(), properties());
+
+        recognizer.recognizeRoute("是的", List.of(QwenAgentClient.ConversationMessage.assistant(
+                "你是想让我生成菜谱、查询信息，还是只是聊聊？")));
+
+        org.mockito.ArgumentCaptor<List<QwenAgentClient.ConversationMessage>> messages =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(client).complete(messages.capture(), anyList());
+        assertThat(messages.getValue().get(0).content())
+                .contains("是的", "你是想让我生成菜谱", "上一条澄清问题的简短回答");
+    }
+
+    @Test
     void keepsOrdinaryChatAsAUsableNonToolRoute() {
         QwenAgentClient client = mock(QwenAgentClient.class);
         when(client.complete(anyList(), anyList())).thenReturn(new QwenAgentClient.AgentTurn(

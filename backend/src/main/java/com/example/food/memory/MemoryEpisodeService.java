@@ -100,7 +100,7 @@ public class MemoryEpisodeService {
 
     public List<MemoryEpisode> listOwnedRecipeHistory(Long userId, int limit) {
         requireUser(userId);
-        int safeLimit = Math.max(1, Math.min(limit <= 0 ? 20 : limit, MAX_LIMIT));
+        int safeLimit = Math.max(1, Math.min(limit <= 0 ? 20 : limit, 1000));
         return mapper.listOwnedRecipeHistory(userId, safeLimit);
     }
 

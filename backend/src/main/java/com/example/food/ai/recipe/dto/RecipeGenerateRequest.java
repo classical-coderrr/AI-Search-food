@@ -16,7 +16,9 @@ public record RecipeGenerateRequest(
         DietPreference dietPreference,
         Boolean usePantry,
         Boolean useHealthNutrition,
-        Boolean useAiIngredientRecommendation
+        Boolean useAiIngredientRecommendation,
+        @Size(max = 1600)
+        String userRequirement
 ) {
     public RecipeGenerateRequest(
             String ingredients,
@@ -24,7 +26,7 @@ public record RecipeGenerateRequest(
             String goal,
             String searchMode
     ) {
-        this(ingredients, mealType, goal, searchMode, null, null, null, false, false, false);
+        this(ingredients, mealType, goal, searchMode, null, null, null, false, false, false, null);
     }
 
     public RecipeGenerateRequest(
@@ -35,7 +37,8 @@ public record RecipeGenerateRequest(
             String regenerationPreference,
             String previousTitle
     ) {
-        this(ingredients, mealType, goal, searchMode, regenerationPreference, previousTitle, null, false, false, false);
+        this(ingredients, mealType, goal, searchMode, regenerationPreference, previousTitle,
+                null, false, false, false, null);
     }
 
     public RecipeGenerateRequest(
@@ -47,7 +50,8 @@ public record RecipeGenerateRequest(
             String previousTitle,
             DietPreference dietPreference
     ) {
-        this(ingredients, mealType, goal, searchMode, regenerationPreference, previousTitle, dietPreference, false, false, false);
+        this(ingredients, mealType, goal, searchMode, regenerationPreference, previousTitle,
+                dietPreference, false, false, false, null);
     }
 
     public RecipeGenerateRequest(
@@ -62,7 +66,23 @@ public record RecipeGenerateRequest(
             Boolean useHealthNutrition
     ) {
         this(ingredients, mealType, goal, searchMode, regenerationPreference, previousTitle, dietPreference,
-                usePantry, useHealthNutrition, false);
+                usePantry, useHealthNutrition, false, null);
+    }
+
+    public RecipeGenerateRequest(
+            String ingredients,
+            String mealType,
+            String goal,
+            String searchMode,
+            String regenerationPreference,
+            String previousTitle,
+            DietPreference dietPreference,
+            Boolean usePantry,
+            Boolean useHealthNutrition,
+            Boolean useAiIngredientRecommendation
+    ) {
+        this(ingredients, mealType, goal, searchMode, regenerationPreference, previousTitle, dietPreference,
+                usePantry, useHealthNutrition, useAiIngredientRecommendation, null);
     }
 
     public boolean includePantry() {

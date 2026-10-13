@@ -1,4 +1,32 @@
-import { http } from './http'
+import { http } from './http.js'
+
+export function getSavedRecipeGroups(params = {}) {
+  return http.get('/users/me/saved-recipe-groups', { params })
+}
+
+export function getRecipeGroupCollections() {
+  return http.get('/users/me/saved-recipe-groups/collections')
+}
+
+export function getRecipeGroupVersions(groupKey, preferredId = null) {
+  return http.get(`/users/me/saved-recipe-groups/${encodeURIComponent(groupKey)}/versions`, { params: { preferredId } })
+}
+
+export function deleteRecipeGroup(groupKey) {
+  return http.delete(`/users/me/saved-recipe-groups/${encodeURIComponent(groupKey)}`)
+}
+
+export function batchMoveRecipeGroups(groupKeys, collectionId) {
+  return http.post('/users/me/saved-recipe-groups/batch-move', { groupKeys, collectionId })
+}
+
+export function batchTagRecipeGroups(groupKeys, addTags = [], removeTags = []) {
+  return http.post('/users/me/saved-recipe-groups/batch-tags', { groupKeys, addTags, removeTags })
+}
+
+export function batchDeleteRecipeGroups(groupKeys) {
+  return http.delete('/users/me/saved-recipe-groups/batch', { data: { groupKeys } })
+}
 
 export function getRecipeCollections() {
   return http.get('/users/me/recipe-collections')

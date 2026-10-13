@@ -37,6 +37,28 @@ class MemoryCandidatePersistenceIntegrationTest {
     @Autowired
     private MemoryProcessingJobService processingJobService;
 
+    @Autowired
+    private MemoryEvidenceReconciliationWorker evidenceReconciliationWorker;
+
+    @Test
+    void dailyReconciliationExpiresBehaviorInferenceWithoutAnotherUserAction() {
+        Long userId = insertUser("13900000807", "证据窗口验证用户");
+        for (int day = 1; day <= 3; day++) {
+            MemoryEpisode episode = recordEpisodeAt(userId, "RECIPE_SAVED", "expiry-" + day, "expiry-" + day,
+                    "{\"title\":\"鸡胸肉菜式" + day + "\",\"ingredients\":[\"鸡胸肉\"]}",
+                    LocalDateTime.now().minusDays(day));
+            candidateService.extractAndPersist(userId, episode.getId());
+        }
+        consolidationService.consolidate(userId);
+        assertThat(ingredientItem(userId)).isNotNull();
+        jdbcTemplate.update("UPDATE memory_episodes SET occurred_at = ? WHERE user_id = ?",
+                LocalDateTime.now().minusDays(91), userId);
+        jdbcTemplate.update("UPDATE memory_profiles SET rebuilt_at = ? WHERE user_id = ?",
+                LocalDateTime.now().minusDays(1), userId);
+        evidenceReconciliationWorker.rebuildLegacyEvidence();
+        assertThat(ingredientItem(userId)).isNull();
+    }
+
     @Test
     void persistsCandidateAndEvidenceWithUserIsolationAndIdempotency() {
         assertThat(tableExists("memory_candidates")).isTrue();
@@ -176,11 +198,9 @@ class MemoryCandidatePersistenceIntegrationTest {
 
         consolidationService.consolidate(userId);
         MemoryItem afterUnsave = ingredientItem(userId);
-        assertThat(afterUnsave).isNotNull();
-        assertThat(afterUnsave.getSourceEpisodeIdsJson())
-                .contains(cooked.getId().toString(), liked.getId().toString())
-                .doesNotContain(saved.getId().toString());
-        assertThat(afterUnsave.getEvidenceCount()).isEqualTo(2);
+        assertThat(afterUnsave).as("撤销后不足三个独立日期，不再形成食材偏好").isNull();
+        assertThat(candidateService.listOwned(userId, null, "INGREDIENT_PREFERENCE", 20))
+                .allSatisfy(candidate -> assertThat(candidate.getStatus()).isEqualTo("SUPERSEDED"));
     }
 
     @Test
@@ -205,10 +225,10 @@ class MemoryCandidatePersistenceIntegrationTest {
                 occurredAt);
         MemoryEpisode cooked = recordEpisodeAt(userId, "RECIPE_FEEDBACK", "feedback-2", "cooked-2",
                 "{\"action\":\"COOKED\",\"recipeTitle\":\"鸡胸肉意面\",\"ingredients\":[\"鸡胸肉\"]}",
-                occurredAt);
+                occurredAt.minusDays(2));
         MemoryEpisode liked = recordEpisodeAt(userId, "RECIPE_FEEDBACK", "feedback-3", "liked-3",
                 "{\"action\":\"REACTION\",\"reaction\":\"LIKE\",\"recipeTitle\":\"鸡胸肉饭\","
-                        + "\"ingredients\":[\"鸡胸肉\"]}", occurredAt);
+                        + "\"ingredients\":[\"鸡胸肉\"]}", occurredAt.minusDays(1));
         candidateService.extractAndPersist(userId, saved.getId());
         candidateService.extractAndPersist(userId, cooked.getId());
         candidateService.extractAndPersist(userId, liked.getId());
@@ -251,7 +271,8 @@ class MemoryCandidatePersistenceIntegrationTest {
 
     private MemoryEpisode recordEpisode(Long userId, String type, String sourceId,
                                         String eventId, String payload) {
-        return recordEpisodeAt(userId, type, sourceId, eventId, payload, LocalDateTime.now());
+        int days = "RECIPE_SAVED".equals(type) ? 3 : eventId.startsWith("cooked") ? 2 : eventId.startsWith("liked") ? 1 : 0;
+        return recordEpisodeAt(userId, type, sourceId, eventId, payload, LocalDateTime.now().minusDays(days));
     }
 
     private MemoryEpisode recordEpisodeAt(Long userId, String type, String sourceId,

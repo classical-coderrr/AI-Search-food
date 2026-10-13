@@ -4,7 +4,7 @@
       <div>
         <p class="eyebrow">个人菜谱库</p>
         <h1>我的菜谱</h1>
-        <p>查看你主动保存的 AI 菜谱，重新打开时不会再次调用模型。</p>
+        <p>同名菜谱只保存一次，再次保存时展示已有菜谱。</p>
       </div>
       <div class="saved-heading-actions">
         <el-button class="print-button" plain type="button" @click="printRecipe">
@@ -119,24 +119,24 @@
         <div v-else class="history-items" :class="{ 'batch-active': batchMode }">
           <div
             v-for="item in recipes"
-            :key="item.id"
+            :key="item.groupKey"
             class="history-item-row"
-            :class="{ active: selected?.id === item.id }"
+            :class="{ active: selectedGroupKey === item.groupKey }"
           >
             <input
               v-if="batchMode"
               class="recipe-checkbox"
               type="checkbox"
-              :checked="selectedRecipeIds.includes(item.id)"
+              :checked="selectedRecipeIds.includes(item.groupKey)"
               :aria-label="`选择菜谱 ${item.title}`"
               @click.stop
-              @change="toggleRecipeSelection(item.id)"
+              @change="toggleRecipeSelection(item.groupKey)"
             />
             <span class="recipe-cover" aria-hidden="true">
               <img v-if="recipeCoverUrl(item)" :src="recipeCoverUrl(item)" alt="" />
               <ChefHat v-else :size="21" />
             </span>
-            <button class="history-item" type="button" @click="openRecipe(item.id)">
+            <button class="history-item" type="button" @click="openGroup(item)">
               <span class="history-item-title">{{ item.title }}</span>
               <span class="history-item-ingredients">{{ item.searchIngredients || '未记录食材' }}</span>
               <span v-if="item.tags?.length" class="history-item-tags">
@@ -494,21 +494,21 @@ import {
 } from 'lucide-vue-next'
 import {
   clearRecommendationReaction,
-  deleteSavedRecipe,
   getRecommendationFeedback,
   getSavedRecipe,
   setRecommendationReaction
 } from '../api/recipes'
 import {
-  batchDeleteSavedRecipes,
-  batchMoveSavedRecipes,
-  batchTagSavedRecipes,
+  batchDeleteRecipeGroups as batchDeleteSavedRecipes,
+  batchMoveRecipeGroups as batchMoveSavedRecipes,
+  batchTagRecipeGroups as batchTagSavedRecipes,
+  deleteRecipeGroup,
   createRecipeCollection,
   createRecipeShare,
   deleteRecipeCollection,
   disableRecipeShare,
-  getEnhancedSavedRecipes,
-  getRecipeCollections,
+  getSavedRecipeGroups as getEnhancedSavedRecipes,
+  getRecipeGroupCollections as getRecipeCollections,
   getRecipeShares,
   getRecipeTags,
   moveSavedRecipe,
@@ -575,6 +575,8 @@ const shareManagerVisible = ref(false)
 const shares = ref([])
 const sharesLoading = ref(false)
 const selected = ref(null)
+const selectedGroupKey = ref(null)
+const moveCurrentVersionId = ref(null)
 const loading = ref(false)
 const detailLoading = ref(false)
 const deletingId = ref(null)
@@ -600,7 +602,7 @@ const auth = useAuthStore()
 let listRequestId = 0
 let detailRequestId = 0
 
-const selectedListItem = computed(() => recipes.value.find((item) => item.id === selected.value?.id) || null)
+const selectedListItem = computed(() => recipes.value.find((item) => item.groupKey === selectedGroupKey.value) || null)
 const defaultCollection = computed(() => collections.value.find((item) => item.defaultCollection) || null)
 const defaultCollectionName = computed(() => defaultCollection.value?.name || '默认收藏夹')
 const selectedCustomCollection = computed(() => {
@@ -608,7 +610,7 @@ const selectedCustomCollection = computed(() => {
   return collection && !collection.defaultCollection ? collection : null
 })
 const allVisibleSelected = computed(() => (
-  recipes.value.length > 0 && recipes.value.every((item) => selectedRecipeIds.value.includes(item.id))
+  recipes.value.length > 0 && recipes.value.every((item) => selectedRecipeIds.value.includes(item.groupKey))
 ))
 
 const ownedIngredients = computed(() => [
@@ -681,6 +683,7 @@ async function loadNutritionTarget() {
 
 async function loadRecipes(preferredId = null) {
   const requestId = ++listRequestId
+  ++detailRequestId
   loading.value = true
   try {
     const response = await getEnhancedSavedRecipes({
@@ -705,15 +708,14 @@ async function loadRecipes(preferredId = null) {
       detailRequestId += 1
       detailLoading.value = false
       selected.value = null
+      selectedGroupKey.value = null
       resetRecommendationFeedback()
       return
     }
 
-    const nextId = preferredId && nextRecipes.some((item) => item.id === preferredId)
-      ? preferredId
-      : nextRecipes[0].id
+    const nextGroup = nextRecipes.find((item) => item.groupKey === selectedGroupKey.value) || nextRecipes[0]
     selected.value = null
-    await openRecipe(nextId)
+    await openGroup(nextGroup)
   } catch (error) {
     if (requestId === listRequestId) {
       ElMessage.error(getErrorMessage(error))
@@ -780,8 +782,8 @@ function toggleRecipeSelection(recipeId) {
 
 function toggleSelectAll(event) {
   selectedRecipeIds.value = event.target.checked
-    ? [...new Set([...selectedRecipeIds.value, ...recipes.value.map((item) => item.id)])]
-    : selectedRecipeIds.value.filter((id) => !recipes.value.some((item) => item.id === id))
+    ? [...new Set([...selectedRecipeIds.value, ...recipes.value.map((item) => item.groupKey)])]
+    : selectedRecipeIds.value.filter((id) => !recipes.value.some((item) => item.groupKey === id))
 }
 
 function openCollectionDialog(collection = null) {
@@ -835,21 +837,27 @@ async function confirmDeleteCollection(collection) {
 
 function openMoveSelected() {
   if (!selected.value?.id) return
-  selectedRecipeIds.value = [selected.value.id]
   openBatchMove()
+  moveCurrentVersionId.value = selected.value.id
 }
 
 function openBatchMove() {
+  moveCurrentVersionId.value = null
   batchMoveCollectionId.value = selectedCollectionId.value || defaultCollection.value?.id || null
   batchMoveDialogVisible.value = true
 }
 
 async function submitBatchMove() {
-  if (!selectedRecipeIds.value.length || !batchMoveCollectionId.value || batchSaving.value) return
+  if ((!selectedRecipeIds.value.length && !moveCurrentVersionId.value) || !batchMoveCollectionId.value || batchSaving.value) return
   batchSaving.value = true
   try {
-    const response = await batchMoveSavedRecipes(selectedRecipeIds.value, batchMoveCollectionId.value)
-    await showBatchResult(response.data.data)
+    if (moveCurrentVersionId.value) {
+      await moveSavedRecipe(moveCurrentVersionId.value, batchMoveCollectionId.value)
+      ElMessage.success('菜谱已移动')
+    } else {
+      const response = await batchMoveSavedRecipes(selectedRecipeIds.value, batchMoveCollectionId.value)
+      await showBatchResult(response.data.data)
+    }
     batchMoveDialogVisible.value = false
     selectedRecipeIds.value = []
     await Promise.all([loadCollections(), loadRecipes()])
@@ -1020,6 +1028,13 @@ function shareStatusLabel(status) {
   }[status] || '未知状态'
 }
 
+async function openGroup(item) {
+  ++detailRequestId
+  selectedGroupKey.value = item.groupKey
+  selected.value = null
+  await openRecipe(item.id)
+}
+
 async function openRecipe(id) {
   const requestId = ++detailRequestId
   detailLoading.value = true
@@ -1066,8 +1081,10 @@ async function confirmDeleteRecipe(item) {
   const selectedId = selected.value?.id
   deletingId.value = item.id
   try {
-    await deleteSavedRecipe(item.id)
+    const response = await deleteRecipeGroup(item.groupKey)
+    if (response.data.data?.failureCount) throw new Error(response.data.data.failures?.[0]?.reason || '删除失败')
     ElMessage.success('菜谱已删除')
+    await loadCollections()
     await loadRecipes(selectedId === item.id ? null : selectedId)
   } catch (error) {
     ElMessage.error(getDeleteErrorMessage(error))

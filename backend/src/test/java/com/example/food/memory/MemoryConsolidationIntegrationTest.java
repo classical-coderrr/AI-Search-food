@@ -67,8 +67,8 @@ class MemoryConsolidationIntegrationTest {
         assertThat(items).hasSize(1);
         assertThat(items).allSatisfy(item -> {
             assertThat(item.getUserId()).isEqualTo(userId);
-            assertThat(item.getEvidenceCount()).isEqualTo(2);
-            assertThat(item.getOccurrenceCount()).isEqualTo(2);
+            assertThat(item.getEvidenceCount()).isEqualTo(1);
+            assertThat(item.getOccurrenceCount()).isEqualTo(1);
             assertThat(item.getSourceCount()).isEqualTo(2);
             assertThat(item.getConfidence()).isBetween(BigDecimal.ZERO, BigDecimal.ONE);
         });
@@ -100,7 +100,7 @@ class MemoryConsolidationIntegrationTest {
         assertThat(persistedSkill).isNotNull();
         assertThat(persistedSkill.getStrategyJson()).contains("likedRecipeReferences", "鸡胸肉意面");
         assertThat(persistedSkill.getSourceMemoryIdsJson()).contains(recipeMemory.getId().toString());
-        assertThat(persistedSkill.getEvidenceCount()).isEqualTo(2);
+        assertThat(persistedSkill.getEvidenceCount()).isEqualTo(1);
         assertThat(persistedSkill.getConfidence()).isEqualByComparingTo("0.9000");
         assertThat(persistedSkill.getSourceProfileVersion()).isEqualTo(refreshedProfile.getVersion());
 

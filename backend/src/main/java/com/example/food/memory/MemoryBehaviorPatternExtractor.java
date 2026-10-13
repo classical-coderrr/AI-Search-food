@@ -26,7 +26,7 @@ import java.util.Set;
 @Service
 public class MemoryBehaviorPatternExtractor {
 
-    private static final int HISTORY_LIMIT = 100;
+    private static final int HISTORY_LIMIT = 1000;
     private static final int WINDOW_DAYS = 90;
     private static final int MIN_SUPPORT_EVENTS = 3;
     private static final int MIN_DISTINCT_RECIPES = 2;
@@ -74,7 +74,7 @@ public class MemoryBehaviorPatternExtractor {
             MemoryEpisode currentEpisode,
             List<MemoryEpisode> history
     ) {
-        if (currentEpisode == null || !isPositiveBehavior(currentEpisode)) {
+        if (currentEpisode == null) {
             return List.of();
         }
         LocalDateTime cutoff = LocalDateTime.now(clock).minusDays(WINDOW_DAYS);
@@ -93,7 +93,7 @@ public class MemoryBehaviorPatternExtractor {
             episodesById.put(currentEpisode.getId(), currentEpisode);
         }
 
-        List<MemoryEpisode> recent = new ArrayList<>(episodesById.values());
+        List<MemoryEpisode> recent = episodesById.values().stream().flatMap(episode -> expandRequests(episode).stream()).toList();
         if (recent.isEmpty()) return List.of();
 
         Map<String, MemoryEpisode> latestUnsavedEpisodes = latestUnsavedEpisodes(recent);
@@ -148,25 +148,28 @@ public class MemoryBehaviorPatternExtractor {
     }
 
     private PatternSupport qualifiedPattern(String canonicalGroupId, List<IngredientSupport> supports) {
+        Map<String, IngredientSupport> buckets = new LinkedHashMap<>();
+        for (IngredientSupport support : supports) {
+            String bucket = support.episode().getOccurredAt().toLocalDate() + "|" + support.signal().recipeKey();
+            buckets.merge(bucket, support, (first, second) ->
+                    second.signal().weight().compareTo(first.signal().weight()) > 0 ? second : first);
+        }
+        supports = new ArrayList<>(buckets.values());
         Set<String> distinctEpisodes = new LinkedHashSet<>();
+        Set<java.time.LocalDate> distinctDates = new LinkedHashSet<>();
         Map<String, List<IngredientSupport>> byRecipe = new LinkedHashMap<>();
         for (IngredientSupport support : supports) {
-            distinctEpisodes.add(String.valueOf(support.episode().getId()));
+            distinctEpisodes.add(support.episode().getOccurredAt().toLocalDate() + "|" + support.signal().recipeKey());
+            distinctDates.add(support.episode().getOccurredAt().toLocalDate());
             byRecipe.computeIfAbsent(support.signal().recipeKey(), ignored -> new ArrayList<>()).add(support);
         }
-        if (distinctEpisodes.size() < MIN_SUPPORT_EVENTS || byRecipe.size() < MIN_DISTINCT_RECIPES) return null;
+        if (distinctEpisodes.size() < MIN_SUPPORT_EVENTS || distinctDates.size() < 3
+                || byRecipe.size() < MIN_DISTINCT_RECIPES) return null;
 
         BigDecimal score = BigDecimal.ZERO;
         for (List<IngredientSupport> recipeSupports : byRecipe.values()) {
-            List<BigDecimal> weights = recipeSupports.stream()
-                    .map(support -> support.signal().weight())
-                    .sorted(Comparator.reverseOrder()).toList();
-            score = score.add(weights.get(0));
-            if (weights.size() > 1) {
-                BigDecimal additional = weights.stream().skip(1).reduce(BigDecimal.ZERO, BigDecimal::add)
-                        .multiply(new BigDecimal("0.2500"));
-                score = score.add(additional.min(new BigDecimal("0.2500")));
-            }
+            score = score.add(recipeSupports.stream().map(support -> support.signal().weight())
+                    .reduce(BigDecimal.ZERO, BigDecimal::add));
         }
         if (score.compareTo(MIN_PATTERN_SCORE) < 0) return null;
 
@@ -232,7 +235,11 @@ public class MemoryBehaviorPatternExtractor {
         BigDecimal weight;
         String evidenceAction;
         String label;
-        if ("RECIPE_SAVED".equals(type)) {
+        if ("USER_CHAT".equals(type) && "FOOD_REQUEST".equals(action)) {
+            weight = new BigDecimal("0.2500");
+            evidenceAction = "REQUEST";
+            label = "主动请求菜品";
+        } else if ("RECIPE_SAVED".equals(type)) {
             String recipeId = firstText(text(payload, "recipeId"), episode.getSourceId());
             MemoryEpisode latestUnsaved = recipeId == null ? null : latestUnsavedEpisodes.get(recipeId);
             if (latestUnsaved != null && !occursAfter(episode, latestUnsaved)) return null;
@@ -271,6 +278,32 @@ public class MemoryBehaviorPatternExtractor {
         }
         if (!StringUtils.hasText(recipeKey)) return null;
         return new BehaviorSignal(evidenceAction, label, title, recipeKey, weight);
+    }
+
+    private List<MemoryEpisode> expandRequests(MemoryEpisode episode) {
+        if (!"USER_CHAT".equals(episode.getEpisodeType())) return List.of(episode);
+        JsonNode payload = payload(episode);
+        if (payload == null) return List.of();
+        List<MemoryEpisode> requests = new ArrayList<>();
+        for (JsonNode fact : payload.path("chatFacts")) {
+            if (!"FOOD_REQUEST".equals(fact.path("kind").asText())) continue;
+            MemoryEpisode request = new MemoryEpisode();
+            request.setId(episode.getId());
+            request.setUserId(episode.getUserId());
+            request.setSourceType(episode.getSourceType());
+            request.setSourceId(episode.getSourceId());
+            request.setEventId(episode.getEventId());
+            request.setEpisodeType("USER_CHAT");
+            request.setOccurredAt(episode.getOccurredAt());
+            var data = objectMapper.createObjectNode();
+            data.put("action", "FOOD_REQUEST");
+            data.put("recipeTitle", fact.path("entity").asText());
+            data.set("ingredients", fact.path("ingredients"));
+            data.put("evidenceText", fact.path("evidenceText").asText());
+            request.setPayloadJson(data.toString());
+            requests.add(request);
+        }
+        return requests;
     }
 
     private boolean isPositiveBehavior(MemoryEpisode episode) {

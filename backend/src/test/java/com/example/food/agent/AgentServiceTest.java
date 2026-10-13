@@ -1,6 +1,7 @@
 package com.example.food.agent;
 
 import com.example.food.ai.qwen.QwenAgentClient;
+import com.example.food.ai.recipe.RecipeRecommendationService;
 import com.example.food.ai.recipe.dto.RecipeGenerateResponse;
 import com.example.food.agent.dto.AgentChatRequest;
 import com.example.food.agent.state.AgentEvent;
@@ -10,8 +11,12 @@ import com.example.food.agent.state.AgentStatus;
 import com.example.food.agent.state.AgentStep;
 import com.example.food.agent.state.InMemoryAgentEventStore;
 import com.example.food.agent.state.InMemoryAgentRunStore;
+import com.example.food.pantry.UserPantryService;
+import com.example.food.pantry.dto.PantryExpirySummaryResponse;
 import com.example.food.security.AppRole;
 import com.example.food.security.AuthPrincipal;
+import com.example.food.user.preference.UserDietPreferenceService;
+import com.example.food.user.preference.dto.DietPreferenceResponse;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -19,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -194,6 +200,11 @@ class AgentServiceTest {
                 "qwen-plus"
         ));
         AgentIntentRecognizer intentRecognizer = mock(AgentIntentRecognizer.class);
+        AgentIntentRecognizer.RecognitionResult saveRoute = new AgentIntentRecognizer.RecognitionResult(
+                true, true, AgentIntentRecognizer.SAVE_RECIPE, 0.96d,
+                "LATEST_GENERATED", "指代刚生成的菜");
+        when(intentRecognizer.recognizeRoute(eq("收藏一下"), anyList())).thenReturn(saveRoute);
+        when(intentRecognizer.isUsableRoute(saveRoute)).thenReturn(true);
         when(intentRecognizer.recognize(eq("收藏一下"), anyList())).thenReturn(
                 new AgentIntentRecognizer.RecognitionResult(
                         true, true, "SAVE_RECIPE", 0.96d,
@@ -391,6 +402,210 @@ class AgentServiceTest {
         });
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("explicitRecipeRequests")
+    void semanticEatingRequestForcesRecipeGenerationAndPersistsRecipeCard(String userMessage) throws Exception {
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConversation conversation = new AgentConversation();
+        conversation.setId(42L);
+        conversation.setUserId(7L);
+        conversation.setTitle("厨房助手对话");
+        when(conversationMapper.findOwned(7L, 42L)).thenReturn(conversation);
+        when(conversationMapper.selectById(42L)).thenReturn(conversation);
+        when(messageMapper.findRecentTextMessages(7L, 42L, 12)).thenReturn(List.of());
+
+        RecipeGenerateResponse recipe = new RecipeGenerateResponse(
+                "红烧牛肉面", "浓香家常面", List.of(),
+                List.of(new RecipeGenerateResponse.Ingredient("牛肉", "300克")),
+                List.of(new RecipeGenerateResponse.Step(1, "炖煮", "将牛肉炖至软烂", 60)),
+                List.of(), List.of(), "qwen", "qwen-plus");
+        QwenAgentClient qwenAgentClient = mock(QwenAgentClient.class);
+        when(qwenAgentClient.complete(anyList(), anyList(), eq("recipe_generate")))
+                .thenReturn(new QwenAgentClient.AgentTurn("", List.of(new QwenAgentClient.ToolCall(
+                        "call_recipe_1", "recipe_generate", "{\"request\":\"红烧牛肉面\"}")),
+                        "qwen", "qwen-plus"));
+        when(qwenAgentClient.complete(anyList(), anyList())).thenReturn(new QwenAgentClient.AgentTurn(
+                "已为你生成红烧牛肉面。", List.of(), "qwen", "qwen-plus"));
+
+        AgentIntentRecognizer intentRecognizer = mock(AgentIntentRecognizer.class);
+        AgentIntentRecognizer.RecognitionResult route = new AgentIntentRecognizer.RecognitionResult(
+                true, false, AgentIntentRecognizer.GENERATE_RECIPE, 0.98d, "NONE", "model_route");
+        when(intentRecognizer.recognizeRoute(eq(userMessage), anyList())).thenReturn(route);
+        when(intentRecognizer.isUsableRoute(route)).thenReturn(true);
+        UserPantryService pantryService = mock(UserPantryService.class);
+        when(pantryService.list(7L)).thenReturn(List.of());
+        when(pantryService.expirySummary(7L)).thenReturn(
+                new PantryExpirySummaryResponse(null, 3, List.of(), List.of()));
+        UserDietPreferenceService dietPreferenceService = mock(UserDietPreferenceService.class);
+        when(dietPreferenceService.get(7L)).thenReturn(DietPreferenceResponse.empty());
+        RecipeRecommendationService recipeRecommendationService = mock(RecipeRecommendationService.class);
+        when(recipeRecommendationService.generate(any(), any(), any())).thenReturn(recipe);
+
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentService service = new AgentService(
+                conversationMapper, messageMapper, null, new AgentToolRegistry(),
+                mock(AgentKitchenToolService.class), null, null, pantryService, null, null, null,
+                null, null, null, dietPreferenceService, recipeRecommendationService,
+                qwenAgentClient, intentRecognizer, new AgentIntentAuditService(runStore, objectMapper),
+                objectMapper, runStore);
+
+        service.stream(new AgentChatRequest(42L, userMessage, null, null),
+                new AuthPrincipal(7L, "13800138000", AppRole.USER));
+
+        verify(intentRecognizer, timeout(3000)).recognizeRoute(eq(userMessage), anyList());
+        verify(qwenAgentClient, timeout(3000)).complete(anyList(), anyList(), eq("recipe_generate"));
+        verify(qwenAgentClient, timeout(3000)).complete(anyList(), anyList());
+        org.mockito.ArgumentCaptor<com.example.food.ai.recipe.dto.RecipeGenerateRequest> generatedRequest =
+                org.mockito.ArgumentCaptor.forClass(com.example.food.ai.recipe.dto.RecipeGenerateRequest.class);
+        verify(recipeRecommendationService, timeout(3000)).generate(generatedRequest.capture(), any(), any());
+        assertThat(generatedRequest.getValue().userRequirement()).contains(userMessage);
+        verify(messageMapper, timeout(3000)).insert(org.mockito.ArgumentMatchers.argThat(
+                (AgentMessage message) -> "ASSISTANT".equals(message.getRole())
+                        && "recipe-card".equals(message.getBlockType())
+                        && message.getContent().contains("红烧牛肉面")));
+    }
+
+    static java.util.stream.Stream<String> explicitRecipeRequests() {
+        return java.util.stream.Stream.of(
+                "我要吃红烧牛肉面",
+                "这里是我这次烹饪的背景说明。".repeat(30) + "我要吃红烧牛肉面，必须保留红烧做法"
+        );
+    }
+
+    @Test
+    void unclearSemanticRouteAsksForClarificationWithoutCallingRecipeTool() throws Exception {
+        String userMessage = "那个东西";
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConversation conversation = new AgentConversation();
+        conversation.setId(42L);
+        conversation.setUserId(7L);
+        conversation.setTitle("厨房助手对话");
+        when(conversationMapper.findOwned(7L, 42L)).thenReturn(conversation);
+        when(conversationMapper.selectById(42L)).thenReturn(conversation);
+        when(messageMapper.findRecentTextMessages(7L, 42L, 12)).thenReturn(List.of());
+
+        AgentIntentRecognizer intentRecognizer = mock(AgentIntentRecognizer.class);
+        AgentIntentRecognizer.RecognitionResult unresolved = new AgentIntentRecognizer.RecognitionResult(
+                true, false, AgentIntentRecognizer.UNRESOLVED, 0.42d, "NONE", "uncertain");
+        when(intentRecognizer.recognizeRoute(eq(userMessage), anyList())).thenReturn(unresolved);
+        when(intentRecognizer.isUsableRoute(unresolved)).thenReturn(false);
+        QwenAgentClient qwenAgentClient = mock(QwenAgentClient.class);
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentService service = new AgentService(
+                conversationMapper, messageMapper, null, new AgentToolRegistry(),
+                mock(AgentKitchenToolService.class), null, null, null, null, null, null,
+                null, null, null, null, null, qwenAgentClient, intentRecognizer,
+                new AgentIntentAuditService(runStore, objectMapper), objectMapper, runStore);
+
+        service.stream(new AgentChatRequest(42L, userMessage, null, null),
+                new AuthPrincipal(7L, "13800138000", AppRole.USER));
+
+        verify(intentRecognizer, timeout(3000)).recognizeRoute(eq(userMessage), anyList());
+        verify(qwenAgentClient, never()).complete(anyList(), anyList());
+        verify(messageMapper, timeout(3000)).insert(org.mockito.ArgumentMatchers.argThat(
+                (AgentMessage message) -> "ASSISTANT".equals(message.getRole())
+                        && message.getContent().contains("你是想生成菜谱")));
+    }
+
+    @Test
+    void repeatedDishSaveShowsExistingCardWithoutRequestingAnotherConfirmation() throws Exception {
+        String userMessage = "保存这道菜";
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConfirmationMapper confirmationMapper = mock(AgentConfirmationMapper.class);
+        com.example.food.recipe.SavedRecipeService savedRecipes = mock(com.example.food.recipe.SavedRecipeService.class);
+        AgentConversation conversation = new AgentConversation();
+        conversation.setId(42L);
+        conversation.setUserId(7L);
+        when(conversationMapper.findOwned(7L, 42L)).thenReturn(conversation);
+        when(conversationMapper.selectById(42L)).thenReturn(conversation);
+        RecipeGenerateResponse recipe = new RecipeGenerateResponse("番茄炒蛋", "原先保存的菜谱", List.of(),
+                List.of(new RecipeGenerateResponse.Ingredient("鸡蛋", "2个")), List.of(),
+                List.of(new RecipeGenerateResponse.Step(1, "炒制", "炒熟", 5)), List.of(), List.of(),
+                RecipeGenerateResponse.Explanation.empty(), "qwen", "test", 40L);
+        AgentMessage card = agentMessage(2L, "ASSISTANT", "recipe-card", objectMapper.writeValueAsString(recipe));
+        when(messageMapper.findRecentMessages(7L, 42L, 50)).thenReturn(List.of(
+                agentMessage(1L, "USER", "text", "我想吃番茄炒蛋"), card,
+                agentMessage(3L, "USER", "text", userMessage)));
+        when(savedRecipes.findSavedByTitle(7L, "番茄炒蛋")).thenReturn(
+                new com.example.food.recipe.dto.RecipeHistoryDetailResponse(99L, 40L, null,
+                        "鸡蛋", "dinner", "balanced", recipe).asAlreadySaved());
+        AgentIntentRecognizer recognizer = mock(AgentIntentRecognizer.class);
+        var route = new AgentIntentRecognizer.RecognitionResult(true, true, AgentIntentRecognizer.SAVE_RECIPE,
+                0.97d, "LATEST_GENERATED", "保存菜谱");
+        when(recognizer.recognizeRoute(eq(userMessage), anyList())).thenReturn(route);
+        when(recognizer.isUsableRoute(route)).thenReturn(true);
+        QwenAgentClient model = mock(QwenAgentClient.class);
+        when(model.complete(anyList(), anyList(), eq("recipe_save"))).thenReturn(new QwenAgentClient.AgentTurn("",
+                List.of(new QwenAgentClient.ToolCall("duplicate-save", "recipe_save", "{}")), "qwen", "test"));
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentService service = new AgentService(conversationMapper, messageMapper, confirmationMapper,
+                new AgentToolRegistry(), mock(AgentKitchenToolService.class), null, null, null, null,
+                null, savedRecipes, null, null, null, null, null, model, recognizer,
+                new AgentIntentAuditService(runStore, objectMapper), objectMapper, runStore);
+        service.stream(new AgentChatRequest(42L, userMessage, null, null),
+                new AuthPrincipal(7L, "13800138000", AppRole.USER));
+        verify(messageMapper, timeout(3000)).insert(org.mockito.ArgumentMatchers.argThat((AgentMessage message) ->
+                "text".equals(message.getBlockType()) && message.getContent().equals("该菜谱已经保存过，仅为您展示卡片信息")));
+        verify(messageMapper, timeout(3000)).insert(org.mockito.ArgumentMatchers.argThat((AgentMessage message) ->
+                "recipe-card".equals(message.getBlockType()) && message.getContent().contains("原先保存的菜谱")));
+        verify(confirmationMapper, never()).insert(any(AgentConfirmation.class));
+        verify(model, never()).complete(anyList(), anyList());
+    }
+
+    @Test
+    void shortSaveConfirmationReplyForcesSaveToolAndDoesNotClaimSuccessWithoutRecipeCard() throws Exception {
+        String userMessage = "需要";
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConversation conversation = new AgentConversation();
+        conversation.setId(42L);
+        conversation.setUserId(7L);
+        conversation.setTitle("厨房助手对话");
+        when(conversationMapper.findOwned(7L, 42L)).thenReturn(conversation);
+        when(conversationMapper.selectById(42L)).thenReturn(conversation);
+        when(messageMapper.findRecentTextMessages(7L, 42L, 12)).thenReturn(List.of(
+                agentMessage(1L, "USER", "text", "我想吃红烧牛肉面"),
+                agentMessage(2L, "ASSISTANT", "text", "需要我帮你保存这道菜吗？")
+        ));
+        when(messageMapper.findRecentMessages(7L, 42L, 50)).thenReturn(List.of(
+                agentMessage(1L, "USER", "text", "我想吃红烧牛肉面"),
+                agentMessage(2L, "ASSISTANT", "text", "需要我帮你保存这道菜吗？"),
+                agentMessage(3L, "USER", "text", userMessage)
+        ));
+
+        AgentIntentRecognizer intentRecognizer = mock(AgentIntentRecognizer.class);
+        AgentIntentRecognizer.RecognitionResult saveRoute = new AgentIntentRecognizer.RecognitionResult(
+                true, true, AgentIntentRecognizer.SAVE_RECIPE, 0.97d, "LATEST_GENERATED", "确认保存"
+        );
+        when(intentRecognizer.recognizeRoute(eq(userMessage), anyList())).thenReturn(saveRoute);
+        when(intentRecognizer.isUsableRoute(saveRoute)).thenReturn(true);
+        QwenAgentClient qwenAgentClient = mock(QwenAgentClient.class);
+        when(qwenAgentClient.complete(anyList(), anyList(), eq("recipe_save")))
+                .thenReturn(new QwenAgentClient.AgentTurn("", List.of(new QwenAgentClient.ToolCall(
+                        "call_save_1", "recipe_save", "{}")), "qwen", "qwen-plus"));
+        AgentConfirmationMapper confirmationMapper = mock(AgentConfirmationMapper.class);
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentService service = new AgentService(
+                conversationMapper, messageMapper, confirmationMapper, new AgentToolRegistry(),
+                mock(AgentKitchenToolService.class), null, null, null, null, null, null,
+                null, null, null, null, null, qwenAgentClient, intentRecognizer,
+                new AgentIntentAuditService(runStore, objectMapper), objectMapper, runStore);
+
+        service.stream(new AgentChatRequest(42L, userMessage, null, null),
+                new AuthPrincipal(7L, "13800138000", AppRole.USER));
+
+        verify(qwenAgentClient, timeout(3000)).complete(anyList(), anyList(), eq("recipe_save"));
+        verify(qwenAgentClient, never()).complete(anyList(), anyList());
+        verify(confirmationMapper, never()).insert(org.mockito.ArgumentMatchers.any(AgentConfirmation.class));
+        verify(messageMapper, timeout(3000)).insert(org.mockito.ArgumentMatchers.argThat(
+                (AgentMessage message) -> "ASSISTANT".equals(message.getRole())
+                        && "text".equals(message.getBlockType())
+                        && message.getContent().contains("当前这轮对话没有可关联的菜谱卡片")));
+    }
+
     @Test
     void disabledPersonalizationDoesNotCallModelOrCreateMemoryConfirmation() throws Exception {
         String userMessage = "我喜欢紫薯，请记住";
@@ -470,7 +685,7 @@ class AgentServiceTest {
 
     @Test
     void disabledContextInstructsModelAndHidesMemoryToolsForOrdinaryTasks() throws Exception {
-        String userMessage = "我以前喜欢鸡胸肉，今晚推荐晚餐";
+        String userMessage = "我以前喜欢鸡胸肉，今晚查看本周菜单";
         AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
         AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
         AgentConversation conversation = new AgentConversation();

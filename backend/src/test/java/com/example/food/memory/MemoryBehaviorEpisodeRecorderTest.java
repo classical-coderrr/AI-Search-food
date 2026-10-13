@@ -28,6 +28,21 @@ class MemoryBehaviorEpisodeRecorderTest {
     @Mock private MemoryProcessingJobService jobService;
 
     @Test
+    void discardsOlderBusinessEventAfterMemoryGenerationChanges() {
+        when(personalizationService.getState(7L)).thenReturn(
+                new MemoryPersonalizationState(true, 0), new MemoryPersonalizationState(true, 1));
+        when(personalizationService.isEnabled(7L)).thenReturn(true);
+        MemoryBehaviorEpisodeRecorder recorder = new MemoryBehaviorEpisodeRecorder(
+                episodeService, new ObjectMapper(), personalizationService, jobService);
+        recorder.setLearningGuard(org.mockito.Mockito.mock(MemoryLearningGuard.class));
+        recorder.record(new MemoryBehaviorEpisodeEvent(7L, null, null, "RECIPE_SAVED", "RECIPE_RECORD", "42",
+                "saved:42", "saved:42", "保存菜谱", Map.of("recipeId", 42L), LocalDateTime.now(), null));
+        verify(episodeService, never()).record(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(MemoryEpisodeCommand.class));
+        verify(jobService, never()).enqueue(org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @Test
     void convertsBusinessEventToTraceableEpisodeCommand() {
         MemoryBehaviorEpisodeRecorder recorder = new MemoryBehaviorEpisodeRecorder(episodeService, new ObjectMapper());
         Map<String, Object> payload = new LinkedHashMap<>();

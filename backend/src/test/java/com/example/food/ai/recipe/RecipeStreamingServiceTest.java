@@ -98,6 +98,40 @@ class RecipeStreamingServiceTest {
     }
 
     @Test
+    void retriesSemanticMismatchWithoutOldPlanAndPersistsOnlyAcceptedResults() {
+        RecipeGenerateResponse wrong = recipe("煎鱼排", "煎制");
+        RecipeGenerateResponse accepted = recipe("寿司", "制作寿司");
+        var plan = new QwenRecipeClient.RecipePlan("煎鱼排", List.of("鱼"), List.of());
+        when(recommendationService.preparePrompt(any(), any())).thenReturn(
+                new RecipeRecommendationService.PreparedPrompt("original-request", false, false, false));
+        when(recommendationService.recommendationBatchMode(any())).thenReturn("STYLE_VARIANTS");
+        when(recommendationService.planRecipeSelections(any(), anyInt(), any())).thenReturn(List.of(plan, plan, plan));
+        when(recommendationService.batchRecipePrompt(anyString(), any(), anyInt(), anyInt(), anyList(), any()))
+                .thenReturn("planned-prompt");
+        when(recommendationService.batchRecipePrompt(anyString(), any(), anyInt(), anyInt(), anyList()))
+                .thenReturn("original-request");
+        when(recommendationService.checkUserRequirement(any(), any())).thenReturn(
+                new QwenRecipeClient.RecipeRequirementCheck(false, List.of("未制作寿司")),
+                new QwenRecipeClient.RecipeRequirementCheck(true, List.of()));
+        when(recommendationService.requirementRetryInstruction(any(), any())).thenReturn("requirement-retry");
+        when(qwenClient.streamRecipe(anyString(), any(), any())).thenReturn(
+                streamResult(wrong), streamResult(accepted), streamResult(accepted), streamResult(accepted));
+
+        SseEmitter emitter = service.generate(new RecipeGenerateRequest("鱼", "dinner", "balanced", "text",
+                null, null, null, false, false, false, "请做寿司"), null, "anon-001");
+
+        verify(recommendationService, timeout(3000)).persistBatch(any(),
+                org.mockito.ArgumentMatchers.argThat(recipes -> recipes.size() == 3
+                        && recipes.stream().allMatch(item -> item.title().equals("寿司"))),
+                anyInt(), any(), anyString());
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(qwenClient, org.mockito.Mockito.times(4)).streamRecipe(prompts.capture(), any(), any());
+        org.assertj.core.api.Assertions.assertThat(prompts.getAllValues().get(1))
+                .contains("original-request", "requirement-retry").doesNotContain("planned-prompt");
+        emitter.complete();
+    }
+
+    @Test
     void usesInputIngredientCountWhenItExceedsThree() {
         RecipeGenerateResponse response = recipe();
         when(recommendationService.recommendationCount(any())).thenReturn(9);

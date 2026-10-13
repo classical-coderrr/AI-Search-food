@@ -113,7 +113,9 @@ public class AgentService {
             "帮我", "给我", "适合", "晚餐", "晚饭", "早餐", "午餐", "不要", "不加", "不吃"
     );
     private static final String SEMANTIC_ROUTE_FALLBACK =
-            "\u6211\u6ca1\u80fd\u7406\u89e3\u4f60\u7684\u610f\u601d,\u8bf7\u518d\u8bf4\u4e00\u904d";
+            "\u6211\u8fd8\u4e0d\u786e\u5b9a\u4f60\u5e0c\u671b\u6211\u505a\u4ec0\u4e48\u3002"
+                    + "\u4f60\u662f\u60f3\u751f\u6210\u83dc\u8c31\u3001\u67e5\u8be2\u4fe1\u606f\uff0c"
+                    + "\u8fd8\u662f\u53ea\u662f\u804a\u804a\uff1f\u8bf7\u518d\u8bf4\u660e\u4e00\u4e0b\u3002";
 
     private final AgentConversationMapper conversationMapper;
     private final AgentMessageMapper messageMapper;
@@ -141,6 +143,12 @@ public class AgentService {
     private final AgentFaultInjector faultInjector;
     private final AgentMemoryContextProvider memoryContextProvider;
     private AgentMemoryToolService memoryToolService;
+    private com.example.food.memory.MemoryChatLearningService chatLearningService;
+
+    @Autowired
+    void setChatLearningService(com.example.food.memory.MemoryChatLearningService service) {
+        this.chatLearningService = service;
+    }
     private PromptTemplateManager promptTemplateManager = new PromptTemplateManager();
     private String memoryContextPromptVersion = "memory-agent-context-v1";
     private final ThreadLocal<String> activeRunId = new ThreadLocal<>();
@@ -617,7 +625,14 @@ public class AgentService {
 
             String message = normalizedMessage(request.message(), attachment);
             String modelMessage = imageContext(emitter, cancelled, conversation.getId(), message, attachment);
-            saveMessage(principal.id(), conversation.getId(), ROLE_USER, "text", modelMessage);
+            Long userMessageId = saveMessage(principal.id(), conversation.getId(), ROLE_USER, "text", modelMessage);
+            if (chatLearningService != null && StringUtils.hasText(request.message())) {
+                try {
+                    chatLearningService.record(principal.id(), conversation.getId(), userMessageId, request.message());
+                } catch (RuntimeException memoryFailure) {
+                    LOGGER.warn("聊天记忆记录暂不可用，继续当前对话 runId={}", runId);
+                }
+            }
             AgentExecution execution = new AgentExecution(
                     runId,
                     principal.id(),
@@ -878,10 +893,7 @@ public class AgentService {
                 QwenAgentClient.AgentTurn turn;
                 try {
                     List<QwenAgentClient.ConversationMessage> messages = modelMessages(execution.messages, memoryContext);
-                    String requiredToolName = toolRegistry.isExplicitMemoryDeclarationRequest(execution.userMessage)
-                            && containsFunction(definitions, AgentToolRegistry.Tool.MEMORY_EPISODE_SAVE.functionName())
-                            ? AgentToolRegistry.Tool.MEMORY_EPISODE_SAVE.functionName()
-                            : null;
+                    String requiredToolName = requiredToolName(execution, definitions);
                     turn = requiredToolName == null
                             ? qwenAgentClient.complete(messages, definitions)
                             : qwenAgentClient.complete(messages, definitions, requiredToolName);
@@ -998,6 +1010,20 @@ public class AgentService {
                 if (execution.confirmationRequested) {
                     faultInjector.hit(execution.runId, AgentFaultInjector.Point.WAITING_CONFIRMATION);
                 }
+                if (tool == AgentToolRegistry.Tool.RECIPE_SAVE
+                        && toolExecution.output() instanceof Map<?, ?> toolOutputPayload
+                        && ("no_recipe".equals(toolOutputPayload.get("status"))
+                            || "already_saved".equals(toolOutputPayload.get("status")))) {
+                    execution.currentNode = AgentNode.FINALIZE;
+                    execution.nextNode = AgentNode.FINALIZE;
+                    sendText(emitter, cancelled, conversationId, toolExecution.summary());
+                    if (toolOutputPayload.get("recipe") instanceof RecipeGenerateResponse savedRecipe) {
+                        sendRecipeCard(emitter, cancelled, conversationId, savedRecipe, "来自我的菜谱收藏 · 已保存");
+                    }
+                    persistCheckpoint(execution, AgentStatus.COMPLETED,
+                            AgentNode.FINALIZE, AgentNode.FINALIZE, null);
+                    return;
+                }
             }
             execution.pendingToolCalls = List.of();
             execution.pendingToolIndex = 0;
@@ -1071,7 +1097,8 @@ public class AgentService {
         List<Map<String, Object>> definitions = toolRegistry.functionDefinitions(
                 execution.userMessage,
                 execution.hasAttachment,
-                personalizationEnabled(execution.userId, memoryContext)
+                personalizationEnabled(execution.userId, memoryContext),
+                false
         );
         if (definitions.isEmpty()) {
             if (!personalizationEnabled(execution.userId, memoryContext)
@@ -1079,6 +1106,14 @@ public class AgentService {
                 return List.of();
             }
             return semanticRouteDefinitions(execution);
+        }
+        if (!execution.hasAttachment
+                && !containsFunction(definitions, AgentToolRegistry.Tool.RECIPE_SAVE.functionName())
+                && containsFunction(definitions, AgentToolRegistry.Tool.RECIPE_GENERATE.functionName())) {
+            List<Map<String, Object>> routedDefinitions = semanticRouteDefinitions(execution);
+            return execution.semanticRoutingFailed
+                    ? routedDefinitions
+                    : preserveMemoryTools(routedDefinitions, definitions);
         }
         boolean saveToolAlreadyExposed = containsFunction(definitions, AgentToolRegistry.Tool.RECIPE_SAVE.functionName());
         if (execution.intentResolutionAttempted) {
@@ -1259,6 +1294,50 @@ public class AgentService {
             }
         }
         return false;
+    }
+
+    private List<Map<String, Object>> preserveMemoryTools(
+            List<Map<String, Object>> routedDefinitions,
+            List<Map<String, Object>> originalDefinitions
+    ) {
+        List<Map<String, Object>> combined = new ArrayList<>(routedDefinitions);
+        for (Map<String, Object> definition : originalDefinitions) {
+            Object function = definition == null ? null : definition.get("function");
+            if (!(function instanceof Map<?, ?> functionMap)) {
+                continue;
+            }
+            String functionName = String.valueOf(functionMap.get("name"));
+            if (functionName.startsWith("memory_") && !containsFunction(combined, functionName)) {
+                combined.add(definition);
+            }
+        }
+        return List.copyOf(combined);
+    }
+
+    private String requiredToolName(
+            AgentExecution execution,
+            List<Map<String, Object>> definitions
+    ) {
+        if (toolRegistry.isExplicitMemoryDeclarationRequest(execution.userMessage)
+                && containsFunction(definitions, AgentToolRegistry.Tool.MEMORY_EPISODE_SAVE.functionName())) {
+            return AgentToolRegistry.Tool.MEMORY_EPISODE_SAVE.functionName();
+        }
+        if (execution.round == 0
+                && containsFunction(definitions, AgentToolRegistry.Tool.RECIPE_SAVE.functionName())
+                && (execution.recipeSaveIntent
+                || execution.semanticRoutingAttempted
+                && !execution.semanticRoutingFailed
+                && AgentIntentRecognizer.SAVE_RECIPE.equals(execution.semanticRoute))) {
+            return AgentToolRegistry.Tool.RECIPE_SAVE.functionName();
+        }
+        if (execution.round == 0
+                && execution.semanticRoutingAttempted
+                && !execution.semanticRoutingFailed
+                && AgentIntentRecognizer.GENERATE_RECIPE.equals(execution.semanticRoute)
+                && containsFunction(definitions, AgentToolRegistry.Tool.RECIPE_GENERATE.functionName())) {
+            return AgentToolRegistry.Tool.RECIPE_GENERATE.functionName();
+        }
+        return null;
     }
 
     private ToolExecution executeTool(
@@ -1497,7 +1576,8 @@ public class AgentService {
         );
         sendText(emitter, cancelled, conversation.getId(), result.message());
         if (result.detail() instanceof RecipeHistoryDetailResponse detail) {
-            sendRecipeCard(emitter, cancelled, conversation.getId(), detail.recipe(), "来自我的菜谱收藏 · 刚刚保存");
+            sendRecipeCard(emitter, cancelled, conversation.getId(), detail.recipe(), detail.alreadySaved()
+                    ? "来自我的菜谱收藏 · 已保存" : "来自我的菜谱收藏 · 刚刚保存");
         } else {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("title", "操作完成");
@@ -1525,6 +1605,11 @@ public class AgentService {
                     Map.of("status", "no_recipe", "message", "当前这轮对话没有可关联的菜谱卡片，请先生成菜谱后再保存"),
                     "当前这轮对话没有可关联的菜谱卡片，请先生成菜谱后再保存"
             );
+        }
+        RecipeHistoryDetailResponse saved = savedRecipeService.findSavedByTitle(userId, recipe.title());
+        if (saved != null) {
+            return new ToolExecution(Map.of("status", "already_saved", "recipe", saved.recipe()),
+                    SavedRecipeService.ALREADY_SAVED_MESSAGE);
         }
         String idempotencyKey = recipeSaveIdempotencyKey(recipe);
         AgentConfirmation existing = confirmationMapper.findOwnedByIdempotencyKey(userId, idempotencyKey);
@@ -1717,6 +1802,13 @@ public class AgentService {
                 : requestedIngredients;
         boolean useAiIngredientRecommendation = shouldUseAiIngredientRecommendation(requestedIngredients);
         DietPreferenceResponse preference = dietPreferenceService.get(principal.id());
+        String userRequirement = StringUtils.hasText(userMessage)
+                ? "用户原话：" + userMessage.trim()
+                : "";
+        if (StringUtils.hasText(requested) && !requested.equals(userMessage)) {
+            userRequirement = (userRequirement.isBlank() ? "" : userRequirement + "\n")
+                    + "菜谱要求摘要：" + limit(requested, 240);
+        }
         RecipeGenerateRequest request = new RecipeGenerateRequest(
                 limit(requestedIngredients, 240),
                 mealTypeArgument(arguments, requested),
@@ -1727,7 +1819,8 @@ public class AgentService {
                 dietPreference(preference),
                 true,
                 true,
-                useAiIngredientRecommendation
+                useAiIngredientRecommendation,
+                userRequirement
         );
         RecipeGenerateResponse recipe = recipeRecommendationService.generate(request, principal, null);
         sendRecipeCard(emitter, cancelled, conversationId, recipe, "来自我的食材库存与阿灶菜谱生成 · 刚刚生成");
@@ -2057,7 +2150,7 @@ public class AgentService {
         });
     }
 
-    private void saveMessage(Long ignoredUserId, Long conversationId, String role, String blockType, String content) {
+    private Long saveMessage(Long ignoredUserId, Long conversationId, String role, String blockType, String content) {
         AgentMessage message = new AgentMessage();
         message.setConversationId(conversationId);
         AgentConversation conversation = conversationMapper.selectById(conversationId);
@@ -2067,6 +2160,7 @@ public class AgentService {
         message.setContent(limit(content, 100_000));
         message.setCreatedAt(LocalDateTime.now());
         messageMapper.insert(message);
+        return message.getId();
     }
 
     private void sendOrCancel(SseEmitter emitter, AtomicBoolean cancelled, String event, Object data) {

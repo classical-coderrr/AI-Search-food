@@ -173,6 +173,7 @@ public class RecipeStreamingService {
                 RecipeGenerateResponse response = null;
                 String retryMessage = null;
                 String retryInstruction = null;
+                boolean discardRecipePlan = false;
                 for (int attempt = 0; attempt < MAX_RECIPE_ATTEMPTS; attempt++) {
                     requireActive(cancelled);
                     if (attempt > 0) {
@@ -186,7 +187,7 @@ public class RecipeStreamingService {
                         );
                     }
                     RecipeStreamFieldParser parser = new RecipeStreamFieldParser(new com.fasterxml.jackson.databind.ObjectMapper());
-                    QwenRecipeClient.RecipePlan recipePlan = recipeIndex < recipePlans.size()
+                    QwenRecipeClient.RecipePlan recipePlan = !discardRecipePlan && recipeIndex < recipePlans.size()
                             ? recipePlans.get(recipeIndex)
                             : null;
                     String recipePrompt = recipePlan == null
@@ -270,6 +271,21 @@ public class RecipeStreamingService {
                         retryInstruction = ingredientConstraintRetryInstruction(recipeIndex);
                         response = null;
                         continue;
+                    }
+                    if (request.userRequirement() != null && !request.userRequirement().isBlank()) {
+                        QwenRecipeClient.RecipeRequirementCheck check =
+                                recipeRecommendationService.checkUserRequirement(request, response);
+                        if (!check.matches()) {
+                            if (attempt + 1 >= MAX_RECIPE_ATTEMPTS) {
+                                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                                        "生成的菜谱仍未满足你的要求，请补充说明后重试");
+                            }
+                            retryMessage = "菜谱未满足本轮要求，正在重新生成第 " + (recipeIndex + 1) + " 道菜谱";
+                            retryInstruction = recipeRecommendationService.requirementRetryInstruction(request, check);
+                            discardRecipePlan = true;
+                            response = null;
+                            continue;
+                        }
                     }
                     if (!recipeRecommendationService.isDuplicateRecipe(response, previousResponses)) {
                         break;

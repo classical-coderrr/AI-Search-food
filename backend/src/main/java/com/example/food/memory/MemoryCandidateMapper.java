@@ -14,6 +14,25 @@ import java.util.List;
 public interface MemoryCandidateMapper extends BaseMapper<MemoryCandidate> {
 
     @Select("""
+            SELECT * FROM memory_candidates WHERE user_id = #{userId} AND candidate_type = #{type}
+              AND (LOWER(COALESCE(canonical_entity, entity)) = LOWER(#{entity})
+                   OR (#{groupId} IS NOT NULL AND canonical_group_id = #{groupId}))
+              AND status IN ('PENDING', 'ACCEPTED', 'CONSOLIDATED') AND deleted_at IS NULL
+            """)
+    List<MemoryCandidate> listForEntity(@Param("userId") Long userId, @Param("type") String type,
+                                      @Param("entity") String entity, @Param("groupId") String groupId);
+
+    @Select("""
+            SELECT * FROM memory_candidates WHERE user_id = #{userId}
+              AND candidate_type = 'INGREDIENT_PREFERENCE' AND source_type = 'IMPLICIT_BEHAVIOR'
+              AND status IN ('PENDING', 'ACCEPTED', 'CONSOLIDATED') AND deleted_at IS NULL
+            """)
+    List<MemoryCandidate> listBehaviorPatterns(@Param("userId") Long userId);
+
+    @Update("UPDATE memory_candidates SET status = 'PENDING', version = version + 1 WHERE user_id = #{userId} AND id = #{id} AND status = 'SUPERSEDED' AND deleted_at IS NULL")
+    int reactivatePattern(@Param("userId") Long userId, @Param("id") Long id);
+
+    @Select("""
             SELECT * FROM memory_candidates
             WHERE user_id = #{userId}
               AND extraction_key = #{extractionKey}

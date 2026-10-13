@@ -28,7 +28,7 @@ public class MemoryBehaviorEpisodeRecorder {
     private static final Logger log = LoggerFactory.getLogger(MemoryBehaviorEpisodeRecorder.class);
     private static final Set<String> EXTRACTABLE_EPISODE_TYPES = Set.of(
             "RECIPE_SAVED", "RECIPE_UNSAVED", "RECIPE_FEEDBACK", "FINISHED_DISH_REVIEW",
-            "USER_PREFERENCE_DECLARED", "USER_PREFERENCE_CONFIRMED"
+            "USER_PREFERENCE_DECLARED", "USER_PREFERENCE_CONFIRMED", "USER_CHAT"
     );
 
     private final MemoryEpisodeService episodeService;
@@ -37,6 +37,12 @@ public class MemoryBehaviorEpisodeRecorder {
     private final MemoryProcessingJobService jobService;
     private final TransactionTemplate episodeTransaction;
     private final TransactionTemplate queueTransaction;
+    private MemoryLearningGuard learningGuard;
+
+    @Autowired
+    void setLearningGuard(MemoryLearningGuard learningGuard) {
+        this.learningGuard = learningGuard;
+    }
 
     public MemoryBehaviorEpisodeRecorder(MemoryEpisodeService episodeService, ObjectMapper objectMapper) {
         this(episodeService, objectMapper, null, null, null);
@@ -79,21 +85,33 @@ public class MemoryBehaviorEpisodeRecorder {
             return;
         }
 
+        Integer recordingVersion = null;
+        if (learningGuard != null && personalizationService != null) {
+            try {
+                MemoryPersonalizationState state = personalizationService.getState(event.userId());
+                if (!state.enabled()) return;
+                recordingVersion = state.version();
+            } catch (RuntimeException failure) {
+                log.warn("暂时无法读取记忆开关 userId={}", event.userId());
+                return;
+            }
+        }
+        final Integer expectedVersion = recordingVersion;
         if (episodeTransaction != null
                 && TransactionSynchronizationManager.isActualTransactionActive()
                 && TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    recordAfterBusinessCommit(event);
+                    recordAfterBusinessCommit(event, expectedVersion);
                 }
             });
             return;
         }
-        recordAfterBusinessCommit(event);
+        recordAfterBusinessCommit(event, expectedVersion);
     }
 
-    private void recordAfterBusinessCommit(MemoryBehaviorEpisodeEvent event) {
+    private void recordAfterBusinessCommit(MemoryBehaviorEpisodeEvent event, Integer expectedVersion) {
         MemoryEpisodeService.RecordResult result;
         try {
             if (personalizationService != null && !personalizationService.isEnabled(event.userId())) {
@@ -112,7 +130,22 @@ public class MemoryBehaviorEpisodeRecorder {
                     event.occurredAt(),
                     event.importance()
             );
-            result = inTransaction(episodeTransaction, () -> episodeService.record(event.userId(), command));
+            result = inTransaction(episodeTransaction, () -> {
+                if (learningGuard != null) learningGuard.lock(event.userId());
+                if (personalizationService != null) {
+                    if (!personalizationService.isEnabled(event.userId())) return null;
+                    if (expectedVersion != null && personalizationService.getState(event.userId()).version() != expectedVersion) {
+                        return null;
+                    }
+                    if ("USER_CHAT".equals(event.episodeType())) {
+                        MemoryPersonalizationState state = personalizationService.getState(event.userId());
+                        if (!Integer.valueOf(state.version()).equals(event.payload().get("personalizationVersion"))) {
+                            return null;
+                        }
+                    }
+                }
+                return episodeService.record(event.userId(), command);
+            });
         } catch (JsonProcessingException exception) {
             log.error("记忆行为事件序列化失败 userId={}, episodeType={}, sourceId={}",
                     event.userId(), event.episodeType(), event.sourceId(), exception);

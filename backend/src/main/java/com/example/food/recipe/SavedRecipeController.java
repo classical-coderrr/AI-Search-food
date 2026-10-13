@@ -35,7 +35,8 @@ public class SavedRecipeController {
             @AuthenticationPrincipal AuthPrincipal principal,
             @RequestHeader(value = "X-Anonymous-Id", required = false) String anonymousId
     ) {
-        return ApiResponse.ok(savedRecipeService.save(request, principal, anonymousId));
+        RecipeHistoryDetailResponse result = savedRecipeService.save(request, principal, anonymousId);
+        return new ApiResponse<>(0, result.alreadySaved() ? SavedRecipeService.ALREADY_SAVED_MESSAGE : "ok", result);
     }
 
     @GetMapping

@@ -11,6 +11,26 @@ import org.springframework.web.server.ResponseStatusException;
 public class MemoryPersonalizationService {
 
     private final UserMemorySettingsMapper settingsMapper;
+    private MemoryLearningGuard learningGuard;
+
+    @Autowired
+    void setLearningGuard(MemoryLearningGuard learningGuard) {
+        this.learningGuard = learningGuard;
+    }
+
+    public void invalidatePendingLearning(Long userId) {
+        UserMemorySettings settings = settingsMapper.findOwned(userId);
+        if (settings == null) {
+            settings = new UserMemorySettings();
+            settings.setUserId(userId);
+            settings.setPersonalizationEnabled(true);
+            settings.setVersion(1);
+            settingsMapper.insert(settings);
+        } else {
+            settingsMapper.updateOwned(userId, safeVersion(settings.getVersion()),
+                    !Boolean.FALSE.equals(settings.getPersonalizationEnabled()));
+        }
+    }
 
     @Autowired
     public MemoryPersonalizationService(UserMemorySettingsMapper settingsMapper) {
@@ -34,6 +54,7 @@ public class MemoryPersonalizationService {
     @Transactional
     public MemoryPersonalizationState update(Long userId, MemoryPersonalizationRequest request) {
         requireUser(userId);
+        if (learningGuard != null) learningGuard.lock(userId);
         if (request == null || request.enabled() == null || request.version() == null || request.version() < 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "个性化设置无效");
         }

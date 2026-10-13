@@ -38,6 +38,19 @@ class AgentToolRegistryTest {
     }
 
     @Test
+    void leavesUnmatchedNaturalLanguageForSemanticRouting() {
+        assertThat(registry.functionDefinitions("我想吃红烧牛肉面", false, true, false)).isEmpty();
+        assertThat(registry.functionDefinitions("我要吃红烧牛肉面", false, true, false)).isEmpty();
+        assertThat(registry.functionDefinitions("来一道红烧牛肉面", false, true, false)).isEmpty();
+
+        java.util.List<String> recommendationTools = registry.functionDefinitions(
+                        "给我推荐一道鸡翅菜", false, true, false).stream()
+                .map(this::functionName)
+                .toList();
+        assertThat(recommendationTools).contains("recipe_generate");
+    }
+
+    @Test
     void selectsOnlyRelevantDomainTools() {
         java.util.List<String> dateTools = registry.functionDefinitions("今天几号", false).stream()
                 .map(definition -> ((java.util.Map<?, ?>) definition.get("function")).get("name").toString())

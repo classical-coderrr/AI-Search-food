@@ -12,6 +12,10 @@ import java.util.List;
 @Mapper
 public interface MemoryEpisodeMapper extends BaseMapper<MemoryEpisode> {
 
+    @Update("UPDATE memory_episodes SET payload_json = #{payload}, version = version + 1 WHERE user_id = #{userId} AND id = #{episodeId} AND deleted_at IS NULL")
+    int updateChatPayload(@Param("userId") Long userId, @Param("episodeId") Long episodeId,
+                          @Param("payload") String payload);
+
     @Select("""
             SELECT * FROM memory_episodes
             WHERE user_id = #{userId}
@@ -71,7 +75,7 @@ public interface MemoryEpisodeMapper extends BaseMapper<MemoryEpisode> {
               AND status != 'REJECTED'
               AND episode_type IN (
                 'RECIPE_SEARCH', 'RECIPE_SAVED', 'RECIPE_UNSAVED', 'RECIPE_FEEDBACK',
-                'RECIPE_EXPERIENCE', 'RECIPE_BEHAVIOR', 'FINISHED_DISH_REVIEW'
+                'RECIPE_EXPERIENCE', 'RECIPE_BEHAVIOR', 'FINISHED_DISH_REVIEW', 'USER_CHAT'
               )
             ORDER BY occurred_at DESC, id DESC
             LIMIT #{limit}

@@ -18,6 +18,13 @@ public class RecipeRecord {
     private Long parentRecipeId;
     private Long weeklyMenuPlanId;
     private String agentIdempotencyKey;
+    private String dishGroupKey;
+    private String contentFingerprint;
+
+    public String getDishGroupKey() { return dishGroupKey; }
+    public void setDishGroupKey(String dishGroupKey) { this.dishGroupKey = dishGroupKey; }
+    public String getContentFingerprint() { return contentFingerprint; }
+    public void setContentFingerprint(String contentFingerprint) { this.contentFingerprint = contentFingerprint; }
     @TableField(exist = false)
     private String mealType;
     private String title;

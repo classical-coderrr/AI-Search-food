@@ -220,7 +220,7 @@ public class AgentIntentRecognizer {
         StringBuilder prompt = new StringBuilder("""
                 你是小厨灵的语义路由器，只负责判断用户想做什么，不执行任何厨房操作。
                 必须调用 agent_intent_classify 工具返回结构化结果。
-                GENERATE_RECIPE：用户想根据食材、库存或口味生成、推荐、想一道菜或询问做法。
+                GENERATE_RECIPE：用户明确想吃某道菜或某种食物、要一道菜、请你生成或推荐菜谱，或询问某道菜的做法；表达方式可能是“我想吃X”“我要吃X”“来一道X”等。
                 PANTRY_QUERY：用户想查询库存、食材、临期或是否能做某道菜。
                 WEEKLY_MENU：用户想查询、安排或修改周菜单、餐单或采购清单。
                 SAVED_RECIPES：用户想查询、管理、收藏、分享或评价已经保存的菜谱。
@@ -230,13 +230,14 @@ public class AgentIntentRecognizer {
                 KITCHEN_ACTION：用户明确要求修改厨房数据，但不属于以上类别。
                 OTHER：普通聊天、知识问答或闲聊。
                 UNRESOLVED：无法确认用户想做什么，或消息信息不足。
-                只有在语义足够明确时才返回业务意图；不确定时返回 UNRESOLVED。
+                只有在语义足够明确时才返回业务意图；如果用户只是表达模糊愿望、没有明确要你生成或推荐，或无法判断其目的，返回 UNRESOLVED，让助手先询问澄清。
                 confidence 必须是 0 到 1 的数字，recipe_reference 没有明确菜谱指代时返回 NONE。
 
                 【最新用户消息】
                 """);
         prompt.append(latestMessage);
-        prompt.append("\n\n【有限对话上下文，仅用于理解指代】\n");
+        prompt.append("\n\n【有限对话上下文】\n");
+        prompt.append("用于理解用户对上一条澄清问题的简短回答和指代；如果用户回复“是、对、第一种”等，结合最近的问题判断其确认的意图。\n");
         prompt.append(contextSnippet(conversation));
         return prompt.toString();
     }
